@@ -48,8 +48,8 @@ const (
 	// (RFC 8628, 3.2), and slowDownStep what a slow_down adds to it (3.5).
 	defaultInterval = 5 * time.Second
 	slowDownStep    = 5 * time.Second
-	// maxExpiresIn and maxInterval bound the code's life and the wait
-	// GitHub asks for; maxWait bounds the wait any slow_down makes.
+	// maxExpiresIn and maxInterval bound the code's life and the first
+	// wait GitHub asks for; the code's expiry bounds every later wait.
 	maxExpiresIn = time.Hour
 	maxInterval  = 5 * time.Minute
 	// maxCode bounds a user code, maxSecret a device code and a token, and
@@ -57,9 +57,6 @@ const (
 	maxCode   = 32
 	maxSecret = 4096
 	maxBody   = 64 << 10
-	// maxDescription bounds the part of GitHub's error_description a
-	// failed flow says.
-	maxDescription = 200
 	// requestTimeout bounds each request to GitHub.
 	requestTimeout = 30 * time.Second
 )
@@ -236,35 +233,43 @@ func parsePoll(body []byte, status int) (Poll, error) {
 	case "authorization_pending":
 		return Poll{Pending: true}, nil
 	case "slow_down":
+		// A longer wait GitHub names is honored, past maxInterval too: the
+		// code's expiry bounds every wait (Codex review of #123, round 1).
 		interval, _, err := secondsField(raw, "interval")
-		if err != nil || interval < 0 || interval > maxInterval {
+		if err != nil || interval < 0 {
 			interval = 0
 		}
-		return Poll{SlowDown: true, Interval: interval}, nil
+		return Poll{SlowDown: true, Interval: min(interval, maxExpiresIn)}, nil
 	case "access_denied":
 		return Poll{Denied: true}, nil
 	case "expired_token":
 		return Poll{Expired: true}, nil
 	}
-	refused := "GitHub ended the device flow: " + code
-	var description string
-	if json.Unmarshal(raw["error_description"], &description) == nil {
-		if d := printable(description, maxDescription); d != "" {
-			refused += ": " + d
-		}
-	}
-	return Poll{Refused: refused}, nil
+	return Poll{Refused: refusal(code)}, nil
 }
+
+// refusal is what a flow says of an error GitHub ended it with, in
+// pocketd's own words: its code when it is one of RFC 8628's or GitHub's
+// names (lowercase letters and underscores), never the text GitHub sent
+// with it, which could echo the device code to every client (Codex review
+// of #123, round 1).
+func refusal(code string) string {
+	if !errorCode.MatchString(code) {
+		return "GitHub ended the device flow with an error pocketd does not know."
+	}
+	return "GitHub ended the device flow: " + code + "."
+}
+
+// errorCode is an OAuth error code as GitHub names them.
+var errorCode = regexp.MustCompile(`^[a-z][a-z_]{0,40}$`)
 
 // SlowedDown is the wait between polls after a slow_down: the wait so far
 // with slowDownStep more (RFC 8628, 3.5), or the interval GitHub named
-// when it is longer, at most maxInterval.
+// when it is longer. It has no bound but the code's expiry, which bounds
+// every wait: a slow_down at a long interval still widens it (Codex
+// review of #123, round 1).
 func SlowedDown(current, named time.Duration) time.Duration {
-	next := current + slowDownStep
-	if named > next {
-		next = named
-	}
-	return min(next, maxInterval)
+	return max(current+slowDownStep, named)
 }
 
 // User is the login of the GitHub account token signs in, from GitHub's
@@ -290,15 +295,24 @@ func (g *GitHub) User(ctx context.Context, token string) (string, error) {
 	var user struct {
 		Login string `json:"login"`
 	}
-	if err := json.Unmarshal(body, &user); err != nil || !loginPattern.MatchString(user.Login) {
+	if err := json.Unmarshal(body, &user); err != nil || !Login(user.Login) {
 		return "", errors.New("GitHub's account answer names no login")
 	}
 	return user.Login, nil
 }
 
-// loginPattern is a GitHub login: 1 to 39 letters, digits and single
-// hyphens, neither first nor last.
-var loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9]|-[A-Za-z0-9]){0,38}$`)
+// maxLogin bounds a login's length, in characters (ASCII alone).
+const maxLogin = 64
+
+// Login says whether login can be a GitHub login: letters, digits and
+// single hyphens, neither first nor last, then, for a managed user of an
+// enterprise (EMU), an underscore and the enterprise's shortcode; at most
+// maxLogin characters (Codex review of #123, round 1).
+func Login(login string) bool {
+	return len(login) <= maxLogin && loginPattern.MatchString(login)
+}
+
+var loginPattern = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?$`)
 
 // post sends form to target as GitHub's device flow takes it, and reads
 // at most maxBody of the answer.
@@ -361,19 +375,4 @@ func secondsField(raw map[string]json.RawMessage, name string) (time.Duration, b
 		return 0, false, fmt.Errorf("GitHub's answer has a %s that is no whole number of seconds", name)
 	}
 	return time.Duration(n) * time.Second, true, nil
-}
-
-// printable is text with every character outside printable ASCII
-// dropped, cut to most bytes.
-func printable(text string, most int) string {
-	var b strings.Builder
-	for _, r := range text {
-		if r >= ' ' && r <= '~' {
-			b.WriteRune(r)
-		}
-		if b.Len() >= most {
-			break
-		}
-	}
-	return strings.TrimSpace(b.String())
 }

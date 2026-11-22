@@ -58,7 +58,7 @@ func TestAnApprovedFlowKeepsTheSignIn(t *testing.T) {
 	g := newFakeGitHub(t, ok(pending), ok(granted))
 	k := &keeper{}
 	f, clock, ch := flowsOn(t, g, k)
-	flow, started, err := f.Start(Copilot)
+	flow, started, err := f.Start(Copilot, "k1")
 	if err != nil || !started {
 		t.Fatalf("Start %+v %v %v", flow, started, err)
 	}
@@ -95,7 +95,7 @@ func TestAnApprovedFlowKeepsTheSignIn(t *testing.T) {
 func TestSlowDownWidensTheWaitAndADenialEndsTheFlow(t *testing.T) {
 	g := newFakeGitHub(t, ok(slowDown), ok(`{"error":"slow_down"}`), ok(pending), ok(denied))
 	f, clock, ch := flowsOn(t, g, &keeper{})
-	flow, _, _ := f.Start(Copilot)
+	flow, _, _ := f.Start(Copilot, "k2")
 	ch.next(t)
 	clock.next(t, 5*time.Second)
 	clock.next(t, 10*time.Second)
@@ -108,7 +108,7 @@ func TestSlowDownWidensTheWaitAndADenialEndsTheFlow(t *testing.T) {
 	if flow.State != proto.FlowDenied || !strings.Contains(flow.Error, "denied") {
 		t.Fatalf("the denied flow %+v", flow)
 	}
-	if SlowedDown(5*time.Second, 2*time.Second) != 10*time.Second || SlowedDown(maxInterval-time.Second, 0) != maxInterval {
+	if SlowedDown(5*time.Second, 2*time.Second) != 10*time.Second || SlowedDown(maxInterval, 0) != maxInterval+slowDownStep {
 		t.Fatal("SlowedDown")
 	}
 }
@@ -119,7 +119,7 @@ func TestACodeExpires(t *testing.T) {
 	g := newFakeGitHub(t, ok(pending))
 	g.code = ok(`{"device_code":"dev-code-secret","user_code":"WDJB-MJHT","verification_uri":"https://github.com/login/device","expires_in":12,"interval":5}`)
 	f, clock, ch := flowsOn(t, g, &keeper{})
-	flow, _, _ := f.Start(Copilot)
+	flow, _, _ := f.Start(Copilot, "k3")
 	ch.next(t)
 	clock.next(t, 5*time.Second)
 	clock.next(t, 5*time.Second)
@@ -131,7 +131,7 @@ func TestACodeExpires(t *testing.T) {
 
 	g2 := newFakeGitHub(t, ok(expired))
 	f2, clock2, ch2 := flowsOn(t, g2, &keeper{})
-	flow, _, _ = f2.Start(Copilot)
+	flow, _, _ = f2.Start(Copilot, "k4")
 	ch2.next(t)
 	clock2.next(t, 5*time.Second)
 	if flow = waitEnded(t, f2, ch2, flow.ID); flow.State != proto.FlowExpired {
@@ -144,7 +144,7 @@ func TestACodeExpires(t *testing.T) {
 func TestACanceledFlowPollsNoMore(t *testing.T) {
 	g := newFakeGitHub(t, ok(pending))
 	f, _, ch := flowsOn(t, g, &keeper{})
-	flow, _, _ := f.Start(Copilot)
+	flow, _, _ := f.Start(Copilot, "k5")
 	ch.next(t)
 	canceled, ok := f.Cancel(flow.ID)
 	if !ok || canceled.State != proto.FlowCanceled || canceled.EndedAt.IsZero() {
@@ -170,15 +170,15 @@ func TestACanceledFlowPollsNoMore(t *testing.T) {
 func TestOneFlowAProviderAtATime(t *testing.T) {
 	g := newFakeGitHub(t, ok(pending))
 	f, _, ch := flowsOn(t, g, &keeper{})
-	first, _, _ := f.Start(Copilot)
+	first, _, _ := f.Start(Copilot, "k6")
 	ch.next(t)
-	second, again, err := f.Start(Copilot)
+	second, again, err := f.Start(Copilot, "k7")
 	if err != nil || again || second.ID != first.ID {
 		t.Fatalf("a second start %+v %v %v", second, again, err)
 	}
 	f.Cancel(first.ID)
 	ch.next(t)
-	third, started, _ := f.Start(Copilot)
+	third, started, _ := f.Start(Copilot, "k8")
 	ch.next(t)
 	if !started || third.ID == first.ID {
 		t.Fatalf("a start after the end %+v %v", third, started)
@@ -189,7 +189,7 @@ func TestOneFlowAProviderAtATime(t *testing.T) {
 	if latest, _ := f.Latest(Copilot); latest.ID != third.ID {
 		t.Fatalf("the latest flow %+v", latest)
 	}
-	if _, _, err := f.Start("anthropic"); !errors.Is(err, ErrNoDeviceFlow) {
+	if _, _, err := f.Start("anthropic", "k9"); !errors.Is(err, ErrNoDeviceFlow) {
 		t.Fatalf("anthropic started a device flow: %v", err)
 	}
 }
@@ -202,7 +202,7 @@ func TestNetworkFailures(t *testing.T) {
 	g := newFakeGitHub(t)
 	g.code = answer{status: 503, body: "down"}
 	f, _, ch := flowsOn(t, g, &keeper{})
-	flow, started, err := f.Start(Copilot)
+	flow, started, err := f.Start(Copilot, "k10")
 	if err != nil || !started || flow.State != proto.FlowFailed || !strings.Contains(flow.Error, "503") || flow.UserCode != "" {
 		t.Fatalf("a start GitHub failed %+v %v %v", flow, started, err)
 	}
@@ -214,7 +214,7 @@ func TestNetworkFailures(t *testing.T) {
 	down := answer{err: errors.New("connection refused")}
 	g2 := newFakeGitHub(t, down, answer{status: 502, body: "bad gateway"}, ok(pending), down, answer{status: 429}, down)
 	f2, clock, ch2 := flowsOn(t, g2, &keeper{})
-	flow, _, _ = f2.Start(Copilot)
+	flow, _, _ = f2.Start(Copilot, "k11")
 	ch2.next(t)
 	for range 5 {
 		clock.next(t, 5*time.Second)
@@ -236,7 +236,7 @@ func TestAKeepThatFailsSaysWhyWithoutTheToken(t *testing.T) {
 	g.user = answer{status: 401, body: `{"message":"Bad credentials"}`}
 	k := &keeper{err: errors.New("Copilot refused gho_granted_secret")}
 	f, clock, ch := flowsOn(t, g, k)
-	flow, _, _ := f.Start(Copilot)
+	flow, _, _ := f.Start(Copilot, "k12")
 	ch.next(t)
 	clock.next(t, 5*time.Second)
 	flow = waitEnded(t, f, ch, flow.ID)
@@ -255,7 +255,7 @@ func TestAKeepThatFailsSaysWhyWithoutTheToken(t *testing.T) {
 func TestASignOutAndAKeepGoInTurn(t *testing.T) {
 	g := newFakeGitHub(t, ok(pending))
 	f, _, ch := flowsOn(t, g, &keeper{})
-	flow, _, _ := f.Start(Copilot)
+	flow, _, _ := f.Start(Copilot, "k13")
 	ch.next(t)
 	removed := 0
 	if err := f.SignOut(context.Background(), Copilot, func(context.Context) error { removed++; return nil }); err != nil || removed != 1 {
@@ -271,7 +271,7 @@ func TestASignOutAndAKeepGoInTurn(t *testing.T) {
 	g2 := newFakeGitHub(t, ok(granted))
 	k := &keeper{hold: make(chan struct{}), entered: make(chan struct{})}
 	f2, clock, ch2 := flowsOn(t, g2, k)
-	flow, _, _ = f2.Start(Copilot)
+	flow, _, _ = f2.Start(Copilot, "k14")
 	ch2.next(t)
 	clock.next(t, 5*time.Second)
 	<-k.entered
@@ -300,13 +300,13 @@ func TestASignOutAndAKeepGoInTurn(t *testing.T) {
 func TestStopEndsTheFlows(t *testing.T) {
 	g := newFakeGitHub(t, ok(pending))
 	f, _, ch := flowsOn(t, g, &keeper{})
-	flow, _, _ := f.Start(Copilot)
+	flow, _, _ := f.Start(Copilot, "k15")
 	ch.next(t)
 	f.Stop()
 	if now, _ := f.Flow(flow.ID); now.State != proto.FlowCanceled || now.Error != "pocketd stopped." {
 		t.Fatalf("a flow after Stop %+v", now)
 	}
-	if _, _, err := f.Start(Copilot); !errors.Is(err, ErrStopped) {
+	if _, _, err := f.Start(Copilot, "k16"); !errors.Is(err, ErrStopped) {
 		t.Fatalf("a start after Stop: %v", err)
 	}
 }

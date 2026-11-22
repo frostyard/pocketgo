@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Flows.Start takes the start's request key with its flow in the lock that keeps a new flow, before it polls, and the request's record is written with a context the client's leaving does not end: a retry answers that flow, never a second.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] Bind the start receipt before the flow can take effect",
+  "promoted_to": "service/internal/api/signins_round1_test.go"
+}

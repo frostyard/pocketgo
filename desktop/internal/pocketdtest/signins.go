@@ -17,12 +17,14 @@ import (
 // UserCode is the code every fake flow shows.
 const UserCode = "WDJB-MJHT"
 
-// signInFake is the fake's sign-ins: the rows GET /v1/signins answers, the
-// flow each start's request id answered, and the number of the next flow.
+// signInFake is the fake's sign-ins: the rows GET /v1/signins answers and
+// the number of the next flow. The flow a start's or a cancel's request id
+// named is kept with the other requests' (Server.replies), so a request id
+// used for another request is conflict, as pocketd answers (Codex review
+// of #123, round 1).
 type signInFake struct {
-	rows   []proto.SignIn
-	starts map[string]string
-	next   int
+	rows []proto.SignIn
+	next int
 }
 
 // DefaultSignIns are the sign-ins of a new fake: GitHub Copilot, which a
@@ -73,6 +75,38 @@ func (s *Server) EndSignIn(provider string, state proto.SignInFlowState, account
 	return true
 }
 
+// ForgetSignInFlows forgets every flow, as a restart of pocketd does,
+// without an event: a request id that started one is then not_found.
+func (s *Server) ForgetSignInFlows() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.signInLocked("")
+	for i := range s.signin.rows {
+		s.signin.rows[i].Flow = nil
+	}
+}
+
+// replaySignInLocked answers a start's or a cancel's request id seen
+// before: conflict for another request, and for the same one the flow it
+// named as it is now, not_found once it is gone. It says whether it
+// answered.
+func (s *Server) replaySignInLocked(w http.ResponseWriter, op, id string) bool {
+	prior, ok := s.replies[id]
+	switch {
+	case !ok:
+		return false
+	case prior.op != op:
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+	default:
+		if i := s.flowLocked(string(prior.body)); i >= 0 {
+			writeJSON(w, http.StatusOK, *s.signin.rows[i].Flow)
+		} else {
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "the device flow this requestId started is gone")
+		}
+	}
+	return true
+}
+
 func (s *Server) signInLocked(provider string) int {
 	if s.signin.rows == nil {
 		s.signin.rows = DefaultSignIns()
@@ -112,6 +146,9 @@ func (s *Server) signInRoutes(mux *http.ServeMux) {
 			row.Flow = &flow
 		}
 		row.State, row.Account = proto.SignInNone, ""
+		// The provider's models go with its sign-in, as pocketd lists
+		// them (Codex review of #123, round 1).
+		s.models = slices.DeleteFunc(s.models, func(m proto.Model) bool { return m.Provider == row.Provider })
 		s.emitLocked(proto.Event{Type: proto.EventSignIn, SignIn: new(*row)})
 		writeJSON(w, http.StatusOK, *row)
 	})
@@ -133,11 +170,16 @@ func (s *Server) signInRoutes(mux *http.ServeMux) {
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		op := r.Method + " " + r.URL.Path
+		if s.replaySignInLocked(w, op, request.RequestID) {
+			return
+		}
 		i := s.flowLocked(r.PathValue("id"))
 		if i < 0 {
 			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such flow")
 			return
 		}
+		s.replies[request.RequestID] = reply{op: op, body: []byte(r.PathValue("id"))}
 		row := &s.signin.rows[i]
 		if !row.Flow.State.Ended() {
 			flow := *row.Flow
@@ -159,12 +201,8 @@ func (s *Server) startSignIn(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if id, seen := s.signin.starts[request.RequestID]; seen {
-		if i := s.flowLocked(id); i >= 0 {
-			writeJSON(w, http.StatusOK, *s.signin.rows[i].Flow)
-			return
-		}
-		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "the flow is gone")
+	op := r.Method + " " + r.URL.Path
+	if s.replaySignInLocked(w, op, request.RequestID) {
 		return
 	}
 	i := s.signInLocked(r.PathValue("id"))
@@ -177,11 +215,8 @@ func (s *Server) startSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row := &s.signin.rows[i]
-	if s.signin.starts == nil {
-		s.signin.starts = map[string]string{}
-	}
 	if row.Flow != nil && !row.Flow.State.Ended() {
-		s.signin.starts[request.RequestID] = row.Flow.ID
+		s.replies[request.RequestID] = reply{op: op, body: []byte(row.Flow.ID)}
 		writeJSON(w, http.StatusOK, *row.Flow)
 		return
 	}
@@ -189,7 +224,7 @@ func (s *Server) startSignIn(w http.ResponseWriter, r *http.Request) {
 	row.Flow = &proto.SignInFlow{ID: fmt.Sprintf("flow-%d", s.signin.next), Provider: row.Provider, State: proto.FlowWaiting,
 		UserCode: UserCode, VerificationURI: "https://github.com/login/device", ExpiresIn: 900, Interval: 5,
 		StartedAt: Now, ExpiresAt: Now.Add(15 * time.Minute)}
-	s.signin.starts[request.RequestID] = row.Flow.ID
+	s.replies[request.RequestID] = reply{op: op, body: []byte(row.Flow.ID)}
 	s.emitLocked(proto.Event{Type: proto.EventSignIn, SignIn: new(*row)})
 	writeJSON(w, http.StatusCreated, *row.Flow)
 }

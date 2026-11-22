@@ -56,7 +56,7 @@ func TestParsePollReadsEachAnswer(t *testing.T) {
 		{`{"error":"slow_down","interval":"x"}`, Poll{SlowDown: true}},
 		{denied, Poll{Denied: true}},
 		{expired, Poll{Expired: true}},
-		{`{"error":"device_flow_disabled","error_description":"Device flow\u0007 is off"}`, Poll{Refused: "GitHub ended the device flow: device_flow_disabled: Device flow is off"}},
+		{`{"error":"device_flow_disabled","error_description":"Device flow\u0007 is off"}`, Poll{Refused: "GitHub ended the device flow: device_flow_disabled."}},
 	}
 	for _, c := range cases {
 		if got, err := parsePoll([]byte(c.body), 200); err != nil || got != c.want {

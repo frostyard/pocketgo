@@ -677,6 +677,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleShifts()
 	s.settlePlans()
 	s.settleProposals()
+	s.settleSheet()
 	s.changesEvent(ev)
 	// A live event, which streams a reply as it is written, changes the
 	// open session's run alone, and an entry a transcript alone: nothing

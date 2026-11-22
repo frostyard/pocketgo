@@ -39,6 +39,8 @@ type signInService struct {
 	// one whose store read failed goes out with its last state.
 	pubMu sync.Mutex
 	last  map[string]proto.SignInState
+	// record replaces store.RecordRequest in tests.
+	record func(ctx context.Context, key, kind, flow string) error
 }
 
 // The request kinds of the sign-ins (rule 69): a start, by provider, and
@@ -50,6 +52,15 @@ const (
 
 // signInRead bounds a signin event's read of the store.
 const signInRead = 10 * time.Second
+
+// recordSignIn records a start's or a cancel's request with its flow
+// (store.RecordRequest); tests make it fail.
+func (s *Server) recordSignIn(ctx context.Context, key, kind, flow string) error {
+	if s.signIns.record != nil {
+		return s.signIns.record(ctx, key, kind, flow)
+	}
+	return s.store.RecordRequest(ctx, key, kind, flow)
+}
 
 // SetSignIns wires the sign-ins a client makes (ADR-0062): creds is the
 // engine's credential store, and o the device flows' GitHub and clock,
@@ -167,9 +178,11 @@ func (s *Server) listSignIns(w http.ResponseWriter, r *http.Request) {
 }
 
 // startSignIn is POST /v1/signins/{id}: provider's device flow
-// starts, or its running one answers (rule 69). The request is recorded
-// with the flow it answered, so a retry answers that flow as it is, and
-// never starts another.
+// starts, or its running one answers (rule 69). The flows take the
+// request's key with the flow before it polls, and the request is recorded
+// with it, so a retry answers that flow as it is and never starts another,
+// whether the record was written or the client went (Codex review of #123,
+// round 1).
 func (s *Server) startSignIn(w http.ResponseWriter, r *http.Request) {
 	if !s.signInsReady(w) {
 		return
@@ -202,17 +215,22 @@ func (s *Server) startSignIn(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "the device flow this requestId started is gone: start another with a new requestId")
 		return
 	}
-	flow, started, err := s.signIns.flows.Start(p.ID)
-	if errors.Is(err, signins.ErrStopped) {
+	flow, started, err := s.signIns.flows.Start(p.ID, key)
+	switch {
+	case errors.Is(err, signins.ErrStopped):
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the service is stopping: sign in once it is back")
 		return
-	} else if err != nil {
+	case errors.Is(err, signins.ErrGone):
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "the device flow this requestId started is gone: start another with a new requestId")
+		return
+	case err != nil:
 		s.internal(w, "start the device flow", err)
 		return
 	}
-	// A record that fails leaves the flow running: the retry finds it as
-	// the provider's running flow, and records it then.
-	if err := s.store.RecordRequest(r.Context(), key, kind, flow.ID); err != nil {
+	// The record is written whatever became of the client. One that fails
+	// leaves the key with its flow in the flows: a retry in this run
+	// answers that flow.
+	if err := s.recordSignIn(context.WithoutCancel(r.Context()), key, kind, flow.ID); err != nil {
 		s.internal(w, "record the request", err)
 		return
 	}
@@ -239,7 +257,9 @@ func (s *Server) signInFlow(w http.ResponseWriter, r *http.Request) {
 
 // cancelSignIn is POST /v1/signins/flows/{id}/cancel: a waiting flow ends
 // canceled, and the flow answers as it is then (rule 69). The request id
-// names its flow: a retry cancels nothing else.
+// is recorded with its flow before the cancel, so it never cancels another
+// flow, and a cancel whose record failed did nothing (Codex review of
+// #123, round 1).
 func (s *Server) cancelSignIn(w http.ResponseWriter, r *http.Request) {
 	if !s.signInsReady(w) {
 		return
@@ -259,15 +279,18 @@ func (s *Server) cancelSignIn(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "look the request up", err)
 		return
 	}
+	if _, ok := s.signIns.flows.Flow(id); !ok {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no device flow "+id)
+		return
+	}
+	if err := s.recordSignIn(context.WithoutCancel(r.Context()), key, cancelSignInKind, id); err != nil {
+		s.internal(w, "record the request", err)
+		return
+	}
 	flow, ok := s.signIns.flows.Cancel(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no device flow "+id)
 		return
-	}
-	// The cancel took effect: a record that fails is logged, and a retry
-	// cancels the same flow again, which changes nothing.
-	if err := s.store.RecordRequest(r.Context(), key, cancelSignInKind, id); err != nil {
-		s.log.Error("record a device flow's cancel", "err", err)
 	}
 	writeJSON(w, http.StatusOK, flow)
 }

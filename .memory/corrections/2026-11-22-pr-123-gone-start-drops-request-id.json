@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A start pocketd answers 404 (its flow is gone, as after a restart) lets its request id go, so Try Again starts another flow; a start with no answer keeps it.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] Retire the start request ID when its flow is gone",
+  "promoted_to": "desktop/internal/state/signins_round1_test.go"
+}

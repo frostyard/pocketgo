@@ -2,7 +2,9 @@ package state
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"time"
 
@@ -76,7 +78,7 @@ func (d *Data) SetSignInsError(f Fetch, err string) {
 }
 
 // applySignIn takes a signin event: the provider's row, whole. It says
-// whether the provider's state changed, so the models pocketd runs did: a
+// whether the models pocketd runs may have changed (modelsMoved): a
 // provider the client did not know counts as changed.
 func (d *Data) applySignIn(row proto.SignIn) (changed bool) {
 	if d.signIns.touched == nil {
@@ -88,9 +90,26 @@ func (d *Data) applySignIn(row proto.SignIn) (changed bool) {
 		d.signIns.rows = append(d.signIns.rows, row)
 		return true
 	}
-	changed = d.signIns.rows[i].State != row.State
+	changed = modelsMoved(d.signIns.rows[i], row)
 	d.signIns.rows[i] = row
 	return changed
+}
+
+// modelsMoved says whether the models pocketd runs may have changed from
+// row before to row after: the provider's state changed, or a flow was
+// approved since, whose account offers models of its own, though the
+// provider was signed in before and after (Codex review of #123, round 1).
+func modelsMoved(before, after proto.SignIn) bool {
+	if before.State != after.State {
+		return true
+	}
+	approved := func(r proto.SignIn) string {
+		if r.Flow != nil && r.Flow.State == proto.FlowApproved {
+			return r.Flow.ID
+		}
+		return ""
+	}
+	return approved(after) != "" && approved(after) != approved(before)
 }
 
 // DevicePage is the page the owner enters provider's code at, which the
@@ -157,6 +176,10 @@ type signInSheet struct {
 	// way: it shows no more, and the flow the start answers is canceled,
 	// unless the owner opens it again first.
 	closed bool
+	// checking says the sheet asks pocketd for its flow, which the
+	// provider's row no longer names, and lost that pocketd answered it
+	// keeps it no more (settleSheet).
+	checking, lost bool
 }
 
 // SheetView is the sign-in sheet as the window draws it.
@@ -196,6 +219,10 @@ func (s *Store) SignInSheet() SheetView {
 	v.Flow = sh.flow
 	if known && row.Flow != nil && row.Flow.ID == sh.flow.ID {
 		v.Flow = *row.Flow
+	}
+	if sh.lost && !v.Flow.State.Ended() {
+		v.Phase, v.Text = SheetFailed, "pocketd no longer runs this sign-in: it may have restarted. Try again."
+		return v
 	}
 	v.Phase, v.Text = sheetPhase(v.Flow, v.Provider)
 	if v.Phase == SheetCode {
@@ -251,7 +278,16 @@ func (s *Store) LoadSignIns() {
 			return
 		}
 		s.Data.SetSignIns(f, rows)
+		s.settleSheet()
 	}))
+}
+
+// WantSignIns fetches the sign-ins once, for a view that shows them (the
+// compact window's More), from then on as LoadSignIns does.
+func (s *Store) WantSignIns() {
+	if !s.signInsWanted {
+		s.LoadSignIns()
+	}
 }
 
 // signInKey is the request ids' key of provider's starts, and
@@ -288,10 +324,18 @@ func (s *Store) StartSignIn(provider string) {
 		}
 		if err != nil {
 			sh.start.Err = err.Error()
+			// pocketd no longer has the flow this request id started (a
+			// restart, or a later start): the id goes, so Try Again starts
+			// another, as protocol rule 5 asks (Codex review of #123,
+			// round 1). An answer that never came keeps it.
+			if gone(err) {
+				s.ids.Done(key)
+			}
 			return
 		}
 		s.ids.Done(key)
 		sh.flow = flow
+		s.settleSheet()
 		// The owner closed the sheet while the start went: its flow is
 		// canceled too.
 		if sh.closed {
@@ -319,6 +363,52 @@ func (s *Store) CancelSignIn() {
 	if sh.flow.ID != "" {
 		s.cancelFlow(sh.provider, sh.flow)
 	}
+}
+
+// gone says pocketd answered that what a request names is no more (404).
+func gone(err error) bool {
+	var e *proto.Error
+	return errors.As(err, &e) && e.Status == http.StatusNotFound
+}
+
+// settleSheet keeps the sheet's flow as the provider's row has it, so a
+// later flow of the provider, another device's, never brings back an
+// earlier copy of it. When the row no longer names the sheet's waiting
+// flow, pocketd is asked for it (GET /v1/signins/flows/{id}): one pocketd
+// no longer keeps, as after a restart, ends the sheet with Try Again
+// (Codex review of #123, round 1). The store runs it after each event and
+// each fetch of the sign-ins.
+func (s *Store) settleSheet() {
+	sh := s.sheet
+	if sh == nil || sh.start.Busy || sh.flow.ID == "" || sh.lost {
+		return
+	}
+	row, ok := s.Data.SignIn(sh.provider)
+	if !ok {
+		return
+	}
+	if row.Flow != nil && row.Flow.ID == sh.flow.ID {
+		sh.flow = *row.Flow
+		return
+	}
+	if sh.flow.State.Ended() || sh.checking {
+		return
+	}
+	sh.checking = true
+	id := sh.flow.ID
+	var flow proto.SignInFlow
+	s.do("Reading the sign-in to "+sh.provider, func(ctx context.Context, c *proto.Client) (err error) {
+		flow, err = c.SignInFlow(ctx, id)
+		return err
+	}, func(err error) {
+		sh.checking = false
+		switch {
+		case err == nil && flow.ID == sh.flow.ID:
+			sh.flow = flow
+		case gone(err):
+			sh.lost = true
+		}
+	})
 }
 
 // cancelFlow cancels flow of provider on pocketd, unless it ended as the

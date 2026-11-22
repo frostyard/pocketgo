@@ -29,6 +29,10 @@ var ErrNoDeviceFlow = errors.New("pocketd signs in to this provider on the servi
 // ErrStopped is a start once Stop ran.
 var ErrStopped = errors.New("pocketd is stopping")
 
+// ErrGone is a start whose request key answered a flow pocketd no longer
+// keeps: a later start of the provider replaced it.
+var ErrGone = errors.New("the device flow this request started is gone")
+
 // Keep keeps provider's sign-in from token, the GitHub token an approved
 // device flow got, through the service's one credential writer, with
 // account, the login GitHub named for it ("" for none). It never logs or
@@ -73,6 +77,10 @@ type Flows struct {
 	mu      sync.Mutex
 	latest  map[string]*flow
 	byID    map[string]*flow
+	// byKey are the flows the starts answered, by their request's key,
+	// taken before a new flow polls: a start that answered once answers
+	// the same flow, whatever became of the request's record.
+	byKey   map[string]string
 	stopped bool
 }
 
@@ -103,7 +111,7 @@ func New(o Options) *Flows {
 		o.NewID = newID
 	}
 	ctx, stop := context.WithCancel(context.Background())
-	return &Flows{o: o, ctx: ctx, stop: stop, latest: map[string]*flow{}, byID: map[string]*flow{}}
+	return &Flows{o: o, ctx: ctx, stop: stop, latest: map[string]*flow{}, byID: map[string]*flow{}, byKey: map[string]string{}}
 }
 
 func newID() string {
@@ -114,12 +122,15 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// Start starts provider's device flow: it asks GitHub for a code, and
-// polls for the owner's approval until the code expires. A provider with a
-// running flow answers that one, and started is false. A start GitHub did
-// not answer with a code is a flow that failed, with why: it is kept and
-// answered as any other.
-func (f *Flows) Start(provider string) (out proto.SignInFlow, started bool, err error) {
+// Start starts provider's device flow for the request key: it asks GitHub
+// for a code, and polls for the owner's approval until the code expires.
+// A provider with a running flow answers that one, and started is false.
+// A key that answered a flow before answers it again, as it is now, and
+// starts nothing; ErrGone when a later start replaced it. The key is
+// taken in the same lock that keeps a new flow, before it polls (Codex
+// review of #123, round 1). A start GitHub did not answer with a code is
+// a flow that failed, with why: it is kept and answered as any other.
+func (f *Flows) Start(provider, key string) (out proto.SignInFlow, started bool, err error) {
 	if p, ok := Find(provider); !ok || !p.Device {
 		return proto.SignInFlow{}, false, ErrNoDeviceFlow
 	}
@@ -130,7 +141,15 @@ func (f *Flows) Start(provider string) (out proto.SignInFlow, started bool, err 
 		f.mu.Unlock()
 		return proto.SignInFlow{}, false, ErrStopped
 	}
+	if id, ok := f.byKey[key]; ok {
+		defer f.mu.Unlock()
+		if fl, kept := f.byID[id]; kept {
+			return fl.wire, false, nil
+		}
+		return proto.SignInFlow{}, false, ErrGone
+	}
 	if fl := f.latest[provider]; fl != nil && !fl.wire.State.Ended() {
+		f.byKey[key] = fl.wire.ID
 		out = fl.wire
 		f.mu.Unlock()
 		return out, false, nil
@@ -160,7 +179,7 @@ func (f *Flows) Start(provider string) (out proto.SignInFlow, started bool, err 
 	if old := f.latest[provider]; old != nil {
 		delete(f.byID, old.wire.ID)
 	}
-	f.latest[provider], f.byID[fl.wire.ID] = fl, fl
+	f.latest[provider], f.byID[fl.wire.ID], f.byKey[key] = fl, fl, fl.wire.ID
 	out = fl.wire
 	if run != nil {
 		f.wg.Add(1)

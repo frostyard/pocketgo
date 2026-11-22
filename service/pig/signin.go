@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
@@ -86,7 +85,12 @@ func signInIdentity(cred ai.Credential) string {
 // through the engine's own credential store, in place of the sign-in it
 // held, so the models list it at once (Models reads the store at each
 // call). It says which credential it kept (signins.Stored.Identity). Only
-// Copilot signs in so (signins.Providers). No error carries token.
+// Copilot signs in so (signins.Providers).
+//
+// Its errors are its own words, never PiG's: PiG's exchange and its model
+// list put the answer's body in their errors, which could echo the GitHub
+// token or Copilot's, and a flow's error goes to every client (Codex
+// review of #123, round 1).
 func (e *Engine) KeepSignIn(ctx context.Context, provider, token string) (string, error) {
 	if p, ok := signins.Find(provider); !ok || !p.Device || provider != signins.Copilot {
 		return "", signins.ErrNoDeviceFlow
@@ -95,17 +99,30 @@ func (e *Engine) KeepSignIn(ctx context.Context, provider, token string) (string
 		return "", errNoStore
 	}
 	cred, err := copilotExchange(ctx, e.models.GetProvider(provider), token)
-	if err != nil {
-		return "", fmt.Errorf("the Copilot exchange refused the GitHub sign-in: %w", err)
-	}
-	if cred.Type != ai.CredentialOAuth || cred.Refresh == "" || cred.Access == "" {
-		return "", errors.New("the Copilot exchange answered no sign-in")
+	switch {
+	case ctx.Err() != nil:
+		return "", errKeepStopped
+	case err != nil:
+		return "", errExchange
+	case cred.Type != ai.CredentialOAuth || cred.Refresh == "" || cred.Access == "":
+		return "", errNoExchange
 	}
 	if _, err := e.auth.Modify(ctx, provider, func(*ai.Credential) (*ai.Credential, error) { return &cred, nil }); err != nil {
-		return "", fmt.Errorf("keep the sign-in: %w", err)
+		if ctx.Err() != nil {
+			return "", errKeepStopped
+		}
+		return "", errNotKept
 	}
 	return signInIdentity(cred), nil
 }
+
+// KeepSignIn's errors, which name no secret.
+var (
+	errKeepStopped = errors.New("the sign-in stopped before pocketd kept it")
+	errExchange    = errors.New("the Copilot token exchange or model list refused the GitHub sign-in")
+	errNoExchange  = errors.New("the Copilot exchange answered no sign-in")
+	errNotKept     = errors.New("the credential store did not keep the sign-in")
+)
 
 // SignOut takes provider's sign-in out of the engine's own credential
 // store, under its lock: a refresh after it finds none and writes

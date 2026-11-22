@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A slow_down widens the wait by 5 seconds whatever it was, and a longer interval GitHub names is honored past the first wait's bound; the code's expiry bounds every wait.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] Honor slow_down even at the initial interval limit",
+  "promoted_to": "service/internal/signins/round1_test.go"
+}

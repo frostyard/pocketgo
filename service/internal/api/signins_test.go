@@ -229,7 +229,7 @@ func TestTheOwnerSignsPocketdInToCopilotFromAClient(t *testing.T) {
 	}
 
 	// GitHub's answers are set before the flow polls: the first poll
-	// waits, the second gets the token.
+	// waits, the second gets the token (frostyard/pocketgo#124).
 	sh.gh.answer(`{"error":"authorization_pending"}`, `{"access_token":"`+tokenSecret+`","token_type":"bearer"}`)
 	flow, err := sh.client.StartSignIn(ctx, signins.Copilot, proto.StartSignIn{RequestID: "s1"})
 	if err != nil || flow.State != proto.FlowWaiting || flow.UserCode != "WDJB-MJHT" || flow.VerificationURI != signins.DevicePage || flow.Provider != signins.Copilot {

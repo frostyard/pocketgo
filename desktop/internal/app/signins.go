@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/mobile"
 	"github.com/frostyard/frostui"
 
 	"github.com/frostyard/pocketgo/desktop/internal/state"
@@ -48,6 +49,51 @@ func (a *App) signInsPage() frostui.SettingsPage {
 		page.Body = func(c *ui.Context) { frostui.Loading(c, "Loading the sign-ins…") }
 	}
 	return page
+}
+
+// phoneSignIns are the Sign-ins page as rows of a compact window's More: a
+// provider's row taps to Sign In… or Sign Out when the desktop signs it
+// in, and says how to sign in otherwise (Codex review of #123, round 1).
+func (a *App) phoneSignIns(c *ui.Context) {
+	t := c.Theme()
+	a.st.WantSignIns()
+	status, err := a.st.Data.SignInsStatus()
+	switch {
+	case status == state.ListFailed && len(a.st.Data.SignIns()) == 0:
+		if mobile.ListRow(c.Key("signins-retry"), mobile.RowOptions{Title: "The sign-ins did not load", Subtitle: err + ". Tap to try again."}).Focusable().Clicked() {
+			a.st.LoadSignIns()
+		}
+		return
+	case status == state.ListLoading:
+		mobile.ListRow(c.Key("signins-loading"), mobile.RowOptions{Title: "Loading the sign-ins…"})
+		return
+	}
+	for _, row := range a.st.Data.SignIns() {
+		action := ""
+		switch {
+		case !row.DeviceFlow:
+		case row.State == proto.SignInSignedIn:
+			action = "Sign Out"
+		case a.st.MaySignIn(row):
+			action = "Sign In…"
+		}
+		opts := mobile.RowOptions{Title: row.Name, Subtitle: state.SignInCaption(row), Leading: func() {
+			frostui.Icon(c, "dialog-password").FontSize(20).TextColor(t.Accent)
+		}}
+		if action != "" {
+			opts.Trailing = func() { ui.Text(c, action).TextColor(t.Accent) }
+		}
+		r := mobile.ListRow(c.Key("signin-row:"+row.Provider), opts)
+		if action == "" || !r.Focusable().Clicked() {
+			continue
+		}
+		if action == "Sign Out" {
+			ask := row
+			a.prefs.signOut = &ask
+		} else {
+			a.st.StartSignIn(row.Provider)
+		}
+	}
 }
 
 // signInButton is a provider's Sign In… or Sign Out.

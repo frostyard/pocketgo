@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "signins.Login takes a GitHub Enterprise managed user's login, with its shortcode after an underscore, and counts a login's length in characters.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 1 (codex-cli 0.169.0) of head 5088e35: [P2] Accept GitHub Enterprise Managed User logins",
+  "promoted_to": "service/internal/signins/round1_test.go"
+}
