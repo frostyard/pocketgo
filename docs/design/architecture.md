@@ -45,15 +45,19 @@ proto/                 wire types and the Go client
 service/
   cmd/pocketd/         the headless service
   pig/                 the only package that imports PiG
-  exec/local/          execution adapter: a git worktree on the service host
-  exec/coder/          execution adapter: a Coder workspace
+  internal/            the service's packages: the API, the work database, the team's rules and the rest (Service, below)
 desktop/
   cmd/pocket/          the desktop app, which also builds for the iPad
   internal/state/      the data layer and state, no UI (the iPad builds it as it is)
   internal/app/        the window: views on MyGo and frostui
   internal/config/     settings, and the device token in the keyring
+  internal/github/     approve and merge as the owner, frostyard/pocket's port
+  internal/icons/      the icons neither the theme nor frostui names
+  internal/pocketdtest/  a fake pocketd, served in memory, for the desktop's tests
 go.work
 ```
+
+The local execution adapter, a git worktree on the service host, is `service/internal/worktree` with the sandbox in `service/pig`; the Coder adapter is still to come ([execution adapters](#execution-adapters), [roadmap Phase 4](../plans/roadmap.md#phase-4--coder-execution-adapter)).
 
 All three build with `CGO_ENABLED=0`. The iPad build is the one exception: Go links for iOS only with cgo and Xcode's clang, on a Mac ([ADR-0040](../adr/0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md)).
 
@@ -99,7 +103,7 @@ All three build with `CGO_ENABLED=0`. The iPad build is the one exception: Go li
 **Intended:**
 
 - **Durable store:** holds conversations, tasks, submissions and the usage ledger.
-- **Work database:** a separate SQLite file holding threads, plans, plan tasks, asks, pull requests, review verdicts, lessons, rounds and run records. Rounds and run records are still to come.
+- **Work database:** a separate SQLite file holding threads, plans, plan tasks, asks, pull requests, review verdicts, lessons, shifts and their rounds, and run records. Run records are still to come.
 - **`service/pig/`:** wraps the harness, PiG's `env`, `ai` and `mcp` packages, and the sign-ins.
 - **Usage by day (built, [ADR-0052](../adr/0052-show-each-sessions-context-fill-and-usage-and-sum-the-days-usage-in-code.md), [protocol rule 64](../specs/protocol.md)):** `GET /v1/usage?since=<day>` sums the usage of the sessions' answers by day, in the service's time zone, and by model. It reads the answers from PiG's transcripts (`Engine.UsageEntries`), newest first down to the first before `since`, of every session it keeps or that was updated in the last 92 days: the transcript, not the session's time, says whether a session has an answer since `since`. It keeps the days' sums of each session in memory and reads on after the newest entry it read, so each answer is read once while pocketd runs. Nothing goes to the work database. A cost is spend only from a metered provider, an API key's or the owner's own: `service/pig` sends a subscription's usage, signed in by OAuth, with a cost of 0 (`meteredBy`), in a session's usage, its entries and its live reply too; a report prices the days' sums by the provider of each answer's model, as its sign-in is then.
 
@@ -176,7 +180,7 @@ All three build with `CGO_ENABLED=0`. The iPad build is the one exception: Go li
 - A supervisor delegates a thread as a shift with `team_delegate`'s `shift`: its task is the objective, with a stop condition, a round limit (20 by default, at most 100), a deadline (at most 24 hours) and, with `ci`, CI green on its pull requests. No spend limit yet: the owner chose rounds and the deadline first.
 - pocketd drives the rounds in code (`Server.shiftPass`, one pass at a time, after each run of the specialist or its worker that ends, a round's message or brief noted placed, each pull request round and at start). A round begins at its message's entry, found by its request key (`Engine.PlacedEntry`), and ends when the specialist and its worker are idle and nothing is owed to either, by session (`store.Owed`): a message, a worker's reply, a verdict or an answer. Each decision commits under the shift's lock and `outboxMu` after the round is read again (`commitRound`); a pass that fails retries by itself. Its verdict is the answer's last `STATUS:` line (`team.ParseShiftStatus`); no model judges it.
 - The stops, between rounds: blocked, done (with `ci`, each pull request read on GitHub, then its CI, `github.CIChecks`), the same failing checks in three `DONE` rounds in a row, the round limit, the deadline. Each gets one summary round that asks for the specialist's one report, with the status its stop asks for (`team.CheckShiftReport`), and names the thread's asks still open and those answered since the shift began, read in the transaction that keeps its message (`store.SummarizeShift`, `team.ShiftSummaryText`, [ADR-0055](../adr/0055-file-a-repeated-ask-as-the-threads-open-one.md)); until then a final `team_message` is refused. A run that failed, the owner's Stop and the thread's close end it at once. Every end files its report in the transaction that ends the shift.
-- The owner's message pauses a shift as it is claimed, before it goes (`store.ClaimSend`); the owner resumes or stops it (`POST /v1/threads/{id}/shift/resume` and `/stop`). A stop ends the shift only (the owner's choice): it withdraws the shift's own queued message and files pocketd's report, and the specialist's and worker's runs go on to their ends. The shift's own lock (`lockShift`) orders a stop, a resume, the owner's message and a round's decision. A round waiting on CI reads it at most once a recheck, and wakes a pass of its own (`wakeForCI`). The desktop shows each shift on its thread's card, with Stop and Resume ([desktop client](#desktop-client)).
+- The owner's message pauses a shift as it is claimed, before it goes (`store.ClaimSend`); the owner resumes or stops it (`POST /v1/threads/{id}/shift/resume` and `/stop`). A stop ends the shift only (the owner's choice): it withdraws the shift's own queued message and files pocketd's report, and the specialist's and worker's runs go on to their ends. The shift's own lock (`lockShift`) orders a stop, a resume, the owner's message and a round's decision. A round waiting on CI reads it at most once a recheck, and sets a wake for a pass of its own, at the recheck or the shift's deadline if sooner (`wakeShift`). The desktop shows each shift on its thread's card, with Stop and Resume ([desktop client](#desktop-client)).
 
 **Schedules (built in the service, [ADR-0030](../adr/0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md), [protocol rule 57](../specs/protocol.md)):**
 - The owner's schedules are `schedules.json` in the profile folder, read by `profiles.LoadSchedules` through the pinned folder, each key as written: `{"schedules": [{"id", "when", "zone", "profile", "message"}]}`. An entry that breaks a rule has its problem and goes out never, and the others go out; a file that is no schedules file sends none. An entry goes to its profile's standing session. Its action is a `message` or a `gather` ([ADR-0033](../adr/0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md)).
@@ -370,7 +374,7 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
 **Intended:**
 
 **Places:**
-- **Inbox:** asks, approval requests, lessons and pull requests to review are built ([ADR-0016](../adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md)). Merging from the Inbox waits for the merge gates (Phase 2, slice 6).
+- **Inbox:** asks, approval requests, lessons and pull requests to review are built ([ADR-0016](../adr/0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md)). So is approve and merge from the Inbox, behind the merge gates (below).
 - **Work board:** threads grouped by who moves them next, and each plan on its thread, are built.
 - **Session detail:** transcript, composer, attachments and the session's changes, each file's diff included ([ADR-0053](../adr/0053-show-a-sessions-changes-read-with-isolated-git-in-code.md)), are built; files.
 - **The team.**
