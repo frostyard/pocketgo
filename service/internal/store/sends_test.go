@@ -336,7 +336,7 @@ func TestTheUnblockMigrationUpgradesADatabaseAt19(t *testing.T) {
 
 // The asks a message withdrew are read by their index.
 func TestWithdrawnAsksUseTheirIndex(t *testing.T) {
-	s, _ := open(t)
+	s, _ := openFresh(t)
 	if plan := planOf(t, s, `SELECT id FROM asks WHERE withdrawn_by = 'k' AND withdrawn_by != '' ORDER BY id`); !strings.Contains(plan, "asks_withdrawn") {
 		t.Errorf("plan %q does not use asks_withdrawn", plan)
 	}

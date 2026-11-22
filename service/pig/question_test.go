@@ -20,6 +20,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/store/storetest"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
@@ -241,10 +242,7 @@ func TestAQuestionEndToEndOverHTTP(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(dataDir, "work.sqlite"), nil)
 	defer func() { _ = s.Close() }()
 	_, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {

@@ -13,7 +13,7 @@ func claim(path, branch, top string) SessionWorktree {
 // request claims it again as often as it is tried, and any other is
 // refused, by its branch or its path, after a reopen too.
 func TestASessionsWorktreeBelongsToOneRequest(t *testing.T) {
-	s, path := open(t)
+	s, path := openFresh(t)
 	wt := claim("/srv/chairlift--owner-session-qlz6tr", "owner/session-qlz6tr", "/srv/chairlift")
 	if err := s.ClaimWorktree(ctx, "u:d1:r1", wt); err != nil {
 		t.Fatal(err)

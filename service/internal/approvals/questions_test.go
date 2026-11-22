@@ -10,6 +10,7 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/store/storetest"
 )
 
 // questionsFixture is a Questions on a fixed clock whose timers the test
@@ -36,10 +37,7 @@ func setupQuestions(t *testing.T) *questionsFixture {
 	}
 	// The store and the questions share the fixture's clock, as pocketd's
 	// share the service's.
-	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "w.sqlite"), now)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(t.TempDir(), "w.sqlite"), now)
 	t.Cleanup(func() { _ = s.Close() })
 	f.s = s
 	f.q = NewQuestions(s, func(session int64) {

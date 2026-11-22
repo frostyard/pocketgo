@@ -658,7 +658,7 @@ func TestNotesGoInOrderOncePerKey(t *testing.T) {
 }
 
 func TestPlanQueriesUseTheirIndexes(t *testing.T) {
-	s, _ := open(t)
+	s, _ := openFresh(t)
 	for query, index := range map[string]string{
 		`SELECT COUNT(*) FROM plans WHERE state NOT IN ('done', 'dropped')`:                                                         "plans_open",
 		`SELECT ` + consultColumns + ` FROM consults WHERE state IN ('starting', 'running') ORDER BY id`:                            "consults_open",

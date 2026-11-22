@@ -216,7 +216,7 @@ func TestTheOwnersSchedulesFollowTheirFile(t *testing.T) {
 // The passes read their partial indexes, never every schedule that ever
 // went out.
 func TestScheduleQueriesUseTheirIndexes(t *testing.T) {
-	s, _ := open(t)
+	s, _ := openFresh(t)
 	for query, tc := range map[string]struct {
 		args    []any
 		indexes []string

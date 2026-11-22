@@ -14,7 +14,9 @@ import (
 func TestSettledAsksAndPulls(t *testing.T) {
 	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 	now := base
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "w.sqlite"), func() time.Time { return now })
+	path := filepath.Join(t.TempDir(), "w.sqlite")
+	copyTemplate(t, path)
+	s, err := Open(ctx, path, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,9 @@ func TestSettledAsksAndPulls(t *testing.T) {
 // settled lists of the next (Codex review of #91, round 1).
 func TestInboxReadsOneSnapshot(t *testing.T) {
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "w.sqlite"), func() time.Time { return now })
+	path := filepath.Join(t.TempDir(), "w.sqlite")
+	copyTemplate(t, path)
+	s, err := Open(ctx, path, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}

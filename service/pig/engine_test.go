@@ -27,6 +27,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/store/storetest"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
@@ -73,10 +74,7 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{t: t, dataDir: t.TempDir(), work: t.TempDir(), requests: make(chan proto.Approval, 16), lived: make(chan struct{}, 1)}
-	s, err := store.Open(context.Background(), filepath.Join(f.dataDir, "work.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(f.dataDir, "work.sqlite"), nil)
 	t.Cleanup(func() { _ = s.Close() })
 	f.store = s
 	f.approve = approvals.New(s, func(a proto.Approval) {

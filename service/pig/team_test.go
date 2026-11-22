@@ -24,7 +24,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/schedule"
-	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/store/storetest"
 	"github.com/frostyard/pocketgo/service/internal/team"
 	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
@@ -516,10 +516,7 @@ func TestDelegationEndToEndOverHTTP(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(dataDir, "work.sqlite"), nil)
 	defer func() { _ = s.Close() }()
 	_, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {
@@ -1297,10 +1294,7 @@ func TestALessonEndToEndOverHTTP(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(profileDir, "duncan.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\n---\n# Duncan\n\nHe tends the garden.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(dataDir, "work.sqlite"), nil)
 	defer func() { _ = s.Close() }()
 	_, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {
@@ -1847,10 +1841,7 @@ func TestAPlanEndToEndOverHTTP(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(dataDir, "work.sqlite"), nil)
 	defer func() { _ = s.Close() }()
 	_, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {

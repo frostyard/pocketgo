@@ -9,6 +9,7 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/store/storetest"
 )
 
 type recorder struct {
@@ -29,10 +30,7 @@ func (r *recorder) publish(a proto.Approval) {
 
 func setup(t *testing.T) (*Manager, *store.Store, *recorder) {
 	t.Helper()
-	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "w.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(t.TempDir(), "w.sqlite"), nil)
 	t.Cleanup(func() { _ = s.Close() })
 	r := &recorder{note: make(chan struct{}, 16)}
 	return New(s, r.publish), s, r

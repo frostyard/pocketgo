@@ -24,6 +24,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/store/storetest"
 	"github.com/frostyard/pocketgo/service/internal/uploads"
 	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
@@ -1193,10 +1194,7 @@ func newHarness(t *testing.T) *harness {
 	ctx := context.Background()
 	now := &clock{now: time.Date(2026, 11, 18, 22, 0, 0, 0, time.UTC)}
 	dbPath := filepath.Join(t.TempDir(), "w.sqlite")
-	s, err := store.Open(ctx, dbPath, now.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, dbPath, now.Now)
 	t.Cleanup(func() { _ = s.Close() })
 	device, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {

@@ -329,7 +329,7 @@ func planOf(t *testing.T, s *Store, query string, args ...any) string {
 // A delivery pass, a report's thread lookup and the desk's count read
 // their partial indexes, never the whole history of closed threads.
 func TestThreadQueriesUseTheirIndexes(t *testing.T) {
-	s, _ := open(t)
+	s, _ := openFresh(t)
 	for query, index := range map[string]string{
 		`SELECT ` + threadColumns + ` FROM threads WHERE ` + followPredicate + ` ORDER BY id`:    "threads_open",
 		`SELECT ` + threadColumns + ` FROM threads WHERE session = 5 AND session != 0`:           "threads_session",
