@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Redact a structured MCP result before PiG renders it as JSON, and redact a secret's JSON spelling in text too.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P1] Redact credentials before rendering structured results as JSON",
+  "promoted_to": "service/pig/mcp_round2_test.go"
+}

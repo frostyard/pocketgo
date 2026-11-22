@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -186,6 +187,15 @@ type Engine interface {
 	// it, and says whether it did (ADR-0060): the caller decides which
 	// sessions get it (team.MaySchedule).
 	SetScheduleTool(ctx context.Context, id int64) (bool, error)
+	// MCPProfiles are the profiles with an MCP server pocketd connects,
+	// as it read them at start (ADR-0063); ConnectMCP connects each
+	// server, or reads its tools again, and returns once each answered or
+	// failed; SetMCPTools gives a session its profile's MCP tools as they
+	// are now, and says whether it changed anything: the caller decides
+	// which sessions take them (team.MayUseMCP).
+	MCPProfiles() []string
+	ConnectMCP(ctx context.Context)
+	SetMCPTools(ctx context.Context, id int64, profile string) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
@@ -583,6 +593,11 @@ type Server struct {
 	allStale  bool
 	// refreshMu serializes refreshLessons.
 	refreshMu sync.Mutex
+	// mcpMu runs the MCP tools' passes one at a time (ADR-0063), and
+	// mcpWriteMu writes one session's MCP tools at a time, by its number
+	// (mcpWrite): a new session's write waits for no pass.
+	mcpMu      sync.Mutex
+	mcpWriteMu [mcpWriteLocks]sync.Mutex
 	// pullLocks holds each pull request, by store ref, from its read on
 	// GitHub to its record: two reads of one never cross (ADR-0016). A
 	// wait for one ends with its context.
@@ -595,6 +610,17 @@ type Server struct {
 	pullsStarted bool
 	pullTimer    func(d time.Duration, f func()) (cancel func())
 	pullStop     func()
+	// mcpTimer schedules an MCP tools' pass tried again (mcpUpgrade;
+	// tests replace it), and mcpRetries cancel the one each scope waits on,
+	// by profile ("" for all); sessionMu guards mcpRetries.
+	mcpTimer   func(d time.Duration, f func()) (cancel func())
+	mcpRetries map[string]mcpRetry
+	// mcpRetryNo numbers the retries set (mcpRetry.id); sessionMu guards
+	// it.
+	mcpRetryNo uint64
+	// mcpPassNo numbers the MCP tools' passes, as each begins, and new
+	// sessions' writes, once each session is recorded.
+	mcpPassNo atomic.Uint64
 	// consultTimer wakes a delivery pass at a consult's deadline
 	// (armConsults; tests replace it), and consultCancel stops the one
 	// set; sessionMu guards consultCancel.
@@ -791,6 +817,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		mcpTimer:      func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		consultTimer:  func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		shiftTimer:    func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		scheduleTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
@@ -868,6 +895,10 @@ func (s *Server) Stop() {
 			s.launchCancel()
 			s.launchCancel = nil
 		}
+		for _, r := range s.mcpRetries {
+			r.stop()
+		}
+		s.mcpRetries = nil
 		s.sessionMu.Unlock()
 		// A delivery pass, or a round of pull requests, that runs ends
 		// before the engine and the stores close.
@@ -1812,6 +1843,11 @@ func (s *Server) recordSession(ctx context.Context, key string, id int64, spec S
 	}
 	if _, err := record(ctx, key, row); err != nil {
 		return err
+	}
+	// Its profile's MCP tools as they are now; a standing session takes
+	// them at its refresh (ADR-0063).
+	if !standing {
+		s.mcpAfterCreate(ctx, id, profile, roleOfSpec(spec))
 	}
 	s.publishSession(id, true)
 	if profile != "" {

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Write the MCP credentials a failed write left behind a last time when the store is fenced at pocketd's stop, and log when that write fails too.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 11 (codex-cli 0.169.0) of head c4d5717: [P2] Flush dirty OAuth credentials before fencing the store",
+  "promoted_to": "service/pig/mcp_round11_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Reuse a kept MCP OAuth registration only with the authorization server discovery names now, as well as its redirect URI and scopes.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P2] Bind a reused OAuth registration to its issuer",
+  "promoted_to": "service/pig/mcp_round6_test.go"
+}

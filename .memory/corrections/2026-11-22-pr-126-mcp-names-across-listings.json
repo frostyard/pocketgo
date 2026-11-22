@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Give an MCP tool its plain name only when its own name reads in it as itself, else a digest of the server's and the tool's names, so a name reads back to one tool across every listing.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P1] Keep MCP names bound to one remote tool across listings",
+  "promoted_to": "service/pig/mcp_test.go"
+}

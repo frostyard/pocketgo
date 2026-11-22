@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Release a test's held dial only once the hub's stop has begun (its context ended), never on a guess of timing.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P2] Synchronize the shutdown test before releasing the dial",
+  "promoted_to": "service/pig/mcp_round4_test.go"
+}

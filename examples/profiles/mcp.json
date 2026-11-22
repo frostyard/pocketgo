@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "notes": {
+      "url": "https://mcp.example.com/notes",
+      "headers": { "Authorization": "stored" }
+    },
+    "mail": {
+      "url": "https://mcp.example.com/mail",
+      "headers": { "Authorization": "stored" },
+      "timeout": 120
+    },
+    "gateway": {
+      "url": "https://mcp.example.com/gateway/mcp",
+      "oauth": {}
+    }
+  }
+}

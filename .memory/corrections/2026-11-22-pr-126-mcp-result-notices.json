@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Count pocketd's notices in an MCP result's text bound: one notice for the images left out, and the mark of a cut within the bound.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 1 (codex-cli 0.169.0) of head dbe6cad: [P2] Count omission notices against the tool result budget",
+  "promoted_to": "service/pig/mcp_round1_test.go"
+}

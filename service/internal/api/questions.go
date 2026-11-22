@@ -128,6 +128,8 @@ func (s *Server) sessionRole(ctx context.Context, session int64) (team.SessionRo
 	switch {
 	case err == nil:
 		role.Thread, role.Review = true, thread.ReviewPull != 0
+		// A plan thread's specialist is its plan's lead (ADR-0020).
+		role.Plan = thread.IsPlanThread()
 	case !errors.Is(err, store.ErrNotFound):
 		return role, err
 	}

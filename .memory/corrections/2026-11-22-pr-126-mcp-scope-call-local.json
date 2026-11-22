@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A 403 insufficient_scope ends the call alone with what the owner does, and so does a sign-in pocketd cannot refresh: the shared connection stays.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 3 (codex-cli 0.169.0) of head 35c53ab: [P2] Keep scope-specific OAuth failures local to the call",
+  "promoted_to": "service/pig/mcp_round3_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Normalize an MCP tool's input schema once, as it is listed, to an object schema within its bound or an object of any properties, and keep and offer that.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 1 (codex-cli 0.169.0) of head dbe6cad: [P2] Normalize and bound input schemas before storing them",
+  "promoted_to": "service/pig/mcp_round1_test.go"
+}

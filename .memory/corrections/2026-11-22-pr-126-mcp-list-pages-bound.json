@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Read an MCP tool list a page at a time within pocketd's bounds, pages and message bytes, never PiG's every page.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 3 (codex-cli 0.169.0) of head 35c53ab: [P2] Bound discovery while reading tool pages",
+  "promoted_to": "service/pig/mcp_round3_test.go"
+}

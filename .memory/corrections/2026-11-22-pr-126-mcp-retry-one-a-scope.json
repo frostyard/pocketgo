@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep one pending MCP pass retry a scope at most, let go of it when it fires, and end it when a pass succeeds.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 4 (codex-cli 0.169.0) of head df472f2: [P2] Coalesce MCP upgrade retries and release fired timers",
+  "promoted_to": "service/internal/api/mcp_test.go"
+}

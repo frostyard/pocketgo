@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Name an OAuth error code in a refusal only when it is one the RFCs name: a token may stand where a code belongs.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 5 (codex-cli 0.169.0) of head 8844571: [P2] Report only recognized OAuth error codes",
+  "promoted_to": "service/pig/mcp_round5_test.go"
+}

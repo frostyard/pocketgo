@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Send the headers mcp.json names with pocketd mcp login's probe of the server alone, never to the authorization server.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 1 (codex-cli 0.169.0) of head dbe6cad: [P2] Include required resource headers in the OAuth challenge probe",
+  "promoted_to": "service/pig/mcp_round1_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Bound an MCP exchange by its server's timeout alone, on a transport with no header wait of its own, and end a request past its deadline alone, never the connection.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P2] Honor MCP timeouts longer than the model transport's idle limit",
+  "promoted_to": "service/pig/mcp_round6_test.go"
+}

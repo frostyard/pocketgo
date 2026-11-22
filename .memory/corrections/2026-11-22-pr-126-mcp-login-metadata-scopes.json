@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Weigh a kept OAuth client against the scopes the request will name, the resource metadata's when nobody names any.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 5 (codex-cli 0.169.0) of head 8844571: [P2] Resolve metadata scopes before reusing an OAuth client",
+  "promoted_to": "service/pig/mcp_round5_test.go"
+}

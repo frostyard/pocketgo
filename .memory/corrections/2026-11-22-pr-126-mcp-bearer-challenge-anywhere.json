@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Read the Bearer or DPoP challenge of WWW-Authenticate wherever it comes among the schemes offered (oauthChallenge), in pocketd mcp login and in a serving refresh alike, a comma in a quoted value starting none.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 10 (codex-cli 0.169.0) of head edc4f78: [P2] Select the OAuth challenge when a server offers multiple schemes",
+  "promoted_to": "service/pig/mcp_round10_test.go"
+}

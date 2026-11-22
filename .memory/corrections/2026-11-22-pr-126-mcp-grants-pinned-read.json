@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Read the profiles' mcp: lists through the handle of the profile folder pocketd checked against the one it pinned (profiles.Folder.LoadPinned), never by the folder's path again.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P1] Read MCP profile grants through the pinned directory",
+  "promoted_to": "service/internal/profiles/mcp_test.go"
+}

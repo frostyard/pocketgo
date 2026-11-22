@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Bound every HTTP exchange with an MCP server or its authorization server by the server's timeout on the HTTP client itself: PiG sends a notification and refreshes a sign-in with no deadline of their own.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 1 (codex-cli 0.169.0) of head dbe6cad: [P1] Enforce the server timeout on the HTTP exchanges themselves",
+  "promoted_to": "service/pig/mcp_round1_test.go"
+}

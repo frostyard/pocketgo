@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Write a structured MCP result compact, redacted, before its bound, never let PiG indent it whole.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 5 (codex-cli 0.169.0) of head 8844571: [P1] Bound structured result rendering before pretty-printing",
+  "promoted_to": "service/pig/mcp_round5_test.go"
+}

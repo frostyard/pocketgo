@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Redact an MCP server's own error message decoded when it is JSON, as a result's text is, before it is cut: an encoder's escapes may hide a secret from its spelling.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P1] Redact JSON credentials in MCP error messages",
+  "promoted_to": "service/pig/mcp_round6_test.go"
+}

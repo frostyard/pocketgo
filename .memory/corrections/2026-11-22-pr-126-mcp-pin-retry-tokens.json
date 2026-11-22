@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep every MCP secret the store replaces while an exchange is under way among that exchange's pinned secrets until its answer is sanitized: PiG may retry with a token a refresh gave after the exchange began.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 9 (codex-cli 0.169.0) of head 219b5cd: [P1] Pin the token actually sent on an authenticated retry",
+  "promoted_to": "service/pig/mcp_round9_test.go"
+}

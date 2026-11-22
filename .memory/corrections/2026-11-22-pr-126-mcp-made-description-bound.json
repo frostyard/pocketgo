@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Bound the description pocketd makes for an MCP tool that has none, as a server's own is bounded.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P2] Bound generated descriptions for tools with long names",
+  "promoted_to": "service/pig/mcp_round2_test.go"
+}

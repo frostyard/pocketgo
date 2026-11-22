@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Try an MCP tools' pass that failed for a session again with a growing wait until it succeeds, with no new listing to start it.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 3 (codex-cli 0.169.0) of head 35c53ab: [P2] Retry failed session updates without waiting for a new listing",
+  "promoted_to": "service/internal/api/mcp_test.go"
+}

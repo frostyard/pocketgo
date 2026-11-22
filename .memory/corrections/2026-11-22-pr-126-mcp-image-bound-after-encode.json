@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Check an MCP result's image against maxMCPImageBytes again once uploads.PrepareImage re-encoded it.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 7 (codex-cli 0.169.0) of head 6c0f0a3: [P2] Enforce the MCP image limit after re-encoding",
+  "promoted_to": "service/pig/mcp_round7_test.go"
+}

@@ -194,7 +194,11 @@ func (r *lineReader) read(ctx context.Context) (string, error) {
 // from a terminal without showing it, else from in. A space it holds is
 // the key's, which literalKey refuses, never one pocketd drops (Codex
 // review of #29, round 3).
-func readSecret(in io.Reader) (string, error) {
+func readSecret(in io.Reader) (string, error) { return readSecretUpTo(in, maxKey) }
+
+// readSecretUpTo is readSecret for a secret of at most limit bytes: from a
+// stream, at most limit bytes and a line end are read.
+func readSecretUpTo(in io.Reader, limit int) (string, error) {
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		fd := int(f.Fd())
 		state, err := term.GetState(fd)
@@ -217,7 +221,7 @@ func readSecret(in io.Reader) (string, error) {
 	// At most a key's longest and its line end are read, so a stream with
 	// no line end ends the read (Codex review of #29, round 7):
 	// literalKey refuses what is longer.
-	line, err := bufio.NewReader(io.LimitReader(in, maxKey+2)).ReadString('\n')
+	line, err := bufio.NewReader(io.LimitReader(in, int64(limit)+2)).ReadString('\n')
 	if err != nil && (!errors.Is(err, io.EOF) || line == "") {
 		return "", err
 	}

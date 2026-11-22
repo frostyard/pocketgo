@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Give a session its profile's MCP tools again once the work database records it: a listing between the engine's create and the record reaches it by no pass.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 1 (codex-cli 0.169.0) of head dbe6cad: [P2] Reconcile sessions created during initial tool discovery",
+  "promoted_to": "service/internal/api/mcp_test.go"
+}

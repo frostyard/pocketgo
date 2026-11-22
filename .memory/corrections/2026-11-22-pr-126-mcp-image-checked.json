@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Send an MCP result's image to the model only as a type the providers take, as base64 that decodes, and holding no stored secret; leave any other out.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 3 (codex-cli 0.169.0) of head 35c53ab: [P1] Check image fields before forwarding them to the model",
+  "promoted_to": "service/pig/mcp_round3_test.go"
+}

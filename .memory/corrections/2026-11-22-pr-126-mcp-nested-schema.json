@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Check an MCP tool's schema for a schema wherever its keywords take one before it is kept or offered.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 3 (codex-cli 0.169.0) of head 35c53ab: [P2] Validate nested input schemas before offering the listing",
+  "promoted_to": "service/pig/mcp_round3_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Answer a refused MCP sign-in that holds no refresh token with errMCPNoRefresh at once: it says to run pocketd mcp login NAME and is not tried again by itself.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 7 (codex-cli 0.169.0) of head 6c0f0a3: [P2] Report an expired sign-in without a refresh token as final",
+  "promoted_to": "service/pig/mcp_round7_test.go"
+}

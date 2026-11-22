@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Write one session's MCP tools under that session's own lock (Server.mcpWrite), never the passes' lock, so a new session's record, which may hold the outbox and the work locks, waits for no pass.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 7 (codex-cli 0.169.0) of head 6c0f0a3: [P2] Keep thread attachment from waiting on a full MCP upgrade pass",
+  "promoted_to": "service/internal/api/mcp_test.go"
+}

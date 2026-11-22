@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep room for the mark of a cut and the notice of images left out before any text of an MCP result, whichever block the cut falls in.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P3] Reserve the truncation marker across text blocks",
+  "promoted_to": "service/pig/mcp_round2_test.go"
+}

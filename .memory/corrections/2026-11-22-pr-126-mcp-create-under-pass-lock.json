@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Write a new session's MCP tools under the lock the passes take, and make the start's connections outside it.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P2] Serialize new-session tool updates with listing updates",
+  "promoted_to": "service/internal/api/mcp_test.go"
+}

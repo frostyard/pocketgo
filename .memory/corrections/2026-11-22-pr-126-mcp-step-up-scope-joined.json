@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Check a 403 challenge's scope for a stored secret joined and as written, and each secret's words however spaced, before pocketd names it in a tool error.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 11 (codex-cli 0.169.0) of head c4d5717: [P1] Check the complete scope before returning it in a tool error",
+  "promoted_to": "service/pig/mcp_round11_test.go"
+}

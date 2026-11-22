@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Redact an MCP text block that is JSON decoded, then write it compact: an encoder's escapes may hide a secret from its spelling.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 5 (codex-cli 0.169.0) of head 8844571: [P1] Redact credentials in JSON returned as MCP text",
+  "promoted_to": "service/pig/mcp_round5_test.go"
+}

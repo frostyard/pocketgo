@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Make an MCP connection under the hub's context with no deadline of its own (mcpConn.setupContext): each request of the setup has the server's timeout alone.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 9 (codex-cli 0.169.0) of head 219b5cd: [P2] Apply the MCP timeout per request during connection setup",
+  "promoted_to": "service/pig/mcp_round9_test.go"
+}

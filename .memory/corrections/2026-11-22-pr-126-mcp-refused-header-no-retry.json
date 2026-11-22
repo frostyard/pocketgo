@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A server that refuses the stored header at start waits for the owner: pocketd does not try it again.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P2] Stop discovery retries after a stored header is refused",
+  "promoted_to": "service/pig/mcp_round2_test.go"
+}

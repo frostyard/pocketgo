@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Stop pocketd mcp login when its discovery fails, and run the flow on the discovery its scopes and kept client were weighed against.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 8 (codex-cli 0.169.0) of head ad7ea62: [P2] Derive login scopes from the discovery the flow uses",
+  "promoted_to": "service/pig/mcp_round8_test.go"
+}

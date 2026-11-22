@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Try an MCP server that failed at start again with a growing wait until it answers, and give the profiles' sessions the tools it lists by a pass, with no restart.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 1 (codex-cli 0.169.0) of head dbe6cad: [P2] Retry discovery when a server has never listed any tools",
+  "promoted_to": "service/pig/mcp_round1_test.go"
+}

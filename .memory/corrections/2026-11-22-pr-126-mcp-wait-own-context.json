@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Share a connection being made with every caller, each waiting until its own context ends, and make it under the hub's context, holding no lock across an exchange.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P2] Let canceled callers stop waiting for MCP discovery",
+  "promoted_to": "service/pig/mcp_round2_test.go"
+}

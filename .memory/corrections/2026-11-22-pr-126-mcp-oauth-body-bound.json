@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Bound every answer from an MCP server's OAuth side, and fail one past the bound rather than cut it: PiG reads an OAuth document whole.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 4 (codex-cli 0.169.0) of head df472f2: [P1] Bound OAuth response bodies before PiG reads them",
+  "promoted_to": "service/pig/mcp_round4_test.go"
+}

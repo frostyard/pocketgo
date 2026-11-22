@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A call an MCP server refuses with an HTTP status of its own ends alone: the shared connection stays.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P2] Preserve the shared connection on request-specific HTTP errors",
+  "promoted_to": "service/pig/mcp_round2_test.go"
+}

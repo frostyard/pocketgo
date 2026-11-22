@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Give an MCP tool's digest name 16 hexadecimal digits, and offer neither of two tools whose names are alike, whatever their order.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 7 (codex-cli 0.169.0) of head 6c0f0a3: [P3] Avoid first-listed-wins handling for digest collisions",
+  "promoted_to": "service/pig/mcp_round7_test.go"
+}

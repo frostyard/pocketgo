@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Choose an MCP answer's body bound by what the request accepts (an event stream for an MCP message), never by comparing URLs: an OAuth request may name the endpoint's URL, and PiG respells it.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 5 (codex-cli 0.169.0) of head 8844571: [P1] Apply response limits by request type, not URL equality",
+  "promoted_to": "service/pig/mcp_round4_test.go"
+}
