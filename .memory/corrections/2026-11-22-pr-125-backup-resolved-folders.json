@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's work-in-flight backup names each folder as readlink -f resolves it and adds a linked checkout's common git folder (git rev-parse --git-common-dir), since cp -a copies a link and not where it leads.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 21 (codex-cli 0.169.0) of head b29b5d2: [P1] Include backing directories in work-in-flight backups",
+  "promoted_to": "docs/design/setup.md"
+}

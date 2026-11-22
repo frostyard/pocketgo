@@ -1,7 +1,7 @@
 {
   "date": "2026-11-22",
   "scope": "setup",
-  "correction": "The setup guide's sshd Match block for the service user sets PermitUserEnvironment no, and the effective check shows it, so an ssh deploy reads no agent-written ~/.ssh/environment.",
+  "correction": "The setup guide keeps sshd's PermitUserEnvironment at its default, no, outside any Match block, and the effective check shows it, so an ssh deploy reads no agent-written ~/.ssh/environment.",
   "evidence": "frostyard/pocketgo#125, Codex CLI review round 20 (codex-cli 0.169.0) of head bceed2b: [P1] Check that SSH ignores the service user's environment file",
   "promoted_to": "docs/design/setup.md"
 }
