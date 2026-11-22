@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A patch header pocketd writes quotes a path as git does (core.quotePath), so a newline in a name never becomes a line of its own.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 2 (codex-cli 0.169.0) of head ddd640c: [P3] Quote unusual paths in generated patch headers",
+  "promoted_to": "service/internal/changes/changes_test.go"
+}

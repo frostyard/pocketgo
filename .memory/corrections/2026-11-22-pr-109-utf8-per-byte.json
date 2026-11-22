@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Each byte that is no UTF-8 becomes a U+FFFD of its own, as JSON encodes it, before a text's byte bound applies.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 2 (codex-cli 0.169.0) of head ddd640c: [P3] Replace each invalid UTF-8 byte before sizing the diff",
+  "promoted_to": "service/internal/changes/changes_test.go"
+}

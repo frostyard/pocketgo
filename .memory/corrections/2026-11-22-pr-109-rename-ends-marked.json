@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A change is marked committed or uncommitted by either end of each part's change, a rename's old path too.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P2] Follow renames when marking committed and uncommitted changes",
+  "promoted_to": "service/internal/api/changes_round1_test.go"
+}

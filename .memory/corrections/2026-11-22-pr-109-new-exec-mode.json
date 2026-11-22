@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A new file its owner may run shows as mode 100755, from the descriptor pocketd's read checked.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 2 (codex-cli 0.169.0) of head ddd640c: [P2] Preserve executable mode in untracked-file diffs",
+  "promoted_to": "service/internal/api/changes_round2_test.go"
+}

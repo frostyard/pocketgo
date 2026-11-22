@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "tests",
+  "correction": "A test of a read that succeeds in the sandbox checks the sandbox's git is changes.MinGit or later first.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 2 (codex-cli 0.169.0) of head ddd640c: [P3] Gate the sandbox success test on Git 2.45",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}

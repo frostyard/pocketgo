@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A listing that checks a path is read record by record (GitEach), never buffered past Engine.Git's bound.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 2 (codex-cli 0.169.0) of head ddd640c: [P3] Stream the untracked-path membership check",
+  "promoted_to": "service/internal/api/changes_round2_test.go"
+}

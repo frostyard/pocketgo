@@ -33,7 +33,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "29" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "30" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -602,5 +602,22 @@ func TestClientReadsUsage(t *testing.T) {
 	if err != nil || r.Today != "2026-11-21" || !r.TodayEnds.Equal(ends) || len(r.Days) != 1 || r.Days[0].Models[0].Usage.Cost != 0.25 ||
 		r.Days[0].Models[0].Model.Provider != "deepseek" {
 		t.Fatalf("Usage = %+v, %v", r, err)
+	}
+}
+
+// A file's diff names its path in the query string, escaped, whatever it
+// holds: a path with a space, an ampersand or a hash reaches pocketd whole
+// (ADR-0053).
+func TestChangesFileSendsItsPathWhole(t *testing.T) {
+	const path = "docs/a b&c=d#e?.md"
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/sessions/7/changes/file" || r.URL.Query().Get("path") != path || len(r.URL.Query()) != 1 {
+			t.Errorf("request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(FileDiff{SessionID: 7, Path: path, Diff: "+a\n"})
+	}))
+	got, err := client.ChangesFile(context.Background(), 7, path)
+	if err != nil || got.Path != path || got.Diff != "+a\n" {
+		t.Fatalf("diff %+v %v", got, err)
 	}
 }

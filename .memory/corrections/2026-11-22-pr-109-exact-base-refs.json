@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A base's candidate refs are kept by their exact names, line by line, since a for-each-ref pattern names the refs below it too.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 3 (codex-cli 0.169.0) of head 02697ca: [P3] Restrict base-ref lookup to the exact candidate names",
+  "promoted_to": "service/internal/api/changes_round3_test.go"
+}

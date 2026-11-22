@@ -258,6 +258,21 @@ type Store struct {
 	// attachWaiting are the bytes pasted files waiting their turn hold
 	// (PastedWaitingLimit).
 	attachWaiting int64
+	// changesLoading are the sessions whose changes are being fetched,
+	// changesAgain those fetched once more after it, and changesState
+	// each tracked session's state as syncChanges last saw it (changes.go,
+	// ADR-0053).
+	changesLoading map[int64]bool
+	changesAgain   map[int64]bool
+	changesState   map[int64]proto.SessionState
+	// changesTracked are the sessions syncChanges last found tracked;
+	// changesActive the fetches of changes sent and not answered, at most
+	// proto.MaxChangesReads, and changesWaiting those waiting their turn;
+	// changesScans counts syncChanges' looks at every tracked session.
+	changesTracked map[int64]bool
+	changesActive  int
+	changesWaiting []changesTurn
+	changesScans   int
 	// notes is the record of what the store notified (ADR-0049).
 	notes noticeBook
 }
@@ -341,6 +356,9 @@ func (s *Store) resetActions() {
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 	s.schedulesDirty = false
+	s.changesLoading, s.changesAgain = map[int64]bool{}, map[int64]bool{}
+	s.changesState = map[int64]proto.SessionState{}
+	s.changesTracked, s.changesActive, s.changesWaiting = map[int64]bool{}, 0, nil
 	s.usageDirty = false
 }
 
@@ -639,6 +657,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleShifts()
 	s.settlePlans()
 	s.settleProposals()
+	s.changesEvent(ev)
 	// A live event, which streams a reply as it is written, changes the
 	// open session's run alone, and an entry a transcript alone: nothing
 	// in the lists of what waits for the owner (Codex review of #104,
@@ -785,7 +804,8 @@ func (s *Store) forgetAnswer(id int64) {
 }
 
 // retryFailed fetches again what failed to load or has not loaded yet: a
-// list or the open session's detail whose fetch failed or is still in
+// list, the open session's detail, or a tracked session's changes or the
+// diff shown (retryChanges, ADR-0053), whose fetch failed or is still in
 // flight, also over what loaded before, as the refetch a resync started.
 // A fetch in flight may fail after the stream came back, and the client is
 // past the events that would bring what it missed; the answer of the fetch
@@ -837,6 +857,7 @@ func (s *Store) retryFailed() {
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
+	s.retryChanges()
 	if s.hello == nil {
 		s.loadHello()
 	}
@@ -847,8 +868,9 @@ func (s *Store) retryFailed() {
 // approvals, the open asks, the lessons, the threads, their pull requests,
 // the plans, the board's proposals and the schedules, the profiles, the
 // owner's terminals, the usage report (ADR-0052), the saved prompts, the
-// open session and the models the composer's chip offers, and the
-// service's hello when it has none yet.
+// changes of the sessions it counts them for (ADR-0053), the open session
+// and the models the composer's chip offers, and the service's hello when
+// it has none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
@@ -862,6 +884,9 @@ func (s *Store) Refresh() {
 	// The board and the Inbox name agents by their profiles.
 	s.LoadProfiles()
 	s.loadTerminals()
+	// A resync may have missed a run's end: every count shown is read
+	// again (ADR-0053).
+	s.reloadChanges()
 	s.loadUsage()
 	// The composer's / picker has them at once, and asks again as it
 	// opens (ADR-0051).
@@ -971,6 +996,7 @@ func (s *Store) loadSessions() {
 		s.settleAborts()
 		s.settleModels()
 		s.settleQuestions()
+		s.syncChanges()
 	}))
 }
 
@@ -1084,6 +1110,7 @@ func (s *Store) loadThreads() {
 		s.Data.SetThreads(f, list)
 		s.settleCloses()
 		s.settleShifts()
+		s.syncChanges()
 	}))
 }
 
@@ -1246,6 +1273,7 @@ func (s *Store) loadDetail(id int64) {
 		s.settleAborts()
 		s.settleModels()
 		s.settleQuestions()
+		s.syncChanges()
 	}))
 }
 
@@ -1317,6 +1345,7 @@ func (s *Store) Open(id int64) {
 	if id != 0 && s.client != nil {
 		s.loadDetail(id)
 	}
+	s.syncChanges()
 }
 
 // pending returns the entry of m under key, made when missing.

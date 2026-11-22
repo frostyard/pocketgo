@@ -65,6 +65,7 @@ Docs are split by the question they answer:
 - [0050 — Search every session through an FTS5 index in the work database](adr/0050-search-every-session-through-an-fts5-index-in-the-work-database.md)
 - [0052 — Show each session's context fill and usage, and sum the days' usage, in code](adr/0052-show-each-sessions-context-fill-and-usage-and-sum-the-days-usage-in-code.md)
 - [0051 — Insert the owner's saved prompts into the composer with /](adr/0051-insert-the-owners-saved-prompts-into-the-composer-with-a-slash.md)
+- [0053 — Show a session's changes in the app, read with isolated git in code](adr/0053-show-a-sessions-changes-read-with-isolated-git-in-code.md)
 
 ### Org-wide decisions
 

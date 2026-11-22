@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A read of a checkout checks that git reads it isolated before it reads and again once it read, and refuses an answer an attributes file may have shaped in between.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P1] Keep attribute isolation in force for the entire read",
+  "promoted_to": "service/internal/api/changes_round1_test.go"
+}

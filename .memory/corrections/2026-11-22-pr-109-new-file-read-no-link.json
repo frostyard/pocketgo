@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "pocketd reads a new file of an agent's checkout with its own read in the sandbox, each folder opened by descriptor below the top and none through a link, never with git diff --no-index, which follows a folder swapped for a link since git listed the file.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P1] Bind an untracked-file read to the checkout that listed it",
+  "promoted_to": "service/pig/worktree_sandbox_test.go"
+}
