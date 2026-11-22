@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Migration 24 marks sent a closed thread's worker, shift and supervisor messages a pre-24 close left unsent, so no reopen sends them; other reports stay.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P2] Retire pre-upgrade outbox messages for closed threads",
+  "promoted_to": "service/internal/store/reopen_migration_test.go"
+}

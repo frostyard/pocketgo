@@ -327,14 +327,7 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 		// One it cannot read now is published by a delivery pass, as it is
 		// then (Codex review of #121, round 1).
 		if err == nil && !existed && created.Follows != 0 {
-			if s.failFollowedRead != nil {
-				s.threadRetryMu.Lock()
-				s.threadRetry[created.Follows] = true
-				s.threadRetryMu.Unlock()
-				s.deliverLater()
-			} else {
-				s.publishThreadNow(db, created.Follows)
-			}
+			s.publishThreadNow(db, created.Follows)
 		}
 		return created, err
 	})
@@ -1387,6 +1380,9 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 		done = false
 	}
 	if !s.republishThreads(ctx) {
+		done = false
+	}
+	if !s.republishPulls(ctx) {
 		done = false
 	}
 	if started, err := s.startConsults(ctx); err != nil || !started {

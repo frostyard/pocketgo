@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A reopened thread's pull requests that cannot be read to publish are kept for a delivery pass, which publishes them.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P2] Retry publication of pulls made visible by a reopen",
+  "promoted_to": "service/internal/api/reopen_round3_test.go"
+}

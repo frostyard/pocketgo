@@ -605,7 +605,10 @@ var migrations = []string{
 	// reopened count after it (reports.reopens, 0 for any other). Each of
 	// the owner's messages to a thread's specialist is followed by its
 	// request key from when PiG took it until pocketd notes it placed or
-	// gone (owner_messages).
+	// gone (owner_messages). A close before this version marked its
+	// thread's worker's, shift's and supervisor's messages sent after it
+	// committed: one a stop cut off between the two is marked now, so no
+	// reopen sends it (Codex review of #121, round 3).
 	`ALTER TABLE threads ADD COLUMN follows INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE threads ADD COLUMN successor INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE threads ADD COLUMN reopened INTEGER NOT NULL DEFAULT 0;
@@ -618,7 +621,11 @@ var migrations = []string{
 		session_id INTEGER NOT NULL,
 		created_at INTEGER NOT NULL
 	);
-	CREATE INDEX owner_messages_thread ON owner_messages (thread_id);`,
+	CREATE INDEX owner_messages_thread ON owner_messages (thread_id);
+	UPDATE reports SET sent_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 WHERE sent_at IS NULL
+		AND thread_id IN (SELECT id FROM threads WHERE state = 'closed')
+		AND (substr(key, 1, 13) = 'worker-reply:' OR substr(key, 1, 11) = 'worker-msg:' OR substr(key, 1, 12) = 'shift-round:'
+			OR substr(key, 1, 14) = 'shift-summary:' OR substr(key, 1, 10) = 'team-send:');`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

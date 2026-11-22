@@ -27,11 +27,14 @@ type OwnerMessage struct {
 // merged_at_reopen keeps how many of its pull requests had merged, so
 // those merges never close it again (team.MergedOut). A plan's thread,
 // whose plan settled it at its close, stays closed, and so does a thread
-// not closed.
-func reopenThread(ctx context.Context, tx *sql.Tx, id, now int64) (bool, error) {
+// not closed. Its worker's cursor moves on to workerFloor, the newest
+// entry of the worker's transcript before the reopen: the runs of its
+// closed time reply to no one (Codex review of #121, round 3).
+func reopenThread(ctx context.Context, tx *sql.Tx, id, now, workerFloor int64) (bool, error) {
 	return changed(tx.ExecContext(ctx, `UPDATE threads SET state = ?, reopened = reopened + 1, reopened_at = ?,
 		merged_at_reopen = (SELECT COUNT(*) FROM pull_requests p WHERE p.thread_id = threads.id AND p.state = ?),
-		updated_at = MAX(updated_at, ?) WHERE id = ? AND state = ? AND plan = 0`, ThreadOpen, now, PullMerged, now, id, ThreadClosed))
+		worker_cursor = MAX(worker_cursor, ?), updated_at = MAX(updated_at, ?) WHERE id = ? AND state = ? AND plan = 0`,
+		ThreadOpen, now, PullMerged, workerFloor, now, id, ThreadClosed))
 }
 
 // CompleteOwnerMessage completes the request of the owner's message, key,
@@ -84,6 +87,12 @@ func (s *Store) ThreadsWithOwnerMessages(ctx context.Context) ([]int64, error) {
 // reopens the thread, once. thread is as the transaction leaves it, zero
 // when the message was noted already.
 func (s *Store) OwnerMessagePlaced(ctx context.Context, key string) (thread ThreadRow, reopened bool, err error) {
+	return s.OwnerMessagePlacedAt(ctx, key, 0)
+}
+
+// OwnerMessagePlacedAt is OwnerMessagePlaced whose reopen moves the
+// thread's worker's cursor on to workerFloor (reopenThread).
+func (s *Store) OwnerMessagePlacedAt(ctx context.Context, key string, workerFloor int64) (thread ThreadRow, reopened bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -97,7 +106,7 @@ func (s *Store) OwnerMessagePlaced(ctx context.Context, key string) (thread Thre
 	} else if err != nil {
 		return ThreadRow{}, false, err
 	}
-	if reopened, err = reopenThread(ctx, tx, id, now); err != nil {
+	if reopened, err = reopenThread(ctx, tx, id, now, workerFloor); err != nil {
 		return ThreadRow{}, false, err
 	}
 	thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)

@@ -25,6 +25,55 @@ func TestAnOpenCloseReplyNeverUndoesALaterReport(t *testing.T) {
 	}
 }
 
+// A close's reply is ordered by lifetime first: a reply of a later
+// reopen applies over a closed copy as old, and within one lifetime a
+// closed copy stays over an open reply, whatever the clocks say (Codex
+// review of #121, round 3).
+func TestACloseReplyIsOrderedByLifetimeFirst(t *testing.T) {
+	closed := thread(1, proto.ThreadClosed, time.Minute)
+	d := &Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{closed})
+	reopened := thread(1, proto.ThreadOpen, time.Minute)
+	at := reopened.UpdatedAt
+	reopened.Reopens, reopened.ReopenedAt = 1, &at
+	d.ThreadClosed(reopened)
+	if th, _ := d.Thread(1); th.State != proto.ThreadOpen || th.Reopens != 1 {
+		t.Fatalf("a later lifetime's reply as old as the closed copy: %+v", th)
+	}
+	closedAgain := thread(1, proto.ThreadClosed, 3*time.Minute)
+	closedAgain.Reopens, closedAgain.ReopenedAt = 1, &at
+	d.ThreadClosed(closedAgain)
+	early := thread(1, proto.ThreadOpen, 4*time.Minute)
+	early.Reopens, early.ReopenedAt = 1, &at
+	d.ThreadClosed(early)
+	if th, _ := d.Thread(1); th.State != proto.ThreadClosed {
+		t.Fatalf("an open reply of the same lifetime undid its close: %+v", th)
+	}
+}
+
+// A close whose thread reopened since it was asked for retires its
+// request id: the owner's next close is a request of its own (Codex
+// review of #121, round 3).
+func TestACloseOfAnEarlierLifetimeRetiresItsRequestID(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddThread(thread(1, proto.ThreadOpen, 0))
+	h.connect(t)
+	h.store.closes = map[int64]*Pending{1: {Err: "the reply was lost"}}
+	h.store.closeReopens = map[int64]int{1: 0}
+	old := h.store.ids.For(closeKey(1), "close")
+	reopened := thread(1, proto.ThreadOpen, time.Minute)
+	at := reopened.UpdatedAt
+	reopened.Reopens, reopened.ReopenedAt = 1, &at
+	h.store.Data.Apply(proto.Event{Type: proto.EventThread, Thread: &reopened})
+	h.store.settleCloses()
+	if id := h.store.ids.For(closeKey(1), "close"); id == old {
+		t.Fatal("a close of the earlier lifetime kept its request id")
+	}
+	if _, kept := h.store.closes[1]; kept {
+		t.Fatal("its retry state outlived the lifetime it closed")
+	}
+}
+
 // A thread a message reopened is marked so while it is not closed again
 // (ADR-0061).
 func TestReopened(t *testing.T) {

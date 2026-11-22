@@ -388,13 +388,18 @@ type Server struct {
 	// Nil does nothing.
 	afterSendNoted func()
 	// afterOwnerSend runs in the owner's message right after PiG took it,
-	// before its record; afterCleanState in a cleanup right after it read
-	// the thread; failFollowedRead fails the read of the thread a
-	// delegation follows. Tests set them (ADR-0061); nil does nothing.
+	// before its record, and beforeOwnerSend before it takes outboxMu;
+	// afterCleanState in a cleanup right after it read the thread;
+	// beforeMergeClose in a merge's close before it takes the team's
+	// locks; failRead, when it returns an error, fails the read it names
+	// (readThreadNow, readPullsOf, readThreadOfWorker) as a work database
+	// that cannot be read would. Tests set them (ADR-0061); nil does
+	// nothing.
 	afterOwnerSend   func()
 	beforeOwnerSend  func()
 	afterCleanState  func(thread int64)
-	failFollowedRead error
+	beforeMergeClose func(thread int64)
+	failRead         func(what string, id int64) error
 	// failSendNote, when set, fails team_send's answer's own noting of its
 	// message, as a work database that refuses the write would; tests set
 	// it. Nil in production.
@@ -488,6 +493,9 @@ type Server struct {
 	// cleanLocks hold one closed thread each (lockClean): its worktree's
 	// removal, and a message that would reopen it (ADR-0061).
 	cleanLocks keyLocks
+	// pullsRetry are the reopened threads whose pull requests could not be
+	// read to publish (publishReopened), under threadRetryMu.
+	pullsRetry map[int64]bool
 	reviewMu   sync.Mutex
 	// abortsDue are the ended reviews' sessions whose run a stop did not
 	// end, or could not tell; each review pass tries again. reviewMu

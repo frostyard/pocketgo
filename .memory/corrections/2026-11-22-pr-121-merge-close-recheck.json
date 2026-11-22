@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A merge's close reads the thread and its reopen's merge count again under the team's locks before it withdraws any queued message.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P2] Recheck merge-close eligibility before withdrawing messages",
+  "promoted_to": "service/internal/api/reopen_round3_test.go"
+}

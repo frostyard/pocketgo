@@ -209,6 +209,10 @@ type Store struct {
 	// closes are the owner's closes of threads, by thread; planApprovals
 	// the owner's approvals of plans, by plan.
 	closes map[int64]*Pending
+	// closeReopens are the reopens of each close's thread when the close
+	// was first asked for: a later lifetime retires its request id
+	// (ADR-0061).
+	closeReopens map[int64]int
 	// shifts are the owner's stops and resumes of threads' shifts, by
 	// thread (ADR-0024); shiftAsked is the shift each was asked for on, as
 	// shiftSeen has it.
@@ -715,13 +719,20 @@ func (s *Store) rereadRuns() {
 // now (closed here, elsewhere, or by a request whose reply was lost): no
 // card offers its retry. A close on its way keeps its state, and one whose
 // thread is still open keeps its request id for the retry.
+//
+// So does a close whose thread reopened since it was asked for (more
+// reopens than then): the close committed, and a close of the reopened
+// thread is a request of its own, never a run again of the old one, which
+// would answer as it did and close nothing (ADR-0061; Codex review of
+// #121, round 3).
 func (s *Store) settleCloses() {
 	for id, p := range s.closes {
 		if p.Busy {
 			continue
 		}
-		if t, ok := s.Data.Thread(id); ok && t.State == proto.ThreadClosed {
+		if t, ok := s.Data.Thread(id); ok && (t.State == proto.ThreadClosed || t.Reopens > s.closeReopens[id]) {
 			delete(s.closes, id)
+			delete(s.closeReopens, id)
 			s.ids.Done(closeKey(id))
 		}
 	}
@@ -738,6 +749,13 @@ func (s *Store) CloseThread(id int64) {
 	if p.Busy {
 		return
 	}
+	if _, ok := s.closeReopens[id]; !ok {
+		if s.closeReopens == nil {
+			s.closeReopens = map[int64]int{}
+		}
+		t, _ := s.Data.Thread(id)
+		s.closeReopens[id] = t.Reopens
+	}
 	key := closeKey(id)
 	request := proto.CloseThread{RequestID: s.ids.For(key, "close")}
 	p.Busy, p.Err = true, ""
@@ -753,6 +771,7 @@ func (s *Store) CloseThread(id int64) {
 		case err == nil:
 			s.ids.Done(key)
 			delete(s.closes, id)
+			delete(s.closeReopens, id)
 			s.Data.ThreadClosed(closed)
 		case errors.As(err, &pe) && pe.Code == proto.ErrorCodeNotFound:
 			s.ids.Done(key)

@@ -320,6 +320,9 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 			s.stopWorker(ctx, worker)
 		}
 	}()
+	if s.beforeMergeClose != nil {
+		s.beforeMergeClose(thread)
+	}
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -330,6 +333,7 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	if err != nil {
 		return err
 	}
+	mergedNow := 0
 	for _, p := range now {
 		// One linked meanwhile, open or closed, keeps the thread: nothing
 		// is withdrawn from a thread that stays open (Codex review of #29,
@@ -337,6 +341,17 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 		if p.State == store.PullOpen || (p.State == store.PullClosed && !rechecked[p.ID]) {
 			return nil
 		}
+		if p.State == store.PullMerged {
+			mergedNow++
+		}
+	}
+	// So does a thread a close and a reopen moved past these merges since
+	// they were counted: read again under the locks, before anything is
+	// withdrawn (Codex review of #121, round 3).
+	if current, err := s.store.Thread(ctx, thread); err != nil {
+		return err
+	} else if current.State == store.ThreadClosed || !team.MergedOut(0, mergedNow, current.MergedAtReopen) {
+		return nil
 	}
 	// Its worker's replies still queued are withdrawn before the close
 	// commits; a withdrawal that fails leaves it for the next round.

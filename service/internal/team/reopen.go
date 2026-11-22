@@ -160,6 +160,6 @@ func CheckFollows(f FollowTarget) error {
 // delivery withdraws none.
 func SendTextToClosed(thread int64, supervisor, text string) string {
 	return fmt.Sprintf("[T%d · %s, the supervisor] %s\n\n"+
-		"T%d was closed: this message reopens it, and T%d is open again once it reaches you. When you have acted on it, report with team_message.",
-		thread, supervisor, strings.TrimSpace(text), thread, thread)
+		"T%d was closed when this was sent: if it still is when this reaches you, this message reopens it. When you have acted on it, report with team_message.",
+		thread, supervisor, strings.TrimSpace(text), thread)
 }

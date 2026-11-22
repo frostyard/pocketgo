@@ -555,7 +555,14 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 func (s *Server) stopWorker(ctx context.Context, worker int64) {
 	s.workerStartMu.Lock()
 	defer s.workerStartMu.Unlock()
-	if thread, err := s.store.ThreadOfWorker(ctx, worker); err == nil && thread.State != store.ThreadClosed {
+	// Only a read that finds the thread closed, or none, lets the stop go:
+	// one that fails is tried again by the delivery pass (Codex review of
+	// #121, round 3).
+	if thread, err := s.readThreadOfWorker(ctx, worker); err == nil && thread.State != store.ThreadClosed {
+		return
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.log.Warn("read a worker's thread before its stop", "session", worker, "err", err)
+		s.workerDue(worker)
 		return
 	}
 	busy, err := s.engine.Busy(ctx, worker)
@@ -566,6 +573,17 @@ func (s *Server) stopWorker(ctx context.Context, worker int64) {
 		s.log.Warn("stop a closed thread's worker", "session", worker, "err", err)
 		s.workerDue(worker)
 	}
+}
+
+// readThreadOfWorker is store.ThreadOfWorker, which tests may fail
+// (failRead).
+func (s *Server) readThreadOfWorker(ctx context.Context, worker int64) (store.ThreadRow, error) {
+	if s.failRead != nil {
+		if err := s.failRead("readThreadOfWorker", worker); err != nil {
+			return store.ThreadRow{}, err
+		}
+	}
+	return s.store.ThreadOfWorker(ctx, worker)
 }
 
 // settleWorkers, at the service's start, sends each open thread's

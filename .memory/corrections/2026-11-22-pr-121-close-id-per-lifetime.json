@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A desktop close whose thread reopened since it was asked for retires its request id, so the next close is a request of its own and never a replay that closes nothing.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P2] Scope desktop close retries to the thread's reopen count",
+  "promoted_to": "desktop/internal/state/reopen_test.go"
+}

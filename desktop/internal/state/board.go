@@ -211,16 +211,29 @@ func (d *Data) Thread(id int64) (proto.Thread, bool) {
 // A reply that is not closed is a close run again after a reopen, which
 // answers with the thread as it is: a snapshot, which applies only over an
 // older copy, as ThreadChanged's does (Codex review of #121, round 2).
+//
+// The copies are ordered by their lifetime first, by reopens, then by
+// closure within one lifetime, which closes once, and by updatedAt only
+// when neither tells (Codex review of #121, round 3).
 func (d *Data) ThreadClosed(t proto.Thread) {
-	if cur, ok := d.Thread(t.ID); ok {
-		if cur.Reopens > t.Reopens {
-			return
-		}
-		if (cur.State == proto.ThreadClosed || t.State != proto.ThreadClosed) && !t.UpdatedAt.After(cur.UpdatedAt) {
-			return
-		}
+	if cur, ok := d.Thread(t.ID); ok && !replyNewer(cur, t) {
+		return
 	}
 	d.putReply(d.touched(), t)
+}
+
+// replyNewer says whether t, a close's reply, is newer than cur, the copy
+// the client holds: of a later lifetime (more reopens); in the same one,
+// closed over a copy that is not; else later by updatedAt.
+func replyNewer(cur, t proto.Thread) bool {
+	curClosed, tClosed := cur.State == proto.ThreadClosed, t.State == proto.ThreadClosed
+	switch {
+	case cur.Reopens != t.Reopens:
+		return t.Reopens > cur.Reopens
+	case curClosed != tClosed:
+		return tClosed
+	}
+	return t.UpdatedAt.After(cur.UpdatedAt)
 }
 
 // BeginThreadChange starts an owner's request that answers with the thread

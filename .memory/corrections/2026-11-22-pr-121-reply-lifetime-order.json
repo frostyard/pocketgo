@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A close's reply is ordered against the held copy by reopens first, then by closure within one lifetime, and by updatedAt only when neither tells.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P2] Order close replies by lifetime before comparing timestamps",
+  "promoted_to": "desktop/internal/state/reopen_test.go"
+}

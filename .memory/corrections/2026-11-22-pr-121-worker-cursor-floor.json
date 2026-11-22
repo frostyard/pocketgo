@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A reopen moves the thread's worker cursor past the newest entry of the worker's transcript, so a run the close aborted replies to no one.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P2] Exclude pre-close worker runs when reusing a reopened thread",
+  "promoted_to": "service/internal/api/reopen_round3_test.go"
+}

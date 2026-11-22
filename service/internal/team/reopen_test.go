@@ -120,7 +120,7 @@ func TestCheckFollows(t *testing.T) {
 // A supervisor's message kept for a closed thread says it reopens the
 // thread, and nothing of a blocked thread's asks (ADR-0061).
 func TestSendTextToClosed(t *testing.T) {
-	want := "[T77 · Odrade, the supervisor] Take Murbella's point.\n\nT77 was closed: this message reopens it, and T77 is open again once it reaches you. When you have acted on it, report with team_message."
+	want := "[T77 · Odrade, the supervisor] Take Murbella's point.\n\nT77 was closed when this was sent: if it still is when this reaches you, this message reopens it. When you have acted on it, report with team_message."
 	if got := SendTextToClosed(77, "Odrade", " Take Murbella's point. "); got != want {
 		t.Fatalf("got %q", got)
 	}

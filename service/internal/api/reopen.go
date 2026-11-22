@@ -79,7 +79,11 @@ func (s *Server) noteOwner(ctx context.Context, thread int64, placed func(contex
 // ownerMessagePlaced notes the owner's message m in the transcript, and
 // publishes its thread when the noting reopened it. workMu is held.
 func (s *Server) ownerMessagePlaced(ctx context.Context, m store.OwnerMessage) error {
-	thread, reopened, err := s.store.OwnerMessagePlaced(ctx, m.Key)
+	floor, err := s.workerFloor(ctx, m.ThreadID)
+	if err != nil {
+		return err
+	}
+	thread, reopened, err := s.store.OwnerMessagePlacedAt(ctx, m.Key, floor)
 	if err != nil {
 		return err
 	}
@@ -87,6 +91,28 @@ func (s *Server) ownerMessagePlaced(ctx context.Context, m store.OwnerMessage) e
 		s.publishReopened(ctx, thread)
 	}
 	return nil
+}
+
+// workerFloor is the newest entry of closed thread's worker's transcript,
+// the worker's cursor when it has none after it, 0 for a thread not closed
+// or with no worker: a reopen moves the cursor on to it, so the runs of the
+// worker's closed time, which a close aborted, reply to no one (Codex
+// review of #121, round 3). No new work reaches a closed thread's worker:
+// a run that began after the floor is of the reopened thread.
+func (s *Server) workerFloor(ctx context.Context, thread int64) (int64, error) {
+	row, err := s.store.Thread(ctx, thread)
+	if err != nil || row.State != store.ThreadClosed || row.WorkerSession == 0 {
+		return 0, err
+	}
+	entries, _, err := s.engine.TranscriptAfter(ctx, row.WorkerSession, row.WorkerCursor)
+	if err != nil {
+		return 0, err
+	}
+	floor := row.WorkerCursor
+	for _, e := range entries {
+		floor = max(floor, e.ID)
+	}
+	return floor, nil
 }
 
 // noteAllOwnerMessages is noteOwnerMessages for every thread with an
@@ -189,17 +215,16 @@ func (s *Server) noteClosed(ctx context.Context, row store.ThreadRow) (store.Thr
 
 // closedSince is the refusal of the owner's message to thread, read now
 // under outboxMu, when the thread closed after the send looked at it
-// (checked false) and the message could not reopen it (team.CheckReopen):
-// it was open then, so its specialist had its brief, and the cleanup lock
-// the send holds kept its folder.
+// (checked false) and the message could not reopen it: the whole check of
+// a closed thread's message (reopenRefused), its folder's included, which
+// the cleanup lock the send holds keeps as it is, not as it should be
+// (Codex review of #121, round 3).
 func (s *Server) closedSince(ctx context.Context, thread int64, checked bool) (refusal, err error) {
 	row, err := s.store.Thread(ctx, thread)
 	if err != nil || checked || row.State != store.ThreadClosed {
 		return nil, err
 	}
-	target := team.ReopenTarget{ID: row.ID, Plan: row.Plan, PlanTask: row.PlanTask, Briefed: true}
-	target.Successor, target.SuccessorAgent = s.successorOf(ctx, row)
-	return team.CheckReopen(target, team.FromOwner), nil
+	return s.reopenRefused(ctx, row, team.FromOwner)
 }
 
 // publishReopened publishes thread, which a message just reopened, with
@@ -208,14 +233,67 @@ func (s *Server) closedSince(ctx context.Context, thread int64, checked bool) (r
 // (Codex review of #121, round 2). workMu is held.
 func (s *Server) publishReopened(ctx context.Context, thread store.ThreadRow) {
 	s.publishThread(thread)
-	pulls, err := s.store.PullsOfThread(ctx, thread.ID)
+	if !s.publishPullsOf(ctx, thread.ID) {
+		// A delivery pass publishes them (Codex review of #121, round 3).
+		s.threadRetryMu.Lock()
+		if s.pullsRetry == nil {
+			s.pullsRetry = map[int64]bool{}
+		}
+		s.pullsRetry[thread.ID] = true
+		s.threadRetryMu.Unlock()
+		s.deliverLater()
+	}
+}
+
+// publishPullsOf publishes thread's pull requests, and says whether it
+// could read them. workMu is held.
+func (s *Server) publishPullsOf(ctx context.Context, thread int64) bool {
+	pulls, err := s.readPullsOf(ctx, thread)
 	if err != nil {
-		s.log.Warn("read a reopened thread's pull requests", "thread", thread.ID, "err", err)
-		return
+		s.log.Warn("read a reopened thread's pull requests", "thread", thread, "err", err)
+		return false
 	}
 	for _, p := range pulls {
 		s.publishPull(p)
 	}
+	return true
+}
+
+// readPullsOf is store.PullsOfThread, which tests may fail (failRead).
+func (s *Server) readPullsOf(ctx context.Context, thread int64) ([]store.PullRow, error) {
+	if s.failRead != nil {
+		if err := s.failRead("readPullsOf", thread); err != nil {
+			return nil, err
+		}
+	}
+	return s.store.PullsOfThread(ctx, thread)
+}
+
+// republishPulls publishes the pull requests of each reopened thread whose
+// read failed (publishReopened), under workMu; done says none is left.
+func (s *Server) republishPulls(ctx context.Context) (done bool) {
+	s.threadRetryMu.Lock()
+	ids := make([]int64, 0, len(s.pullsRetry))
+	for id := range s.pullsRetry {
+		ids = append(ids, id)
+	}
+	s.threadRetryMu.Unlock()
+	if len(ids) == 0 {
+		return true
+	}
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	done = true
+	for _, id := range ids {
+		if !s.publishPullsOf(ctx, id) {
+			done = false
+			continue
+		}
+		s.threadRetryMu.Lock()
+		delete(s.pullsRetry, id)
+		s.threadRetryMu.Unlock()
+	}
+	return done
 }
 
 // reportRefused is team_message's refusal on closed thread row: what its

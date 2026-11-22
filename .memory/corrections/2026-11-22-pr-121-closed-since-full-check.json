@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "An owner's message to a thread that closed after the send's first look gets the whole closed-thread check under outboxMu, its folder's included, not the plan rule alone.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P1] Check the worktree when a thread closes during an owner send",
+  "promoted_to": "service/internal/api/reopen_round3_test.go"
+}

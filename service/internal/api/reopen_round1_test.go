@@ -274,14 +274,21 @@ func TestASuccessorsEventIsPublishedLater(t *testing.T) {
 		}
 		return false
 	}
-	h.server.failFollowedRead = errors.New("database is locked")
+	// The read of the followed thread fails, at the read itself, so the
+	// production path queues its event (Codex review of #121, round 3).
+	h.server.failRead = func(what string, id int64) error {
+		if what == "readThreadNow" && id == old.ID {
+			return errors.New("database is locked")
+		}
+		return nil
+	}
 	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "d2"}, team.Delegation{Agent: "duncan", Task: "Carry T1 on.", Follows: old.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if named() {
 		t.Fatal("an event named the successor though its read failed")
 	}
-	h.server.failFollowedRead = nil
+	h.server.failRead = nil
 	if _, err := h.server.deliverAll(ctx); err != nil {
 		t.Fatal(err)
 	}
