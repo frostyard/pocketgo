@@ -106,6 +106,8 @@ type ProfileSource interface {
 	Workers() (profiles.Workers, error)
 	// Schedules are the owner's schedules (ADR-0030).
 	Schedules() (profiles.Schedules, error)
+	// Prompts are the owner's saved prompts (ADR-0051).
+	Prompts() (profiles.Prompts, error)
 }
 
 // ErrManyNames is a file Engine.ReadUpTo found with more than one name
@@ -1108,6 +1110,7 @@ func (s *Server) Handler() http.Handler {
 		{"GET", proto.PathLaunches, s.listLaunches},
 		{"POST", proto.PathLaunches, s.ownerLaunch},
 		{"GET", proto.PathSearch, s.search},
+		{"GET", proto.PathPrompts, s.listPrompts},
 		{"GET", proto.PathEvents, s.events},
 		{"GET", proto.PathUsage, s.usage},
 		{"GET", proto.PathTerminals, s.terminalList},

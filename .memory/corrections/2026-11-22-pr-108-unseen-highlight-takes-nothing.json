@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The picker records the name typed it drew even with no prompt shown, and Enter or Tab under that name take nothing until a frame shows the prompt they would take.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 3 (codex-cli 0.169.0) of head 1d4c46a: [P2] Wait for a newly available highlight to be drawn",
+  "promoted_to": "desktop/internal/state/prompts_review3_test.go"
+}

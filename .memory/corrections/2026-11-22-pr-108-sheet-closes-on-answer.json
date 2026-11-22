@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The phone's prompt sheet closes, and a tap on it does nothing, once its composer no longer writes a message, as when a question comes.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 1 (codex-cli 0.169.0) of head 64d76d4: [P2] Close the prompt sheet when the composer switches to an answer",
+  "promoted_to": "desktop/internal/app/prompts_review_test.go"
+}

@@ -64,12 +64,13 @@ package proto
 // Version 28 adds usage at a glance (ADR-0052): GET /v1/usage, the
 // sessions' answers' usage summed by day in the service's time zone and
 // by model.
-const Version = 28
+// Version 29 adds the owner's saved prompts (ADR-0051): GET /v1/prompts.
+const Version = 29
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 28. A path with {id} takes a session,
+// The request paths of protocol version 29. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment;
 // PathQuestion takes its session's id there, and the question's in {qid}.
 // PathUploads takes a file the owner attaches to a message to the session
@@ -111,7 +112,9 @@ const (
 	// PathSearch finds sessions by their titles and by what their
 	// transcripts say (ADR-0050): q holds the words, limit the most hits.
 	PathSearch = "/v1/search"
-	PathEvents = "/v1/events"
+	// PathPrompts lists the owner's saved prompts (ADR-0051).
+	PathPrompts = "/v1/prompts"
+	PathEvents  = "/v1/events"
 	// PathUsage sums the sessions' answers' usage by day and model
 	// (ADR-0052): its since, a day (UsageDayLayout), is in the query
 	// string.

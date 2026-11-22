@@ -1,6 +1,7 @@
 package app
 
 import (
+	"math"
 	"strings"
 
 	"github.com/egoist/mygo/transfer"
@@ -45,6 +46,16 @@ type composer struct {
 	focus bool
 	// picking says the file chooser is open (pickAttachments).
 	picking bool
+	// pickers are the fields' / pickers, by session (ADR-0051); edit is
+	// the text a prompt put in a field, which the next frame applies as a
+	// step of undo of its own, with its caret; refocus gives the field
+	// shown the keyboard focus then, which focus asks of a new field
+	// only; shownHighlight is the prompt the picker last brought into
+	// view.
+	pickers        map[int64]*state.PromptPicker
+	edit           *fieldEdit
+	refocus        bool
+	shownHighlight string
 }
 
 func (cp *composer) draft(id int64) *string {
@@ -556,8 +567,58 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			if changing := a.st.ChangingModel(id); changing.Err != "" {
 				frostui.Problem(c, "Changing the model failed: "+changing.Err).Wrap()
 			}
-			ui.Column(c).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
-				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS).Children(func() {
+			// The owner's saved prompts (ADR-0051): / at the start of a
+			// message opens the picker over the field, which asks pocketd
+			// for them again as it opens.
+			picker := cp.picker(id)
+			if !composing.TakesPrompts() {
+				// The field answers a question: the picker is not shown,
+				// and asks pocketd again when it is (Codex review of #108,
+				// round 1).
+				picker.Hide()
+			} else {
+				// An Enter that put a prompt in holds until it is let go.
+				if !c.KeyDown(ui.KeyEnter) {
+					picker.EnterReleased()
+				}
+				// A prompt on its way in is the text the picker reads.
+				text := *draft
+				if cp.edit != nil && cp.edit.key == any(id) {
+					text = cp.edit.Text
+				}
+				status, err := a.st.Data.PromptsStatus()
+				menu := picker.View(text, a.st.Data.Prompts(), status, err)
+				if menu.Opened {
+					a.st.LoadPrompts()
+				}
+				if menu.Open {
+					a.promptMenu(c, id, draft, picker, menu)
+				} else {
+					cp.shownHighlight = ""
+				}
+			}
+			// Keyed, so the field keeps its focus and caret as the picker
+			// or a problem shows above it.
+			box := ui.Column(c.Key("composer-box")).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
+				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS)
+			// The field's keys as they come, before it takes them (Codex
+			// review of #108, round 2): a press of Enter of its own, or its
+			// release, ends a hold whether or not a frame saw it; and text
+			// typed before a prompt went in follows the prompt, as the
+			// field's text is replaced by it.
+			if composing.TakesPrompts() {
+				box.ObserveInput(func(ev ui.InputEvent) {
+					switch {
+					case ev.Kind == ui.InputKeyDown && ev.Key == ui.KeyEnter:
+						picker.EnterPressed(ev.Repeat)
+					case ev.Kind == ui.InputKeyUp && ev.Key == ui.KeyEnter:
+						picker.EnterReleased()
+					case ev.Kind == ui.InputText && cp.edit != nil && cp.edit.key == fieldKey:
+						cp.edit.Typed(ev.Text)
+					}
+				})
+			}
+			box.Children(func() {
 				a.attachmentChips(c, id)
 				hints := a.composerHints()
 				placeholder := hints.idle
@@ -577,13 +638,38 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				input := ui.TextAreaBase(c.Key(fieldKey), draft).Lines(1, 10).Placeholder(placeholder).Label(label).
 					Bind(&cp.field).Disabled(sending.Busy || answering.Busy).
 					OnTextKey(func(k ui.TextKey) bool {
+						// A prompt on its way in is the field's text for the
+						// keys that come before the next frame puts it there
+						// (Codex review of #108, round 3).
+						if e := cp.edit; e != nil && e.key == fieldKey {
+							return a.keyOnEdit(id, composing, picker, e, k)
+						}
+						// While the picker shows, it takes the keys it uses: a
+						// prompt goes in, and is never sent.
+						if key, ok := pickerKey(k); ok && composing.TakesPrompts() {
+							r := picker.Key(key, k.Text(), a.st.Data.Prompts())
+							if r.Insert {
+								// The next frame puts it in as an edit of
+								// its own, which one Undo takes back.
+								cp.edit = &fieldEdit{key: fieldKey, PromptEdit: state.PromptEdit{Text: r.Text, Caret: r.Caret}}
+							}
+							if r.Took {
+								return true
+							}
+						}
 						if k.Key == ui.KeyEnter && k.Mods == 0 {
 							a.submit(id, composing, k.Text())
 							return true
 						}
 						return false
 					}).
-					OnPaste(func(string) bool {
+					OnPaste(func(text string) bool {
+						// Pasted text follows a prompt on its way in, as
+						// typed text does (Codex review of #108, round 3).
+						if e := cp.edit; e != nil && e.key == fieldKey && text != "" {
+							e.Typed(text)
+							return true
+						}
 						// An answer carries text alone: a pasted file is not
 						// attached to it (state.Composer.Attaches).
 						if !composing.Attaches() {
@@ -604,6 +690,27 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 					}
 					cp.focus = false
 				}
+				// A prompt goes in as a step of undo of its own, the caret
+				// after it, and the field takes the keys, on a phone too:
+				// the owner chose the prompt to write on (Codex review of
+				// #108, round 1).
+				if e := cp.edit; e != nil && e.key == fieldKey {
+					// What came in this frame first, as a paste, which
+					// follows the prompt (keyOnEdit); then the prompt.
+					input.ReplaceText(0, 0, "")
+					input.ReplaceText(0, math.MaxInt, e.Text)
+					input.SetTextSelection(e.Caret, e.Caret)
+					cp.edit = nil
+				} else if e != nil {
+					// It was for a field this frame does not show.
+					cp.edit = nil
+				}
+				// The phone's sheet keeps the keys while it shows: the field
+				// takes them once it is gone.
+				if cp.refocus && (!a.compact || !a.phone.promptsShown) {
+					input.Focus()
+					cp.refocus = false
+				}
 				// A phone's width holds the model's chip or the buttons, not
 				// both: the chip takes a row of its own there, and Attach
 				// files its icon alone (Codex review of #85, round 2).
@@ -620,6 +727,12 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						}
 						if attach.Disabled(cp.picking || !composing.Attaches()).Clicked() {
 							a.pickAttachments(id)
+						}
+					}
+					// A phone's saved prompts, beside Attach, as a sheet (ADR-0051).
+					if a.compact {
+						if frostui.IconButton(c, "pocket-prompt", "Insert a saved prompt").Disabled(!composing.TakesPrompts()).Clicked() {
+							a.openPromptSheet(id)
 						}
 					}
 					if !a.compact {
