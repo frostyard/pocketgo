@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "Text typed into the field while a prompt waits to go in is observed as it comes (ObserveInput) and spliced into the pending edit at its caret, so replacing the field's text keeps it.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 2 (codex-cli 0.169.0) of head 572058c: [P2] Preserve input typed after accepting a prompt but before redraw",
+  "promoted_to": "desktop/internal/state/prompts_review2_test.go"
+}

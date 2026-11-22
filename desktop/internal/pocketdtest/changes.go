@@ -52,7 +52,7 @@ func (s *Server) changesRoutes(mux *http.ServeMux) {
 		id := pathID(r)
 		path := r.URL.Query().Get("path")
 		// A path no change can have is refused first, as pocketd does
-		// (rule 64).
+		// (rule 67).
 		if err := proto.CheckChangedPath(path); err != nil {
 			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
 			return

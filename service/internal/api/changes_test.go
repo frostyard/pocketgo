@@ -96,7 +96,7 @@ func (e engineWith) ReadIn(ctx context.Context, root, id, rel string, max int) (
 
 // A thread's session lists what it changed in its worktree since it left
 // its base branch, committed and not yet, new files included, and the
-// owner reads each file's diff (ADR-0053, rules 63 and 64): the issue's
+// owner reads each file's diff (ADR-0053, rules 66 and 67): the issue's
 // Done when, through the protocol.
 func TestAThreadsChangesListWhatItChangedAndEachFilesDiff(t *testing.T) {
 	needsChangesGit(t)
@@ -204,7 +204,7 @@ func TestAThreadsPullRequestGivesItsBase(t *testing.T) {
 }
 
 // A session whose folder is in no git checkout answers no repository, and
-// no file of it is read (rule 63).
+// no file of it is read (rule 66).
 func TestASessionOutsideACheckoutHasNoRepository(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

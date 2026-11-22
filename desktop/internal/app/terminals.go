@@ -365,11 +365,12 @@ func (a *App) terminalTab(c *ui.Context, info proto.Terminal) {
 }
 
 // shellKeys are the window's commands whose Ctrl keys shells use (Ctrl N
-// for the next command in history, Ctrl Q): their keys stand aside while a
+// for the next command in history, Ctrl Q, and Ctrl Shift F, which a
+// terminal program may take): their keys stand aside while a
 // terminal has the focus, where Ctrl stands for Cmd. On macOS they are Cmd
 // keys, which never reach a shell. The commands themselves still run from
 // the menu and the palette (Codex review of #41, round 2).
-var shellKeys = []string{"new", "sidebar", "quit"}
+var shellKeys = []string{"new", "sidebar", "quit", "search"}
 
 // guardShellKeys keeps shellKeys' commands as the table has them, for
 // shellKeysAside.

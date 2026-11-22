@@ -56,7 +56,7 @@ type changesSpot struct {
 	mergeBase, since string
 }
 
-// sessionChanges is GET /v1/sessions/{id}/changes (rule 63).
+// sessionChanges is GET /v1/sessions/{id}/changes (rule 66).
 func (s *Server) sessionChanges(w http.ResponseWriter, r *http.Request) {
 	s.readChanges(w, r, func(ctx context.Context, row store.SessionRow) (any, error) {
 		out, err := s.changesOf(ctx, row)
@@ -64,7 +64,7 @@ func (s *Server) sessionChanges(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// changesFile is GET /v1/sessions/{id}/changes/file?path= (rule 64).
+// changesFile is GET /v1/sessions/{id}/changes/file?path= (rule 67).
 func (s *Server) changesFile(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if err := proto.CheckChangedPath(path); err != nil {
@@ -383,7 +383,7 @@ func (s *Server) eachChange(ctx context.Context, top string, args []string, each
 	return numstat.Done()
 }
 
-// changesOf reads what session changed in its checkout (rule 63).
+// changesOf reads what session changed in its checkout (rule 66).
 func (s *Server) changesOf(ctx context.Context, session store.SessionRow) (proto.Changes, error) {
 	spot, err := s.spotOf(ctx, session)
 	if errors.Is(err, errNoCheckout) {
@@ -497,7 +497,7 @@ func (s *Server) changesOf(ctx context.Context, session store.SessionRow) (proto
 }
 
 // fileDiffOf is the diff of the changed file at path of session's checkout
-// (rule 64): only a file the changes list, a tracked one git's numstat
+// (rule 67): only a file the changes list, a tracked one git's numstat
 // names or a new one git lists, is read.
 func (s *Server) fileDiffOf(ctx context.Context, session store.SessionRow, path string) (proto.FileDiff, error) {
 	spot, err := s.spotOf(ctx, session)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "pocketd profiles quotes a prompt file's name that is no prompt's, so a line break or terminal control in it never reaches the terminal as it is.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 1 (codex-cli 0.169.0) of head 64d76d4: [P3] Quote invalid prompt names in terminal output",
+  "promoted_to": "service/cmd/pocketd/main_test.go"
+}

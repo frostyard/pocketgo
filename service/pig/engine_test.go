@@ -65,11 +65,14 @@ type fixture struct {
 	mu       sync.Mutex
 	entries  []proto.Entry
 	lives    []proto.Live
+	// lived gets a signal after each live state the watch hands OnLive,
+	// so a test waits on what the watch sent, never on a sleep.
+	lived chan struct{}
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{t: t, dataDir: t.TempDir(), work: t.TempDir(), requests: make(chan proto.Approval, 16)}
+	f := &fixture{t: t, dataDir: t.TempDir(), work: t.TempDir(), requests: make(chan proto.Approval, 16), lived: make(chan struct{}, 1)}
 	s, err := store.Open(context.Background(), filepath.Join(f.dataDir, "work.sqlite"), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +102,15 @@ func (f *fixture) openWith(models *ai.Models, needs func(string) bool) *Engine {
 		NeedsApproval: needs,
 		Unsandboxed:   true,
 		OnEntry:       func(entry proto.Entry) { f.mu.Lock(); f.entries = append(f.entries, entry); f.mu.Unlock() },
-		OnLive:        func(live proto.Live) { f.mu.Lock(); f.lives = append(f.lives, live); f.mu.Unlock() },
+		OnLive: func(live proto.Live) {
+			f.mu.Lock()
+			f.lives = append(f.lives, live)
+			f.mu.Unlock()
+			select {
+			case f.lived <- struct{}{}:
+			default:
+			}
+		},
 	}, models)
 	if err != nil {
 		f.t.Fatal(err)
@@ -116,6 +127,28 @@ func (f *fixture) nextApproval() proto.Approval {
 	case <-time.After(10 * time.Second):
 		f.t.Fatal("no approval was requested")
 		return proto.Approval{}
+	}
+}
+
+// waitLive waits until found holds for the live states the watch has
+// handed OnLive so far, read under the fixture's lock: the watch publishes
+// from its own goroutine, so a Send that returned says nothing of what the
+// watch sent yet (frostyard/pocketgo#113).
+func (f *fixture) waitLive(found func([]proto.Live) bool) bool {
+	f.t.Helper()
+	deadline := time.After(20 * time.Second)
+	for {
+		f.mu.Lock()
+		ok := found(f.lives)
+		f.mu.Unlock()
+		if ok {
+			return true
+		}
+		select {
+		case <-f.lived:
+		case <-deadline:
+			return false
+		}
 	}
 }
 
@@ -200,6 +233,53 @@ func TestApprovedWriteRunsAndTheTranscriptConverts(t *testing.T) {
 	}
 	if !sawBusy || f.lives[len(f.lives)-1].Busy {
 		t.Fatalf("live changes %+v", f.lives)
+	}
+}
+
+// UsageEntries reads a session's answers with usage, newest first, after
+// the entry asked, down to the first one before since (ADR-0052).
+func TestUsageEntriesReadAnswersNewestFirstDownToSince(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(answer("One."), answer("Two.")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, text := range []string{"one", "two"} {
+		if _, err := e.Send(ctx, id, fmt.Sprintf("u:dev:r%d", i), text); err != nil {
+			t.Fatal(err)
+		}
+		waitIdle(t, e, id)
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answers []proto.Entry
+	for _, entry := range entries {
+		if entry.Kind == proto.EntryAssistant {
+			answers = append(answers, entry)
+		}
+	}
+	last := entries[len(entries)-1].ID
+	if len(answers) != 2 || answers[0].Usage == nil || answers[1].Usage == nil {
+		t.Fatalf("answers %+v", answers)
+	}
+	got, newest, err := e.UsageEntries(ctx, id, 0, time.Time{})
+	if err != nil || newest != last || len(got) != 2 || got[0].ID != answers[1].ID || got[1].ID != answers[0].ID ||
+		got[0].Model != fauxRef || got[0].Usage != *answers[1].Usage || !got[0].At.Equal(answers[1].At) {
+		t.Fatalf("every answer: %+v, newest %d, %v (answers %+v)", got, newest, err, answers)
+	}
+	if got, newest, err := e.UsageEntries(ctx, id, answers[0].ID, time.Time{}); err != nil || newest != last || len(got) != 1 || got[0].ID != answers[1].ID {
+		t.Fatalf("after the first answer: %+v, newest %d, %v", got, newest, err)
+	}
+	if got, newest, err := e.UsageEntries(ctx, id, 0, answers[1].At.Add(time.Hour)); err != nil || newest != last || len(got) != 0 {
+		t.Fatalf("since after every answer: %+v, newest %d, %v", got, newest, err)
+	}
+	if got, newest, err := e.UsageEntries(ctx, id, last, time.Time{}); err != nil || newest != last || len(got) != 0 {
+		t.Fatalf("after the newest entry: %+v, newest %d, %v", got, newest, err)
 	}
 }
 
@@ -674,17 +754,21 @@ func TestASupervisorsMessageCarriesItsSender(t *testing.T) {
 	if err != nil || len(live.Queued) != 1 || live.Queued[0].SubmissionID != second || live.Queued[0].Sender == nil || *live.Queued[0].Sender != want {
 		t.Fatalf("while it waits: queued %+v, %v", live.Queued, err)
 	}
-	f.mu.Lock()
+	// The watch sends from its own goroutine: wait for its live state that
+	// lists the queued message (frostyard/pocketgo#113).
 	var watchedQueue *proto.QueuedMessage
-	for _, l := range f.lives {
-		for _, q := range l.Queued {
-			if q.SubmissionID == second {
-				watchedQueue = &q
+	listed := f.waitLive(func(lives []proto.Live) bool {
+		watchedQueue = nil
+		for _, l := range lives {
+			for _, q := range l.Queued {
+				if q.SubmissionID == second {
+					watchedQueue = &q
+				}
 			}
 		}
-	}
-	f.mu.Unlock()
-	if watchedQueue == nil || watchedQueue.Sender == nil || *watchedQueue.Sender != want {
+		return watchedQueue != nil
+	})
+	if !listed || watchedQueue.Sender == nil || *watchedQueue.Sender != want {
 		t.Fatalf("the watch's queue %+v", watchedQueue)
 	}
 	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {

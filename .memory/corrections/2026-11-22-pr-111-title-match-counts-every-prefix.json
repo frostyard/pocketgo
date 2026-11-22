@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A title holds the words when each one begins a word of it, not only the longest at each word: \"dep deploy\" finds \"Deployment\", as the index does.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P2] Count all matching prefixes when searching titles",
+  "promoted_to": "service/internal/search/search_test.go"
+}

@@ -21,10 +21,10 @@
 
 ## Decision
 
-1. **Two read-only endpoints** ([protocol rules 63 and 64](../specs/protocol.md)):
+1. **Two read-only endpoints** ([protocol rules 66 and 67](../specs/protocol.md)):
    - `GET /v1/sessions/{id}/changes` answers `proto.Changes`: whether the session's folder is in a git checkout, its top, its branch and `HEAD`, the base, the merge base, and the files changed, each with its lines added and removed and whether its change is committed, not yet, or both, or new to git. An answer of a folder in no checkout says so (`repository` false), and is no error: no folder at or above it holds a `.git`. A folder with a checkout git cannot read, or whose reading git refuses at a later step (a partial clone that lacks what a diff needs), is `conflict`, with git's words; git that did not run stays `internal`.
    - `GET /v1/sessions/{id}/changes/file?path=` answers `proto.FileDiff`: one file's unified diff, from the merge base to the folder.
-   - Both write nothing, take no `requestId`, and send no event. Protocol version 27 carries them.
+   - Both write nothing, take no `requestId`, and send no event. Protocol version 30 carries them.
 2. **The base is chosen in code** (`changes.ChooseBase`, from the refs `changes.Candidates` names):
    - the base branch of the newest open pull request of the session's thread, else of its newest (`changes.PullBase`), as `origin/<base>`, else as the local branch; the session is the thread's specialist, its worker, or a review of one of its pull requests;
    - else the checkout's default branch: the branch `origin/HEAD` names, else `origin/main`, `origin/master`, `main`, `master`;

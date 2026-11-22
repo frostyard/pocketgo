@@ -8,11 +8,11 @@ import (
 )
 
 // MaxChangedPath is the most bytes of a path a file's diff is asked for
-// by (rule 64).
+// by (rule 67).
 const MaxChangedPath = 4096
 
 // CheckChangedPath refuses a path no listed change of a session can have
-// (rule 64, ADR-0053): empty, too long, not UTF-8, holding a NUL,
+// (rule 67, ADR-0053): empty, too long, not UTF-8, holding a NUL,
 // absolute, or with an empty, "." or ".." part. pocketd refuses it before
 // it looks at the session, and so does the desktop's fake.
 func CheckChangedPath(path string) error {

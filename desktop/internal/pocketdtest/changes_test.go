@@ -10,7 +10,7 @@ import (
 )
 
 // The fake answers a session's changes and a file's diff as pocketd does
-// (rules 63 and 64): a session given none is in no checkout, and a path no
+// (rules 66 and 67): a session given none is in no checkout, and a path no
 // change can have is bad_request before the session or the file is looked
 // at, even one with a diff set (Codex review of #109, round 1).
 func TestTheFakeAnswersChangesAsPocketdDoes(t *testing.T) {

@@ -54,16 +54,63 @@ type Usage struct {
 	Cost       float64 `json:"cost"`
 }
 
-// Add returns u plus v.
+// Tokens is the tokens a usage counts: its Total, as the provider reported
+// it, or its parts summed when they are more. One answer's total is its
+// parts, or more; a sum of answers whose providers reported a total for
+// some alone, as PiG's ledger sums a model's answers, has a Total below its
+// parts, which count every answer (Codex review of #107, round 2).
+func (u Usage) Tokens() int64 {
+	return max(u.Total, max(0, u.Input)+max(0, u.Output)+max(0, u.CacheRead)+max(0, u.CacheWrite))
+}
+
+// Add returns u plus v. Its Total is the two sides' Tokens: a side whose
+// provider reported no total counts its parts, so a sum of usages with and
+// without totals loses none of them (ADR-0052; Codex review of #107, round
+// 1).
 func (u Usage) Add(v Usage) Usage {
 	return Usage{
 		Input:      u.Input + v.Input,
 		Output:     u.Output + v.Output,
 		CacheRead:  u.CacheRead + v.CacheRead,
 		CacheWrite: u.CacheWrite + v.CacheWrite,
-		Total:      u.Total + v.Total,
+		Total:      u.Tokens() + v.Tokens(),
 		Cost:       u.Cost + v.Cost,
 	}
+}
+
+// UsageDayLayout is how a day of GET /v1/usage is written: its date, in
+// the service's time zone (ADR-0052).
+const UsageDayLayout = "2006-01-02"
+
+// UsageReport is the answer to GET /v1/usage (ADR-0052, rule 64): the usage
+// of the sessions' answers from a day on, summed by day in the service's
+// time zone and by model.
+type UsageReport struct {
+	// Zone is the service's time zone; Today the day it was there when the
+	// service answered, and TodayEnds when that day ends: a client asks
+	// again then, for the day that begins.
+	Zone      string    `json:"zone"`
+	Today     string    `json:"today"`
+	TodayEnds time.Time `json:"todayEnds"`
+	// Since is the first day the report sums, as asked.
+	Since string `json:"since"`
+	// Days are the days from Since through Today that have usage, oldest
+	// first.
+	Days []UsageDay `json:"days"`
+}
+
+// UsageDay is one day's usage, by model.
+type UsageDay struct {
+	// Day is the date, as UsageDayLayout writes it.
+	Day string `json:"day"`
+	// Models are its models' usage, by provider, then by model id.
+	Models []ModelUsage `json:"models"`
+}
+
+// ModelUsage is one model's usage.
+type ModelUsage struct {
+	Model ModelRef `json:"model"`
+	Usage Usage    `json:"usage"`
 }
 
 // SessionState is what a session is doing.
@@ -987,6 +1034,32 @@ type Schedules struct {
 	Schedules []Schedule `json:"schedules"`
 }
 
+// Prompts is the answer to GET /v1/prompts (ADR-0051): the owner's saved
+// prompts, the files of the prompts folder in the profile folder, by name,
+// which the desktop's composer inserts with /.
+type Prompts struct {
+	// Problem says why the folder lists none, or not all, of its prompts:
+	// it cannot be read, or holds more files than are listed. "" when it
+	// lists them all, or there is no folder.
+	Problem string   `json:"problem,omitempty"`
+	Prompts []Prompt `json:"prompts"`
+}
+
+// Prompt is one of the owner's saved prompts. A file that breaks a rule
+// lists only its Name and Problem.
+type Prompt struct {
+	// Name is the file's name without .md: the owner types it after /.
+	Name string `json:"name"`
+	// Description says what it is for, ArgumentHint what may follow its
+	// name.
+	Description  string `json:"description,omitempty"`
+	ArgumentHint string `json:"argumentHint,omitempty"`
+	// Text is what the composer gets, with each $ARGUMENTS in it replaced
+	// by what follows the name.
+	Text    string `json:"text,omitempty"`
+	Problem string `json:"problem,omitempty"`
+}
+
 // ScheduleSource says whose a schedule is.
 type ScheduleSource string
 
@@ -1165,7 +1238,7 @@ type SessionDetail struct {
 }
 
 // ChangesBase says how pocketd chose the base a session's changes are
-// counted from (ADR-0053, rule 63).
+// counted from (ADR-0053, rule 66).
 type ChangesBase string
 
 const (
@@ -1179,7 +1252,7 @@ const (
 )
 
 // Changes is what a session changed in its git checkout, read with git in
-// the sandbox (ADR-0053, rule 63): from the merge base of its HEAD and a
+// the sandbox (ADR-0053, rule 66): from the merge base of its HEAD and a
 // base branch to the files in its folder, committed or not yet.
 type Changes struct {
 	SessionID int64 `json:"sessionId"`
@@ -1232,7 +1305,7 @@ type ChangedFile struct {
 	NoDiff bool `json:"noDiff,omitempty"`
 }
 
-// FileDiff is one file's unified diff in a session's changes (rule 64).
+// FileDiff is one file's unified diff in a session's changes (rule 67).
 type FileDiff struct {
 	SessionID int64  `json:"sessionId"`
 	Path      string `json:"path"`

@@ -83,6 +83,8 @@ const (
 	// for them.
 	placeSessions
 	placeMore
+	// placeSearch is the Search view (ADR-0050).
+	placeSearch
 )
 
 // placeNames are the places' names, as state names them; a session's is
@@ -93,6 +95,7 @@ var placeNames = map[place]string{
 	placeTerminal: state.PlaceTerminal,
 	placeSessions: state.PlaceSessions,
 	placeMore:     state.PlaceMore,
+	placeSearch:   state.PlaceSearch,
 }
 
 // name is the place's name, as state names it: "" for a session.
@@ -138,6 +141,7 @@ type App struct {
 
 	signIn   signInForm
 	place    place
+	search   searchView
 	tr       transcriptView
 	composer composer
 	// changes is the Changes view (changes.go, ADR-0053).
@@ -357,6 +361,8 @@ func (a *App) logLine(level state.Level, text string) {
 func (a *App) resetViews() {
 	a.place = placeInbox
 	a.tr = transcriptView{}
+	// A search belongs to the sign-in it was made under.
+	a.search = searchView{}
 	a.composer = composer{drafts: map[int64]*string{}}
 	a.changes = changesView{}
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
@@ -410,6 +416,10 @@ func (a *App) showSession(id int64) {
 	// narrows (state.BackTo, Codex review of #85, round 1).
 	if tab, ok := state.TabOf(a.place.name()); ok {
 		a.phone.tab = tab
+	}
+	// Back goes where it was opened from, as the Search view (ADR-0050).
+	if a.place != placeSession {
+		a.phone.from = a.place.name()
 	}
 	if a.place != placeSession || a.st.Data.OpenID() != id {
 		a.leaveSession()
@@ -530,6 +540,8 @@ func (a *App) mainPane(c *ui.Context) {
 		a.boardPane(c)
 	case a.place == placeTerminal:
 		a.terminalPane(c)
+	case a.place == placeSearch:
+		a.searchPane(c)
 	default:
 		a.inboxPane(c)
 	}
@@ -549,6 +561,10 @@ func (a *App) mainBar(c *ui.Context) {
 	}
 	if a.place == placeTerminal {
 		ui.Text(c, "Terminal").Bold().SingleLine().Grow(1)
+		return
+	}
+	if a.place == placeSearch {
+		a.searchBar(c)
 		return
 	}
 	ui.Column(c).Grow(1).Children(func() {
@@ -602,7 +618,29 @@ func (a *App) saveGitHubAgain() {
 	})
 }
 
+// statusEnd is the status bar's end: what the sessions used, then the
+// service's version and the device's name.
 func (a *App) statusEnd() []frostui.StatusItem {
+	return append(a.usageStatus(), a.serviceStatus()...)
+}
+
+// usageStatus is today's usage and the last 7 days', each by provider in
+// its tooltip (ADR-0052), once the week used something.
+func (a *App) usageStatus() []frostui.StatusItem {
+	today, week, shown := a.st.UsageTotals()
+	if !shown {
+		return nil
+	}
+	zone := a.st.Data.UsageReport().Zone
+	return []frostui.StatusItem{
+		{Icon: "pocket-usage", Text: today.Line("Today"), Progress: -1, Tooltip: today.Tooltip("Today", zone)},
+		{Text: week.Line(itoa(state.WeekDays) + " days"), Progress: -1, Tooltip: week.Tooltip("The last "+itoa(state.WeekDays)+" days", zone)},
+	}
+}
+
+// serviceStatus is the service's version and the device's name, once the
+// service said them.
+func (a *App) serviceStatus() []frostui.StatusItem {
 	var items []frostui.StatusItem
 	if h := a.st.Hello(); h != nil {
 		items = append(items, frostui.StatusItem{Text: "pocketd " + h.Server + " · " + h.Device, Progress: -1,
@@ -612,7 +650,7 @@ func (a *App) statusEnd() []frostui.StatusItem {
 }
 
 func (a *App) menu(m *ui.Menu) {
-	a.table.Menu("new", "inbox", "board", "abort", "", "sidebar", "zoom-in", "zoom-out", "zoom-reset", "")(m)
+	a.table.Menu("new", "inbox", "board", "search", "abort", "", "sidebar", "zoom-in", "zoom-out", "zoom-reset", "")(m)
 	a.table.MenuItem(m, "settings")
 	a.table.MenuItem(m, "about")
 	m.Separator()
@@ -647,6 +685,14 @@ func (a *App) setUpCommands() {
 					a.st.Abort(id)
 				}
 			}},
+		// The owner's saved prompts (ADR-0051): the picker over the shown
+		// session's composer.
+		frostui.Command{ID: "insert-prompt", Title: "Insert Prompt…", Group: "Sessions", Icon: "pocket-prompt",
+			Enabled: func() (bool, string) {
+				_, ok := a.promptsComposer()
+				return ok, "No message is being written in a session shown"
+			},
+			Run: a.summonPrompts},
 		frostui.Command{ID: "sidebar", Title: "Show or Hide the Sessions", Group: "View", Icon: "sidebar-show",
 			Run: func() { a.shell.Panes.Toggle("sidebar") }},
 		frostui.Command{ID: "about", Title: "About PocketGo", Group: "App", Icon: "help-about", Run: a.showAbout},
@@ -665,6 +711,7 @@ func (a *App) setUpCommands() {
 				}
 			}},
 	)
+	a.table.Add(a.searchCommand())
 	a.table.Add(a.settingsCommand())
 	a.table.Add(a.zoomCommands()...)
 	a.zoomKeys = frostui.NewCommandTable(a.zoomCommands()...)

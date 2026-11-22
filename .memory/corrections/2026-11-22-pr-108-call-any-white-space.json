@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A call's name ends at any white space unicode.IsSpace knows, a pasted no-break space included, as TrimSpace reads its arguments.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 2 (codex-cli 0.169.0) of head 572058c: [P3] Recognize whitespace in pasted slash calls",
+  "promoted_to": "desktop/internal/state/prompts_review2_test.go"
+}

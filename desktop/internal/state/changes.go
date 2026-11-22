@@ -248,7 +248,7 @@ func FileState(f proto.ChangedFile) string {
 // an entry pocketd marks so (NoDiff), as a path that is no UTF-8, whose
 // spelling with U+FFFD names no file, nor for a repository inside the
 // checkout, which git lists as its folder, with a slash at its end (rule
-// 63).
+// 66).
 func CanDiff(f proto.ChangedFile) bool { return !f.NoDiff && !strings.HasSuffix(f.Path, "/") }
 
 // FileName is a changed file's path as its row shows it, a rename's old

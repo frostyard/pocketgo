@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "tests",
+  "correction": "The desktop's fake pocketd matches a search against an entry's whole text, then cuts the snippet around the match, as pocketd does: a reply whose only match is past its first 160 characters is found.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P3] Match the full searchable text in the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/search_test.go"
+}

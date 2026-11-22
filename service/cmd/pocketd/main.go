@@ -530,6 +530,9 @@ func listProfiles(ctx context.Context, w io.Writer, data, dir, skills string) er
 	// The owner's schedules, with when each goes out or why it does not
 	// (ADR-0030).
 	scheduleReport(report, dir, skills, valid, serviceZone())
+	// The owner's saved prompts, which the desktop's composer inserts
+	// (ADR-0051).
+	promptReport(report, dir)
 	// The owner's providers and models, which the profiles and the list
 	// may name (ADR-0023).
 	return ownReport(report, own, ownErr, notes)
@@ -591,6 +594,43 @@ func scheduleReport(w io.Writer, dir, skills string, valid []profiles.Profile, z
 		default:
 			_, _ = fmt.Fprintf(w, "  %s: %s (%s), to %s's standing session\n", id, when, at, valid[i].Name)
 		}
+	}
+}
+
+// promptReport says what the owner's prompts folder holds: each prompt by
+// its name, with its argument hint and description, or why a file is
+// none, as GET /v1/prompts lists them (ADR-0051).
+func promptReport(w io.Writer, dir string) {
+	list, err := profiles.LoadPrompts(dir)
+	switch {
+	case err != nil:
+		_, _ = fmt.Fprintf(w, "\nPrompts: none show: %v\n", err)
+		return
+	case len(list.List) == 0:
+		_, _ = fmt.Fprintf(w, "\nPrompts: none (%s/)\n", profiles.PromptsFolder)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "\nPrompts (%s/):\n", profiles.PromptsFolder)
+	for _, p := range list.List {
+		if p.Problem != "" {
+			// An invalid name is the file's as it is, which may hold a line
+			// break or a terminal's control: quoted, it stays on its line
+			// (Codex review of #108, round 1). The problem quotes what it
+			// names.
+			_, _ = fmt.Fprintf(w, "  %q: invalid: %s\n", "/"+p.Name, p.Problem)
+			continue
+		}
+		line := "/" + p.Name
+		if p.ArgumentHint != "" {
+			line += " " + p.ArgumentHint
+		}
+		if p.Description != "" {
+			line += ": " + p.Description
+		}
+		_, _ = fmt.Fprintf(w, "  %s\n", line)
+	}
+	if list.Problem != "" {
+		_, _ = fmt.Fprintf(w, "  %s\n", list.Problem)
 	}
 }
 
@@ -778,6 +818,11 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	// standing session, and a start a stop interrupted finishes, after
 	// Resume, as the schedules do; serving does not wait for it.
 	server.StartLaunches()
+	// The search index reads every session's entries after its cursor,
+	// then each one an entry's event notes (ADR-0050): it reads PiG and
+	// submits nothing, and serving does not wait for it, as the first
+	// start with search reads every transcript.
+	server.StartIndex()
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)

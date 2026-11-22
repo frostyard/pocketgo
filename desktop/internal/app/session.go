@@ -1,6 +1,7 @@
 package app
 
 import (
+	"math"
 	"strings"
 
 	"github.com/egoist/mygo/transfer"
@@ -27,6 +28,13 @@ type transcriptView struct {
 	// picks are the options checked on a question's card that takes
 	// several, by question.
 	picks map[string]map[int]bool
+	// seek is the search hit that opened the session (ADR-0050): it
+	// scrolls to its entry once the transcript loaded. flash is the key of
+	// the row it scrolled to, which shows highlighted for a moment, and
+	// flashed says its highlight started.
+	seek    state.Seek
+	flash   string
+	flashed bool
 }
 
 // composer is the message field's state: a draft for each session.
@@ -38,6 +46,16 @@ type composer struct {
 	focus bool
 	// picking says the file chooser is open (pickAttachments).
 	picking bool
+	// pickers are the fields' / pickers, by session (ADR-0051); edit is
+	// the text a prompt put in a field, which the next frame applies as a
+	// step of undo of its own, with its caret; refocus gives the field
+	// shown the keyboard focus then, which focus asks of a new field
+	// only; shownHighlight is the prompt the picker last brought into
+	// view.
+	pickers        map[int64]*state.PromptPicker
+	edit           *fieldEdit
+	refocus        bool
+	shownHighlight string
 }
 
 func (cp *composer) draft(id int64) *string {
@@ -50,7 +68,8 @@ func (cp *composer) draft(id int64) *string {
 }
 
 // sessionBar is the top bar over the open session: its title, where it
-// works, its state, and Abort while it runs.
+// works, how full its context is and what it used, its state, and Abort
+// while it runs.
 func (a *App) sessionBar(c *ui.Context) {
 	o := a.st.Data.Open()
 	s, _ := a.st.Data.Session(o.ID)
@@ -59,9 +78,51 @@ func (a *App) sessionBar(c *ui.Context) {
 		ui.Text(c, title).Bold().SingleLine()
 		frostui.Caption(c, sessionMeta(s)).SingleLine()
 	})
+	a.usageMeter(c, o.ID, s)
 	a.changesButton(c, o.ID)
 	statePill(c, a.st.Data.StateOf(o.ID))
 	a.sessionActions(c, o, s)
+}
+
+// usageMeter shows how full the open session's context is, as a short bar
+// and its percent, and the session's tokens and cost under it (ADR-0052):
+// the rules are state's (state.Fill, state.UsageLine). It shows nothing
+// before the session used anything.
+func (a *App) usageMeter(c *ui.Context, id int64, s proto.Session) {
+	f := a.st.Data.FillOf(id)
+	line := state.UsageLine(s.Usage)
+	if !f.Known && line == "" {
+		return
+	}
+	t := c.Theme()
+	ui.Column(c.Key("usage-meter")).Gap(2).AlignItems(ui.End).Shrink(0).Children(func() {
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			_, full := f.Thresholds()
+			switch {
+			case f.Label() == "":
+			case !f.Known || full == 0:
+				frostui.Caption(c, "context "+f.Label()).Tooltip(f.Tooltip())
+			default:
+				top := float64(f.Window)
+				if top == 0 {
+					top = full
+				}
+				tone := frostui.Accent
+				switch f.Level {
+				case state.MeterNear:
+					tone = frostui.Warning
+				case state.MeterFull:
+					tone = frostui.Danger
+				}
+				ui.Meter(c, float64(f.Tokens), 0, top, &ui.MeterLevels{NormalColor: frostui.ToneColor(t, tone)}).
+					Width(72).Label("Context").Tooltip(f.Tooltip())
+				frostui.Caption(c, f.Label()).Tooltip(f.Tooltip())
+			}
+		})
+		if line != "" {
+			frostui.Caption(c, line).SingleLine()
+		}
+	})
 }
 
 // sessionTitle is the title of the open session's bar.
@@ -158,9 +219,22 @@ func (a *App) sessionPane(c *ui.Context) {
 			rows := tr.rows
 			tr.list.Key = func(i int) any { return rows[i].Key }
 			tr.list.FollowEnd = true
+			// A search's hit scrolls to its entry once the transcript
+			// loaded, and highlights its row (state.Seek).
+			if tr.seek.Session != 0 {
+				if row, found, done := tr.seek.Target(o, rows); done {
+					if found {
+						tr.list.ScrollTo(row, ui.Center)
+						tr.flash, tr.flashed = rows[row].Key, false
+					}
+					tr.seek = state.Seek{}
+				}
+			}
 			ui.List(c, &tr.list, len(rows), func(i int) {
 				ui.Column(c).AlignItems(ui.Center).Children(func() {
-					ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch).Children(func() {
+					e := ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch)
+					a.flashRow(c, e, rows[i].Key)
+					e.Children(func() {
 						a.rowView(c, &rows[i])
 					})
 				})
@@ -494,8 +568,58 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			if changing := a.st.ChangingModel(id); changing.Err != "" {
 				frostui.Problem(c, "Changing the model failed: "+changing.Err).Wrap()
 			}
-			ui.Column(c).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
-				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS).Children(func() {
+			// The owner's saved prompts (ADR-0051): / at the start of a
+			// message opens the picker over the field, which asks pocketd
+			// for them again as it opens.
+			picker := cp.picker(id)
+			if !composing.TakesPrompts() {
+				// The field answers a question: the picker is not shown,
+				// and asks pocketd again when it is (Codex review of #108,
+				// round 1).
+				picker.Hide()
+			} else {
+				// An Enter that put a prompt in holds until it is let go.
+				if !c.KeyDown(ui.KeyEnter) {
+					picker.EnterReleased()
+				}
+				// A prompt on its way in is the text the picker reads.
+				text := *draft
+				if cp.edit != nil && cp.edit.key == any(id) {
+					text = cp.edit.Text
+				}
+				status, err := a.st.Data.PromptsStatus()
+				menu := picker.View(text, a.st.Data.Prompts(), status, err)
+				if menu.Opened {
+					a.st.LoadPrompts()
+				}
+				if menu.Open {
+					a.promptMenu(c, id, draft, picker, menu)
+				} else {
+					cp.shownHighlight = ""
+				}
+			}
+			// Keyed, so the field keeps its focus and caret as the picker
+			// or a problem shows above it.
+			box := ui.Column(c.Key("composer-box")).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
+				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS)
+			// The field's keys as they come, before it takes them (Codex
+			// review of #108, round 2): a press of Enter of its own, or its
+			// release, ends a hold whether or not a frame saw it; and text
+			// typed before a prompt went in follows the prompt, as the
+			// field's text is replaced by it.
+			if composing.TakesPrompts() {
+				box.ObserveInput(func(ev ui.InputEvent) {
+					switch {
+					case ev.Kind == ui.InputKeyDown && ev.Key == ui.KeyEnter:
+						picker.EnterPressed(ev.Repeat)
+					case ev.Kind == ui.InputKeyUp && ev.Key == ui.KeyEnter:
+						picker.EnterReleased()
+					case ev.Kind == ui.InputText && cp.edit != nil && cp.edit.key == fieldKey:
+						cp.edit.Typed(ev.Text)
+					}
+				})
+			}
+			box.Children(func() {
 				a.attachmentChips(c, id)
 				hints := a.composerHints()
 				placeholder := hints.idle
@@ -515,13 +639,38 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				input := ui.TextAreaBase(c.Key(fieldKey), draft).Lines(1, 10).Placeholder(placeholder).Label(label).
 					Bind(&cp.field).Disabled(sending.Busy || answering.Busy).
 					OnTextKey(func(k ui.TextKey) bool {
+						// A prompt on its way in is the field's text for the
+						// keys that come before the next frame puts it there
+						// (Codex review of #108, round 3).
+						if e := cp.edit; e != nil && e.key == fieldKey {
+							return a.keyOnEdit(id, composing, picker, e, k)
+						}
+						// While the picker shows, it takes the keys it uses: a
+						// prompt goes in, and is never sent.
+						if key, ok := pickerKey(k); ok && composing.TakesPrompts() {
+							r := picker.Key(key, k.Text(), a.st.Data.Prompts())
+							if r.Insert {
+								// The next frame puts it in as an edit of
+								// its own, which one Undo takes back.
+								cp.edit = &fieldEdit{key: fieldKey, PromptEdit: state.PromptEdit{Text: r.Text, Caret: r.Caret}}
+							}
+							if r.Took {
+								return true
+							}
+						}
 						if k.Key == ui.KeyEnter && k.Mods == 0 {
 							a.submit(id, composing, k.Text())
 							return true
 						}
 						return false
 					}).
-					OnPaste(func(string) bool {
+					OnPaste(func(text string) bool {
+						// Pasted text follows a prompt on its way in, as
+						// typed text does (Codex review of #108, round 3).
+						if e := cp.edit; e != nil && e.key == fieldKey && text != "" {
+							e.Typed(text)
+							return true
+						}
 						// An answer carries text alone: a pasted file is not
 						// attached to it (state.Composer.Attaches).
 						if !composing.Attaches() {
@@ -542,6 +691,27 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 					}
 					cp.focus = false
 				}
+				// A prompt goes in as a step of undo of its own, the caret
+				// after it, and the field takes the keys, on a phone too:
+				// the owner chose the prompt to write on (Codex review of
+				// #108, round 1).
+				if e := cp.edit; e != nil && e.key == fieldKey {
+					// What came in this frame first, as a paste, which
+					// follows the prompt (keyOnEdit); then the prompt.
+					input.ReplaceText(0, 0, "")
+					input.ReplaceText(0, math.MaxInt, e.Text)
+					input.SetTextSelection(e.Caret, e.Caret)
+					cp.edit = nil
+				} else if e != nil {
+					// It was for a field this frame does not show.
+					cp.edit = nil
+				}
+				// The phone's sheet keeps the keys while it shows: the field
+				// takes them once it is gone.
+				if cp.refocus && (!a.compact || !a.phone.promptsShown) {
+					input.Focus()
+					cp.refocus = false
+				}
 				// A phone's width holds the model's chip or the buttons, not
 				// both: the chip takes a row of its own there, and Attach
 				// files its icon alone (Codex review of #85, round 2).
@@ -558,6 +728,12 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						}
 						if attach.Disabled(cp.picking || !composing.Attaches()).Clicked() {
 							a.pickAttachments(id)
+						}
+					}
+					// A phone's saved prompts, beside Attach, as a sheet (ADR-0051).
+					if a.compact {
+						if frostui.IconButton(c, "pocket-prompt", "Insert a saved prompt").Disabled(!composing.TakesPrompts()).Clicked() {
+							a.openPromptSheet(id)
 						}
 					}
 					if !a.compact {

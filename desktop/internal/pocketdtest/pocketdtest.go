@@ -54,6 +54,8 @@ type Server struct {
 	token    string
 	models   []proto.Model
 	profiles []proto.Profile
+	// prompts are what GET /v1/prompts answers (ADR-0051).
+	prompts  proto.Prompts
 	sessions map[int64]*session
 	// questions are the sessions' questions (ADR-0048), waiting and
 	// settled, by id (question.go).
@@ -71,6 +73,8 @@ type Server struct {
 	schedules      proto.Schedules
 	launches       []proto.Launch
 	launchRequests []proto.CreateLaunch
+	// usage is what GET /v1/usage answers (usage.go).
+	usage proto.UsageReport
 	// shells are the owner's terminals, oldest first (terminals.go), and
 	// nextShell numbers the next one.
 	shells     []*fakeShell
@@ -111,6 +115,9 @@ type Server struct {
 	// sending get as they are placed, by submission: their whole text,
 	// images and files.
 	queuedEntries map[int64]proto.Entry
+	// searchIndexing makes a search say pocketd still indexes
+	// (SetSearchIndexing).
+	searchIndexing bool
 	// changes are the sessions' changes, by session, and diffs their
 	// files' diffs, by session and path (changes.go, ADR-0053).
 	changes map[int64]proto.Changes
@@ -183,6 +190,14 @@ func (s *Server) AddProfile(p proto.Profile) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.profiles = append(s.profiles, p)
+}
+
+// SetPrompts replaces what GET /v1/prompts answers, as an edit of the
+// owner's prompts folder does (ADR-0051).
+func (s *Server) SetPrompts(prompts proto.Prompts) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prompts = proto.Prompts{Problem: prompts.Problem, Prompts: slices.Clone(prompts.Prompts)}
 }
 
 // SetModels replaces the models GET /v1/models lists, as a provider's
@@ -643,6 +658,15 @@ func (s *Server) routes() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, profiles)
 	})
+	mux.HandleFunc("GET "+proto.PathPrompts, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		list := proto.Prompts{Problem: s.prompts.Problem, Prompts: slices.Clone(s.prompts.Prompts)}
+		s.mu.Unlock()
+		if list.Prompts == nil {
+			list.Prompts = []proto.Prompt{}
+		}
+		writeJSON(w, http.StatusOK, list)
+	})
 	mux.HandleFunc("GET "+proto.PathSessions, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		list := make([]proto.Session, 0, len(s.sessions))
@@ -786,10 +810,12 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, list)
 	})
 	mux.HandleFunc("POST "+proto.PathApprovePlan, s.approvePlan)
+	mux.HandleFunc("GET "+proto.PathSearch, s.search)
 	mux.HandleFunc("GET "+proto.PathEvents, s.events)
 	s.terminalRoutes(mux)
 	s.nightShiftRoutes(mux)
 	s.uploadRoutes(mux)
+	s.usageRoutes(mux)
 	s.changesRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// An upload's body is the file, up to proto.MaxUpload, as

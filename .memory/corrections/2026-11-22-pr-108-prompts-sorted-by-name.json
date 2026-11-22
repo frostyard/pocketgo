@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The prompts folder's files are sorted by the prompts' names, without .md, before the bound of 100 cuts them.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 1 (codex-cli 0.169.0) of head 64d76d4: [P3] Sort by prompt name before applying the 100-prompt limit",
+  "promoted_to": "service/internal/profiles/prompts_test.go"
+}

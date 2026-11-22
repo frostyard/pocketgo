@@ -154,7 +154,9 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 		case th.Cwd != "":
 			where = "in " + shortPath(th.Cwd)
 		}
-		frostui.Caption(c, agent+" · "+where).SingleLine()
+		// What the thread's sessions used, its cost or its tokens
+		// (ADR-0052).
+		frostui.Caption(c, joinNonEmpty(agent, where, state.UsageShort(a.st.Data.ThreadUsage(th)))).SingleLine()
 		a.threadChanges(c, key, th)
 		if th.Plan != 0 && th.PlanTask != "" {
 			a.taskLine(c, th)

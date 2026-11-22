@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "An Enter that put a prompt in holds until the key is let go (PromptPicker.EnterReleased on !Context.KeyDown): its auto-repeats are taken, so one held press never inserts and sends.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 1 (codex-cli 0.169.0) of head 64d76d4: [P1] Require a fresh Enter press after inserting a prompt",
+  "promoted_to": "desktop/internal/app/prompts_review_test.go"
+}

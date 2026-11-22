@@ -194,14 +194,14 @@ func (c *Client) ChangeModel(ctx context.Context, id int64, request ChangeModel)
 	return out, c.do(ctx, http.MethodPost, Path(PathModel, id), request, &out)
 }
 
-// Changes reads what session id changed in its git checkout (rule 63).
+// Changes reads what session id changed in its git checkout (rule 66).
 func (c *Client) Changes(ctx context.Context, id int64) (Changes, error) {
 	var out Changes
 	return out, c.do(ctx, http.MethodGet, Path(PathChanges, id), nil, &out)
 }
 
 // ChangesFile reads the diff of the file at path in session id's changes
-// (rule 64): path is as Changes lists it.
+// (rule 67): path is as Changes lists it.
 func (c *Client) ChangesFile(ctx context.Context, id int64, path string) (FileDiff, error) {
 	q := url.Values{}
 	q.Set("path", path)
@@ -315,6 +315,36 @@ func (c *Client) DecideLesson(ctx context.Context, id int64, request DecideLesso
 func (c *Client) Schedules(ctx context.Context) (Schedules, error) {
 	var out Schedules
 	return out, c.do(ctx, http.MethodGet, PathSchedules, nil, &out)
+}
+
+// Search finds sessions by their titles and by what their transcripts say
+// (ADR-0050): the words of q, at most limit hits, the service's default
+// for 0. Any other limit goes as it is, so the service refuses one that
+// breaks rule 63, a negative one included (Codex review of #111, round 1).
+func (c *Client) Search(ctx context.Context, q string, limit int) (SearchResults, error) {
+	query := url.Values{}
+	query.Set("q", q)
+	if limit != 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	var out SearchResults
+	return out, c.do(ctx, http.MethodGet, PathSearch+"?"+query.Encode(), nil, &out)
+}
+
+// Usage sums the sessions' answers' usage by day, in the service's time
+// zone, and by model, from day since (proto.UsageDayLayout) through today
+// (ADR-0052).
+func (c *Client) Usage(ctx context.Context, since string) (UsageReport, error) {
+	q := url.Values{}
+	q.Set("since", since)
+	var out UsageReport
+	return out, c.do(ctx, http.MethodGet, PathUsage+"?"+q.Encode(), nil, &out)
+}
+
+// Prompts lists the owner's saved prompts (ADR-0051).
+func (c *Client) Prompts(ctx context.Context) (Prompts, error) {
+	var out Prompts
+	return out, c.do(ctx, http.MethodGet, PathPrompts, nil, &out)
 }
 
 // Gathers lists the gathers that run, and those that ended in the last

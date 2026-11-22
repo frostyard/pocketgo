@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "Enter or Tab under the same name typed takes nothing when the prompt the frame showed highlighted is no longer offered: the next frame shows what takes its place first.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 2 (codex-cli 0.169.0) of head 572058c: [P2] Do not accept an unseen replacement for a removed highlight",
+  "promoted_to": "desktop/internal/state/prompts_review2_test.go"
+}

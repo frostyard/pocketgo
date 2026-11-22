@@ -31,10 +31,14 @@ type Data struct {
 	// Session and the composer's chip offer.
 	models     []proto.Model
 	modelsList list
-	sessions   []proto.Session  // most recently updated first
-	approvals  []proto.Approval // pending only, oldest first
-	asks       []proto.Ask      // open only, oldest first
-	lessons    lessons          // waiting only
+	// prompts are the owner's saved prompts (GET /v1/prompts), which the
+	// composer's / picker offers (prompts.go, ADR-0051).
+	prompts     proto.Prompts
+	promptsList list
+	sessions    []proto.Session  // most recently updated first
+	approvals   []proto.Approval // pending only, oldest first
+	asks        []proto.Ask      // open only, oldest first
+	lessons     lessons          // waiting only
 	// threads are every thread, most recently changed first, and pulls
 	// the linked pull requests, oldest first (board.go).
 	threads keyed[proto.Thread]
@@ -49,6 +53,18 @@ type Data struct {
 	droppedProposals map[int64]bool
 	schedules        proto.Schedules
 	schedulesList    list
+	// usage is the newest usage report (GET /v1/usage, ADR-0052), fetched
+	// whole (usage.go); usageOwed are the sessions an answer came to whose
+	// session event has not come yet (usageChanged).
+	usage     proto.UsageReport
+	usageList list
+	usageOwed map[int64]bool
+	// usageMoved says a session's model changed, from whatever brought it:
+	// the totals count an answer that names no model under its session's
+	// model now (takeUsageMoved).
+	usageMoved bool
+	// search is the owner's newest search of every session (ADR-0050).
+	search searchState
 
 	open *OpenSession
 	// changes are the sessions' changes the client keeps, by session, and
@@ -513,6 +529,9 @@ func (d *Data) SetSessions(f Fetch, list []proto.Session) {
 		if cur, ok := d.Session(s.ID); ok && !d.takesSummary(s.ID, f) {
 			s = cur
 		} else {
+			if ok && cur.Model != s.Model {
+				d.usageMoved = true
+			}
 			d.appliedSummary(s.ID, f)
 		}
 		out = append(out, s)
@@ -647,11 +666,15 @@ const (
 	// RefetchSchedules: the schedules changed (EventSchedules), and the
 	// event carries no list (protocol rule 57).
 	RefetchSchedules
+	// RefetchUsage: a session's usage changed (EventSession), so the
+	// day's totals did (ADR-0052).
+	RefetchUsage
 )
 
 // Apply applies one event of the stream, and reports what it asks the
 // client to fetch again: everything after EventResync, the schedules after
-// EventSchedules. An event of a type this client does not know changes
+// EventSchedules, the usage totals after a session event that changes what
+// the session used. An event of a type this client does not know changes
 // nothing.
 func (d *Data) Apply(ev proto.Event) Refetch {
 	d.rev++
@@ -666,11 +689,16 @@ func (d *Data) Apply(ev proto.Event) Refetch {
 		}
 	case proto.EventSession:
 		if ev.Session != nil {
+			changed := d.usageChanged(*ev.Session)
 			d.touchSession(ev.Session.ID)
 			d.putSession(*ev.Session)
+			if changed {
+				return RefetchUsage
+			}
 		}
 	case proto.EventEntry:
 		if ev.Entry != nil {
+			d.oweUsage(*ev.Entry)
 			d.applyEntry(*ev.Entry)
 		}
 	case proto.EventLive:
@@ -789,6 +817,9 @@ func (d *Data) putSession(s proto.Session) {
 		// builds the view's rows again (ADR-0048).
 		if d.open != nil && d.open.ID == s.ID && !sameQuestion(d.sessions[i].Question, s.Question) {
 			d.open.rev++
+		}
+		if d.sessions[i].Model != s.Model {
+			d.usageMoved = true
 		}
 		d.sessions[i] = s
 	} else {
