@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's sshd Match block for the service user sets PermitUserRC no, so an ssh deploy never runs an agent-written ~/.ssh/rc.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 5 (codex-cli 0.169.0) of head 2212e96: [P1] Disable the service user's SSH startup hook",
+  "promoted_to": "docs/design/setup.md"
+}
