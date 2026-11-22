@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide names pocketd by its full path wherever it tells the owner to run it, pocketd models and pocketd profiles included.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 7 (codex-cli 0.169.0) of head d74ed21: [P1] Use the installed pocketd path to check provider changes",
+  "promoted_to": "docs/design/setup.md"
+}
