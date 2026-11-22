@@ -1084,22 +1084,23 @@ const (
 	// ScheduleOwner is one of the owner's, from their schedules file: it
 	// goes to its profile's standing session.
 	ScheduleOwner ScheduleSource = "owner"
-	// ScheduleSession is a supervisor's own, from team_schedule: it goes
-	// to the session that made it.
+	// ScheduleSession is a session's own, a supervisor's from
+	// team_schedule or a private agent's from schedule (ADR-0060): it
+	// goes to the session that made it.
 	ScheduleSession ScheduleSource = "session"
 )
 
 // Schedule is a message that goes to a session later, or on repeat, as
 // "[scheduled] <message>" (ADR-0030).
 type Schedule struct {
-	// ID is the owner's id in their file, or S<n> for a supervisor's own.
+	// ID is the owner's id in their file, or S<n> for a session's own.
 	ID     string         `json:"id"`
 	Source ScheduleSource `json:"source"`
 	// Profile is the agent whose standing session one of the owner's goes
 	// to.
 	Profile string `json:"profile,omitempty"`
-	// Session is the session it goes to: a supervisor's own session, or
-	// the profile's standing session; absent while it has none.
+	// Session is the session it goes to: the session that made its own,
+	// or the profile's standing session; absent while it has none.
 	Session int64 `json:"session,omitempty"`
 	// When is when it goes out, as written; Repeat says how it repeats,
 	// absent for one that goes out once; Zone is the time zone of its

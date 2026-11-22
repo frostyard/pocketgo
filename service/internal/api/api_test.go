@@ -110,6 +110,9 @@ type fakeEngine struct {
 	// tool; taskEndedFails fails that many TaskEnded calls.
 	questionTool   map[int64]bool
 	taskEndedFails int
+	// ownScheduleTool are the sessions SetScheduleTool gave the schedule
+	// tool (ADR-0060).
+	ownScheduleTool map[int64]bool
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
 	// before it reads.
@@ -475,6 +478,20 @@ func (f *fakeEngine) SetQuestionTool(_ context.Context, id int64) (bool, error) 
 		return false, nil
 	}
 	f.questionTool[id] = true
+	return true, nil
+}
+
+// SetScheduleTool records the sessions given the schedule tool, each once.
+func (f *fakeEngine) SetScheduleTool(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ownScheduleTool == nil {
+		f.ownScheduleTool = map[int64]bool{}
+	}
+	if f.ownScheduleTool[id] {
+		return false, nil
+	}
+	f.ownScheduleTool[id] = true
 	return true, nil
 }
 

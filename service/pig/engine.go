@@ -95,11 +95,13 @@ type Engine struct {
 	notes    []string
 	coding   *durable.Extension
 	approval *durable.Extension
-	// teamExt holds the team tools, which call team (ADR-0014), and
+	// teamExt holds the team tools, which call team (ADR-0014),
 	// questionExt the question tool, which a private agent's session
-	// gets with no team tool (ADR-0048).
+	// gets with no team tool (ADR-0048), and scheduleExt a private
+	// agent's schedule tool, which is no team tool either (ADR-0060).
 	teamExt     *durable.Extension
 	questionExt *durable.Extension
+	scheduleExt *durable.Extension
 	team        Team
 	mu          sync.Mutex
 	watches     map[int64]*watcher
@@ -280,6 +282,10 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	}
 	e.questionExt = e.questionExtension()
 	if err := registry.Install(e.questionExt); err != nil {
+		return nil, err
+	}
+	e.scheduleExt = e.scheduleExtension()
+	if err := registry.Install(e.scheduleExt); err != nil {
 		return nil, err
 	}
 	store, err := sqlitenode.OpenNodeSqliteStorage(filepath.Join(opts.DataDir, DurableFile), sqlitenode.NodeSqliteStorageOptions{})
@@ -804,7 +810,7 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 	// A supervisor's and a private agent's session, working as no thread,
 	// review, worker, consult or gather, puts questions to the owner
 	// (ADR-0048).
-	asks := team.MayQuestion(spec.Profile, questionRole(spec))
+	asks := team.MayQuestion(spec.Profile, roleOf(spec))
 	if role := roleTools(spec); len(role) > 0 || private || asks {
 		// The profile's tools, or every coding tool, and the team tools of
 		// the session's role (ADR-0014), exactly: the team extension holds
@@ -834,6 +840,13 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 		// extension: a private agent gets it with none of them.
 		if asks {
 			extensions, list = append(extensions, e.questionExt), append(list, e.questionExt.Tools...)
+		}
+		// A private agent's session, working as no thread, review,
+		// worker, consult or gather, keeps its own schedules, with the
+		// schedule tool after the question tool, in its own extension: no
+		// team tool (ADR-0060). A supervisor keeps team_schedule.
+		if team.MaySchedule(spec.Profile, roleOf(spec)) {
+			extensions, list = append(extensions, e.scheduleExt), append(list, e.scheduleExt.Tools...)
 		}
 		return extensions, list, nil
 	}

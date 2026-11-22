@@ -292,7 +292,7 @@ func TestAQuestionEndToEndOverHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := agentTools(t, engine, chani.ID); !slices.Equal(got, []string{"read", toolQuestion}) {
+	if got := agentTools(t, engine, chani.ID); !slices.Equal(got, []string{"read", toolQuestion, toolOwnSchedule}) {
 		t.Fatalf("a private agent's tools %q", got)
 	}
 	if got := agentTools(t, engine, duncan.ID); slices.Contains(got, toolQuestion) {

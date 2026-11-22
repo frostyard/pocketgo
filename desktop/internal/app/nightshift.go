@@ -182,7 +182,7 @@ func (a *App) schedulesSection(c *ui.Context) {
 		case status == state.ListLoading:
 			frostui.Loading(c, "Loading the schedules…")
 		case status == state.ListLoaded:
-			frostui.Muted(c, "No schedule. Your schedules file and a supervisor's team_schedule add them.").Wrap()
+			frostui.Muted(c, "No schedule. Your schedules file, a supervisor's team_schedule and a private agent's schedule add them.").Wrap()
 		}
 	})
 }
