@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Stop pocketd mcp login before any registration or approval when the token endpoint is one PiG's exchange refuses: plain HTTP on a host that is not loopback.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 11 (codex-cli 0.169.0) of head c4d5717: [P2] Validate the OAuth token endpoint before requesting approval",
+  "promoted_to": "service/pig/mcp_round11_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Parse the selected Bearer or DPoP challenge alone, up to the next scheme outside quotes, so a later challenge's parameters are not its own.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 11 (codex-cli 0.169.0) of head c4d5717: [P2] Parse only the selected authentication challenge",
+  "promoted_to": "service/pig/mcp_round11_test.go"
+}

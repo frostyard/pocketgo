@@ -88,11 +88,19 @@ type mcpStore struct {
 // errMCPStoreFenced is a write the store refuses once its engine closed.
 var errMCPStoreFenced = errors.New("pocketd closed its MCP store: nothing is written")
 
-// fence ends the store's writes (fenced).
-func (s *mcpStore) fence() {
+// fence ends the store's writes (fenced), once it wrote the credentials
+// a failed write left behind (dirty), a rotated refresh token perhaps,
+// while pocketd still holds the data folder's lock: it says when that
+// last write failed too.
+func (s *mcpStore) fence() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var err error
+	if s.dirty && !s.fenced {
+		err = s.saveCredsLocked()
+	}
 	s.fenced = true
+	return err
 }
 
 // maxFormerSecrets bounds mcpStore.former.

@@ -162,7 +162,7 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	if len(missing) > 0 {
 		return fmt.Errorf("server %s needs its header %s first: pocketd mcp set-header %s %s; nothing was changed", server.Name, missing[0], server.Name, missing[0])
 	}
-	fetch := mcpClient(mcpLoginTimeout)
+	fetch := mcpClientFor(mcpLoginTimeout, store.secrets)
 	challenge := probeChallenge(ctx, fetch, server.URL, headers)
 	// The scopes and the kept client are weighed against this discovery,
 	// which the flow then runs on: one that failed leaves nothing to
@@ -170,6 +170,11 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	info, err := discoverServer(ctx, fetch, server, challenge)
 	if err != nil {
 		return fmt.Errorf("the sign-in to %s did not start: %s; nothing was changed", server.Name, oauthWords(err))
+	}
+	// PiG's token exchange takes https alone, or plain HTTP on a loopback
+	// host: one on a tailnet name would fail only once the owner approved.
+	if !tokenEndpointUsable(info) {
+		return fmt.Errorf("the sign-in to %s did not start: its token endpoint is not https, which PiG's token exchange needs on a host that is not loopback; nothing was changed", server.Name)
 	}
 	scope := loginScope(server, challenge, info)
 	// The probe went out with the stored headers, and a server may echo
@@ -221,8 +226,14 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	}
 	// The page the owner opens is bound as pocketd's own exchanges are:
 	// the owner's approval never crosses plain HTTP to another host.
-	if page, err := url.Parse(authorization.Href()); err != nil || !profiles.MCPTransportAllowed(page) {
+	page, err := url.Parse(authorization.Href())
+	if err != nil || !profiles.MCPTransportAllowed(page) {
 		return fmt.Errorf("the sign-in to %s did not start: its authorization page %s; nothing was changed", server.Name, errMCPInsecure)
+	}
+	// Nor does it show a secret pocketd keeps, which a server could have
+	// echoed into its metadata.
+	if urlHoldsSecret(page, store.secrets()) {
+		return fmt.Errorf("the sign-in to %s did not start: its authorization page %s; nothing was changed", server.Name, errMCPSecretURL)
 	}
 	state, err := provider.State(ctx)
 	if err != nil {
@@ -323,6 +334,24 @@ func discoverServer(ctx context.Context, fetch *http.Client, server profiles.MCP
 	return info, err
 }
 
+// tokenEndpointUsable says whether PiG's token exchange takes the token
+// endpoint discovery names, as its secureEndpoint does: https, or plain
+// HTTP on localhost, 127.0.0.1 or ::1 alone. The endpoint is the
+// metadata's, else /token at the authorization server.
+func tokenEndpointUsable(info *oauth.OAuthServerInfo) bool {
+	endpoint := ""
+	if info.AuthorizationServerMetadata != nil {
+		endpoint = info.AuthorizationServerMetadata.TokenEndpoint
+	} else {
+		endpoint = strings.TrimRight(info.AuthorizationServerURL, "/") + "/token"
+	}
+	u, err := oauth.ParseURL(endpoint)
+	if err != nil {
+		return false
+	}
+	return u.Protocol == "https:" || slices.Contains([]string{"localhost", "127.0.0.1", "[::1]", "::1"}, u.Hostname)
+}
+
 // registeredFor says whether a client registered for the scopes
 // registered may ask for wanted: it registered none, which bounds
 // nothing, or every one of wanted.
@@ -367,6 +396,8 @@ func oauthWords(err error) string {
 		return "it was stopped"
 	case errors.Is(err, errMCPInsecure):
 		return "its discovery " + errMCPInsecure.Error()
+	case errors.Is(err, errMCPSecretURL):
+		return "its discovery " + errMCPSecretURL.Error()
 	}
 	return "pocketd could not complete the OAuth discovery, registration or token exchange with the server"
 }

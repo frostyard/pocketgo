@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -43,30 +42,22 @@ func TestMCPLoginRefusesAScopeHoldingASecret(t *testing.T) {
 	}
 }
 
-// A page of many small tools keeps only what pocketd takes, and decodes
-// no more than it keeps: the cost of a page is its bytes, never a tool a
-// listed entry. Its next cursor is read wherever it comes.
+// A page of many tools keeps only what pocketd takes, and decodes no more
+// than it keeps: an entry past the allowance is skipped unread as a tool,
+// so one PiG's mcp.Tool would not take fails nothing (Codex review of
+// #126, round 10; measured by what is decoded, not by allocation, which
+// the race detector changes, round 11). Its next cursor is read wherever
+// it comes.
 func TestADecodedPageKeepsOnlyWhatPocketdTakes(t *testing.T) {
 	var page strings.Builder
-	page.WriteString(`{"tools":[`)
-	for i := range 50_000 {
-		if i > 0 {
-			page.WriteString(",")
-		}
-		page.WriteString(`{"name":"t"}`)
+	page.WriteString(`{"tools":[{"name":"a"},{"name":"b"},{"name":"c"}`)
+	for range 50_000 {
+		page.WriteString(`,{"name":5}`)
 	}
 	page.WriteString(`],"nextCursor":"more"}`)
-	raw := json.RawMessage(page.String())
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	tools, next, err := decodeToolsPage(raw, 3)
-	runtime.ReadMemStats(&after)
-	if err != nil || len(tools) != 3 || next == nil || *next != "more" {
+	tools, next, err := decodeToolsPage(json.RawMessage(page.String()), 3)
+	if err != nil || len(tools) != 3 || tools[2].Name != "c" || next == nil || *next != "more" {
 		t.Fatalf("decoded %d tools, next %v, %v", len(tools), next, err)
-	}
-	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 3*uint64(len(raw)) {
-		t.Fatalf("a page of %d bytes allocated %d bytes", len(raw), allocated)
 	}
 	if _, _, err := decodeToolsPage(json.RawMessage(`{"nextCursor":"x"}`), 3); err == nil {
 		t.Fatal("a page with no tools list is a list")

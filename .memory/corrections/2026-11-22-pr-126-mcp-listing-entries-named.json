@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Take an MCP tools page only when each entry pocketd keeps is an object with a name; a null or nameless entry makes the page no list, so the last listing stays.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 11 (codex-cli 0.169.0) of head c4d5717: [P2] Preserve the last tool listing on malformed entries",
+  "promoted_to": "service/pig/mcp_round11_test.go"
+}

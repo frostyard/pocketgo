@@ -100,6 +100,10 @@ type fakeMCP struct {
 	// and basicFirst offers a Basic challenge before its Bearer one.
 	challengeScope string
 	basicFirst     bool
+	// metadataQuery, when set, is a query the challenge's resource
+	// metadata address carries, pageQuery one authURL's authorization
+	// page carries, and tokenEndpoint names authURL's token endpoint.
+	metadataQuery, pageQuery, tokenEndpoint string
 }
 
 // otherAuthURL is an authorization server the gateway's metadata may
@@ -165,7 +169,11 @@ func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
 		}
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !f.access[token] {
-			challenge := `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/gateway/mcp"`
+			metadata := "https://mcp.example.com/.well-known/oauth-protected-resource/gateway/mcp"
+			if f.metadataQuery != "" {
+				metadata += "?" + f.metadataQuery
+			}
+			challenge := `Bearer resource_metadata="` + metadata + `"`
 			if f.challengeScope != "" {
 				challenge += `, scope="` + f.challengeScope + `"`
 			}
@@ -208,7 +216,14 @@ func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
 		if f.plainPage {
 			page = plainAuthURL + "/authorize"
 		}
-		writeJSON(w, map[string]any{"issuer": authURL, "authorization_endpoint": page, "token_endpoint": authURL + "/token",
+		if f.pageQuery != "" {
+			page += "?" + f.pageQuery
+		}
+		token := authURL + "/token"
+		if f.tokenEndpoint != "" {
+			token = f.tokenEndpoint
+		}
+		writeJSON(w, map[string]any{"issuer": authURL, "authorization_endpoint": page, "token_endpoint": token,
 			"registration_endpoint": authURL + "/register", "response_types_supported": []string{"code"},
 			"grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"},
 			"token_endpoint_auth_methods_supported": []string{"none"}})

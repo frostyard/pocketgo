@@ -110,12 +110,18 @@ func defaultMCPAfter(d time.Duration, f func()) (stop func() bool) { return time
 // sign-in with no deadline of their own. Every answer but an MCP
 // message's, which PiG bounds by message (maxMCPMessage), is bounded too
 // (maxMCPDocument): PiG reads an OAuth document whole.
-func mcpClient(timeout time.Duration) *http.Client {
+func mcpClient(timeout time.Duration) *http.Client { return mcpClientFor(timeout, nil) }
+
+// mcpClientFor is mcpClient, sending no request whose address holds one
+// of secrets (nil for none): an address discovery or a challenge names
+// may echo a header the server was sent, and a secret goes in a header
+// or a body, never an address.
+func mcpClientFor(timeout time.Duration, secrets func() []string) *http.Client {
 	var transport http.RoundTripper = mcpDirectTransport
 	if mcpTransport != nil {
 		transport = mcpTransport
 	}
-	transport = boundedTransport{next: transport}
+	transport = boundedTransport{next: transport, secrets: secrets}
 	return &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		// The origin, not its spelling: a host's case and a scheme's
 		// default port name the same one.
@@ -140,6 +146,28 @@ var errMCPTooLarge = fmt.Errorf("an answer is larger than %d bytes", maxMCPDocum
 // that is neither loopback nor a tailnet name (profiles.MCPTransportAllowed).
 var errMCPInsecure = errors.New("names an address on plain HTTP whose host is neither loopback nor a tailnet name, which pocketd sends nothing to")
 
+// errMCPSecretURL is a request pocketd does not send: its address holds
+// a secret the store keeps (urlHoldsSecret).
+var errMCPSecretURL = errors.New("names an address that holds a secret pocketd keeps, which pocketd sends nothing to")
+
+// urlHoldsSecret says whether u holds one of secrets, as it is written or
+// decoded: in its host, its user, its path, its query or its fragment.
+func urlHoldsSecret(u *url.URL, secrets []string) bool {
+	if u == nil {
+		return false
+	}
+	parts := []string{u.String(), u.Host, u.Path, u.RawPath, u.RawQuery, u.Fragment, u.User.String()}
+	if query, err := url.QueryUnescape(u.RawQuery); err == nil {
+		parts = append(parts, query)
+	}
+	for _, part := range parts {
+		if part != "" && holdsSecret(part, secrets) {
+			return true
+		}
+	}
+	return false
+}
+
 // boundedTransport sends no request profiles.MCPTransportAllowed refuses,
 // and bounds the body of every answer but an MCP message's, known by what
 // the request takes: PiG's MCP transport, and pocketd's probe, accept an
@@ -147,17 +175,27 @@ var errMCPInsecure = errors.New("names an address on plain HTTP whose host is ne
 // names.
 type boundedTransport struct {
 	next http.RoundTripper
+	// secrets, when set, are what no request's address may hold
+	// (mcpClientFor).
+	secrets func() []string
 }
 
 func (t boundedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	// No exchange on plain HTTP but with a loopback host or a tailnet
 	// name, whatever discovery or a server named: a sign-in never moves
 	// to a channel anyone may read.
-	if !profiles.MCPTransportAllowed(r.URL) {
+	refused := error(nil)
+	switch {
+	case !profiles.MCPTransportAllowed(r.URL):
+		refused = errMCPInsecure
+	case t.secrets != nil && urlHoldsSecret(r.URL, t.secrets()):
+		refused = errMCPSecretURL
+	}
+	if refused != nil {
 		if r.Body != nil {
 			_ = r.Body.Close()
 		}
-		return nil, errMCPInsecure
+		return nil, refused
 	}
 	resp, err := t.next.RoundTrip(r)
 	if err != nil || resp.Body == nil || mcpMessage(r) {
@@ -579,7 +617,7 @@ func mayPass(err error) bool {
 		return oauthTransient(oauthErr)
 	}
 	return !errors.Is(err, errMCPNeedsHeader) && !errors.Is(err, errMCPNotSignedIn) && !errors.Is(err, errMCPSignIn) &&
-		!errors.As(err, &auth) && !errors.Is(err, errMCPScope) && !errors.Is(err, errMCPInsecure)
+		!errors.As(err, &auth) && !errors.Is(err, errMCPScope) && !errors.Is(err, errMCPInsecure) && !errors.Is(err, errMCPSecretURL)
 }
 
 // oauthTransient says whether an authorization server's refusal says it
@@ -659,8 +697,11 @@ func (h *mcpHub) close(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
-	// Whatever is still under way past the deadline writes nothing.
-	h.store.fence()
+	// Whatever is still under way past the deadline writes nothing; a
+	// write that failed before is made a last time first.
+	if err := h.store.fence(); err != nil && h.log != nil {
+		h.log.Error("keep the MCP servers' sign-ins at stop: the write failed; a server whose refresh token rotated needs pocketd mcp login again", "err", err)
+	}
 }
 
 // registration is server tool offered as name in a profile's extension.
@@ -1113,7 +1154,7 @@ func (c *mcpConn) open(ctx context.Context) (*mcp.Client, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("%w: %s (pocketd mcp set-header %s %s)", errMCPNeedsHeader, missing[0], server.Name, missing[0])
 	}
-	options := mcp.StreamableHTTPTransportOptions{URL: server.URL, Headers: headers, Fetch: mcpClient(server.Timeout), OpenGetStream: new(false),
+	options := mcp.StreamableHTTPTransportOptions{URL: server.URL, Headers: headers, Fetch: mcpClientFor(server.Timeout, store.secrets), OpenGetStream: new(false),
 		MaxMessageBytes: maxMCPMessage}
 	if server.OAuth != nil {
 		if !store.signedIn(server.Name, server.URL) {
@@ -1212,8 +1253,15 @@ func decodeToolsPage(raw json.RawMessage, allow int) ([]mcp.Tool, *string, error
 			listed, tools = true, nil
 			for dec.More() {
 				if len(tools) < allow {
+					// A tool is an object with a name: null decodes to
+					// none, and a listing with one is no list, so the
+					// last one stays.
+					var entry json.RawMessage
+					if err := dec.Decode(&entry); err != nil || !bytes.HasPrefix(entry, []byte("{")) {
+						return nil, nil, errMCPList
+					}
 					var tool mcp.Tool
-					if err := dec.Decode(&tool); err != nil {
+					if err := json.Unmarshal(entry, &tool); err != nil || tool.Name == "" {
 						return nil, nil, errMCPList
 					}
 					tools = append(tools, tool)
@@ -1451,6 +1499,8 @@ func (c *mcpConn) failure(err error) string {
 		return errMCPList.Error() + ": try again later"
 	case errors.Is(err, errMCPInsecure):
 		return "was not reached: its sign-in " + errMCPInsecure.Error() + ": the owner fixes the server's OAuth addresses"
+	case errors.Is(err, errMCPSecretURL):
+		return "was not reached: its sign-in " + errMCPSecretURL.Error() + ": the owner looks at what the server sends in its challenge"
 	case errors.As(err, &auth):
 		if c.server.OAuth != nil {
 			return "refused pocketd's sign-in (HTTP 401): the owner signs in again with pocketd mcp login " + name
@@ -1713,12 +1763,35 @@ type serveAuth struct {
 // ParseWWWAuthenticate reads one only when it comes first, and a gateway
 // may offer Basic before it. A scheme starts a header or follows a comma
 // outside a quoted value, and is a token followed by a space, a comma or
-// the end, not by "=" as a parameter is.
+// the end, not by "=" as a parameter is. The challenge is read alone, up
+// to the next scheme: a later challenge's parameters are not its own.
 func oauthChallenge(header http.Header) oauth.OAuthChallenge {
 	joined := strings.Join(header.Values("Www-Authenticate"), ", ")
+	starts := challengeStarts(joined)
+	for n, at := range starts {
+		end := len(joined)
+		if n+1 < len(starts) {
+			end = starts[n+1]
+		}
+		challenge := strings.TrimRight(joined[at:end], " \t,")
+		word := challenge
+		if cut := strings.IndexAny(challenge, " \t,"); cut >= 0 {
+			word = challenge[:cut]
+		}
+		if strings.EqualFold(word, "bearer") || strings.EqualFold(word, "dpop") {
+			return oauth.ParseWWWAuthenticate(challenge)
+		}
+	}
+	return oauth.OAuthChallenge{}
+}
+
+// challengeStarts are where each challenge's scheme starts in header
+// (oauthChallenge).
+func challengeStarts(header string) []int {
+	var starts []int
 	quoted, escaped, start := false, false, true
-	for i := 0; i < len(joined); i++ {
-		ch := joined[i]
+	for i := 0; i < len(header); i++ {
+		ch := header[i]
 		switch {
 		case escaped:
 			escaped = false
@@ -1741,20 +1814,11 @@ func oauthChallenge(header http.Header) oauth.OAuthChallenge {
 			continue
 		}
 		start = false
-		rest := joined[i:]
-		end := strings.IndexAny(rest, " \t,=")
-		word := rest
-		if end >= 0 {
-			word = rest[:end]
-		}
-		if end >= 0 && rest[end] == '=' {
-			continue
-		}
-		if strings.EqualFold(word, "bearer") || strings.EqualFold(word, "dpop") {
-			return oauth.ParseWWWAuthenticate(rest)
+		if end := strings.IndexAny(header[i:], " \t,="); end < 0 || header[i+end] != '=' {
+			starts = append(starts, i)
 		}
 	}
-	return oauth.OAuthChallenge{}
+	return starts
 }
 
 // mcpScopeError is a call the server refused for scope, which pocketd's
@@ -1774,8 +1838,9 @@ const (
 // challengeScope is the scope a 403's challenge asks for, as pocketd may
 // say it: at most maxChallengeScopes scope tokens (RFC 6749, section 3.3:
 // printable ASCII but a space, a quote and a backslash) of at most
-// maxChallengeScopeText bytes each, none holding a secret the store
-// keeps; anything else is "", since the header is the server's text.
+// maxChallengeScopeText bytes each, and no secret the store keeps in any
+// of them or in them joined, as a secret with a space may be; anything
+// else is "", since the header is the server's text.
 func challengeScope(scope string, secrets []string) string {
 	tokens := strings.Fields(scope)
 	if len(tokens) == 0 || len(tokens) > maxChallengeScopes {
@@ -1787,7 +1852,17 @@ func challengeScope(scope string, secrets []string) string {
 			return ""
 		}
 	}
-	return strings.Join(tokens, " ")
+	joined := strings.Join(tokens, " ")
+	if holdsSecret(joined, secrets) || holdsSecret(scope, secrets) {
+		return ""
+	}
+	// A secret's words, however the challenge spaced them.
+	for _, secret := range secrets {
+		if words := strings.Join(strings.Fields(secret), " "); strings.Contains(words, " ") && strings.Contains(joined, words) {
+			return ""
+		}
+	}
+	return joined
 }
 
 // authFlight is one refresh, which every request refused meanwhile waits
