@@ -686,6 +686,10 @@ func (d *Data) Apply(ev proto.Event) Refetch {
 	d.rev++
 	switch ev.Type {
 	case proto.EventResync:
+		// The events a reply's copy waits for may be among those lost, so
+		// no event is dropped for a reply held before (applyThread; Codex
+		// review of #117).
+		d.threadReplied = nil
 		return RefetchAll
 	case proto.EventSchedules:
 		return RefetchSchedules

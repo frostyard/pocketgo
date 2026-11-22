@@ -362,9 +362,12 @@ func TestALostCloseReplyLeavesNoRetryState(t *testing.T) {
 }
 
 // A close's reply is the thread as pocketd closed it, and a closed thread
-// still changes (a note on its report): a later copy, which its event may
-// bring first, stays. A held copy as old as the reply stays too, and the
-// close's own event settles it.
+// still changes (a note on its report): a later closed copy, which its
+// event may bring first, stays, and so does a closed copy as old that
+// differs, which the close's own event settles. A copy not closed is
+// older whatever its updatedAt, which pocketd's clock may give the close
+// the same or earlier: the reply closes it with no event (Codex review of
+// #117).
 func TestACloseReplyNeverUndoesALaterCopy(t *testing.T) {
 	loaded := func() *Data {
 		d := &Data{}
@@ -391,16 +394,34 @@ func TestACloseReplyNeverUndoesALaterCopy(t *testing.T) {
 	}
 
 	d = loaded()
-	same := thread(1, proto.ThreadBlocked, time.Minute)
-	same.Report = "a report in the close's millisecond"
+	same := thread(1, proto.ThreadClosed, time.Minute)
+	same.Report = "a note in the close's millisecond"
 	apply(d, same)
 	d.ThreadClosed(closed)
-	if th, _ := d.Thread(1); th.State != proto.ThreadBlocked {
-		t.Errorf("a copy as old as the close's reply: %s, want it kept until the close's event", th.State)
+	if th, _ := d.Thread(1); th.Report != same.Report {
+		t.Errorf("a closed copy as old as the close's reply: %q, want it kept until the close's event", th.Report)
 	}
 	apply(d, closed)
-	if th, _ := d.Thread(1); th.State != proto.ThreadClosed {
-		t.Errorf("the close's own event after a copy as old: %s", th.State)
+	if th, _ := d.Thread(1); th.Report != closed.Report {
+		t.Errorf("the close's own event after a closed copy as old: %q", th.Report)
+	}
+
+	for name, held := range map[string]proto.Thread{
+		"as old":  thread(1, proto.ThreadBlocked, time.Minute),
+		"later":   thread(1, proto.ThreadBlocked, 2*time.Minute),
+		"fetched": thread(1, proto.ThreadOpen, 2*time.Minute),
+	} {
+		d = &Data{}
+		if name == "fetched" {
+			d.SetThreads(d.BeginThreads(), []proto.Thread{held})
+		} else {
+			d.SetThreads(d.BeginThreads(), []proto.Thread{thread(1, proto.ThreadOpen, 0)})
+			apply(d, held)
+		}
+		d.ThreadClosed(closed)
+		if th, _ := d.Thread(1); th.State != proto.ThreadClosed {
+			t.Errorf("a close's reply over a copy not closed, %s: %s, want closed", name, th.State)
+		}
 	}
 }
 

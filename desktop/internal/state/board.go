@@ -197,13 +197,15 @@ func (d *Data) Thread(id int64) (proto.Thread, bool) {
 	return proto.Thread{}, false
 }
 
-// ThreadClosed applies the reply of POST /v1/threads/{id}/close unless the
-// copy the client holds is as new or newer, as ThreadChanged does: a
-// closed thread still changes (pocketd notes on its report), and the event
-// of such a change may come before the reply. The close's own event comes
-// too, and settles a copy as old as the reply (applyThread).
+// ThreadClosed applies the reply of POST /v1/threads/{id}/close over a
+// copy that is not closed, whatever its updatedAt: a thread never leaves
+// closed, so that copy is older, though pocketd's clock may give the close
+// the same updatedAt or an earlier one (Codex review of #117). Over a
+// closed copy it applies only when later, as ThreadChanged does: a closed
+// thread still changes (pocketd notes on its report), and the event of
+// such a change may come before the reply.
 func (d *Data) ThreadClosed(t proto.Thread) {
-	if cur, ok := d.Thread(t.ID); ok && !t.UpdatedAt.After(cur.UpdatedAt) {
+	if cur, ok := d.Thread(t.ID); ok && cur.State == proto.ThreadClosed && !t.UpdatedAt.After(cur.UpdatedAt) {
 		return
 	}
 	d.putReply(d.touched(), t)
@@ -257,8 +259,9 @@ func (d *Data) putReply(at uint64, t proto.Thread) {
 // and that reply may come before the events of the changes ahead of it,
 // the stream lagging behind. While the client holds the reply's copy, an
 // event older than it is dropped, where the thread showed the older copy
-// until the change's own event came (pocketgo#42). That event always
-// comes, pocketd sending one with each change, and ends the drop.
+// until the change's own event came (pocketgo#42). That event comes,
+// pocketd sending one with each change, and ends the drop, unless a
+// resync lost it: a resync ends every drop (Apply).
 //
 // Every other event applies, the stream's order making it the newest: one
 // as old as the reply, since a change in the reply's millisecond may have

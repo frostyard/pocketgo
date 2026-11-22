@@ -294,6 +294,30 @@ func TestAThreadEventAppliesUnlessAReplyIsLater(t *testing.T) {
 	}
 }
 
+// A resync may lose the event a reply's copy waits for: no event is dropped
+// for a reply held before it, so the stream's order holds again, even
+// after the fetch that follows brought a copy as old as the reply, and for
+// an older event, as after pocketd's clock moved back (Codex review of
+// #117).
+func TestAResyncEndsTheDropOfAnOlderThreadEvent(t *testing.T) {
+	at := func(state proto.ShiftState, minutes time.Duration) proto.Thread {
+		return shifted(1, proto.Shift{State: state, Round: 3, MaxRounds: 8}, minutes*time.Minute)
+	}
+	var d Data
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(proto.ShiftRunning, 1)})
+	d.ThreadChanged(d.BeginThreadChange(), at(proto.ShiftEnded, 2))
+	if refetch := d.Apply(proto.Event{Type: proto.EventResync}); refetch != RefetchAll {
+		t.Fatalf("resync: %v", refetch)
+	}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(proto.ShiftEnded, 2)})
+	note := at(proto.ShiftEnded, 1)
+	note.Report = "a note after the clock moved back"
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &note})
+	if th, _ := d.Thread(1); th.Report != note.Report {
+		t.Errorf("an event after a resync: %q, want the event's", th.Report)
+	}
+}
+
 // A stop whose answer was lost keeps its request id only for the shift it
 // acted on: after a resume, the next stop is a new request, which pocketd
 // carries out, never a retry it answers with the running shift (Codex

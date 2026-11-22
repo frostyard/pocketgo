@@ -1302,8 +1302,9 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 }
 
 // closeThread closes a thread as the owner does: closing a closed one
-// changes nothing (protocol rule 28), and a close moves the thread's
-// updatedAt on, never back, as every change does.
+// changes nothing (protocol rule 28). A close's updatedAt is the clock's,
+// as pocketd's store.CloseThreadAs writes it, which may be the thread's
+// own or before it (Codex review of #117).
 func (s *Server) closeThread(w http.ResponseWriter, r *http.Request) {
 	var request proto.CloseThread
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
@@ -1323,7 +1324,7 @@ func (s *Server) closeThread(w http.ResponseWriter, r *http.Request) {
 	}
 	t := s.threads[i]
 	if t.State != proto.ThreadClosed {
-		t.State, t.UpdatedAt = proto.ThreadClosed, movedOn(t.UpdatedAt)
+		t.State, t.UpdatedAt = proto.ThreadClosed, Now
 		s.threads[i] = t
 		s.emitLocked(proto.Event{Type: proto.EventThread, Thread: &t})
 	}
