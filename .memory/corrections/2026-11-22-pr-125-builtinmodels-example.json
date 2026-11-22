@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide shows a builtinModels entry with provider and a model like a catalog one, beside the providers example.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Show how to add a model to an existing provider",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide has the owner let their key sign in as the service user, and check ssh <user>@<host> true, before a deploy over ssh: deploy.sh runs ssh and scp as that user.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P1] Set up SSH access before the first SSH deploy",
+  "promoted_to": "docs/design/setup.md"
+}

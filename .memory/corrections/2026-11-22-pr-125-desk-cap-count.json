@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide describes POCKETD_DESK_CAP as the threads on the desk: not closed, but for a plan's own thread (store.OpenThreads).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P3] Exclude plan-lead threads from the desk-cap description",
+  "promoted_to": "docs/design/setup.md"
+}

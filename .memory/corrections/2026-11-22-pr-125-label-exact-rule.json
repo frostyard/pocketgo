@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide states the label's rule as Server.syncReady keeps it: open and not a draft, a ready verdict at the head, base branch and merge base, CI green with at least one check, and labels kept after a merge.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Qualify when pocketd adds and removes the ready label",
+  "promoted_to": "docs/design/setup.md"
+}

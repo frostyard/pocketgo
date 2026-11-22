@@ -41,5 +41,6 @@ The service makes every model call.
 ## References
 
 - Shapes: [design: system architecture](../design/architecture.md), [plan: roadmap](../plans/roadmap.md)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md)
 - PiG: [divergences](https://github.com/MichaelKinsy/PiG/blob/main/docs/parity/DIVERGENCES.md)

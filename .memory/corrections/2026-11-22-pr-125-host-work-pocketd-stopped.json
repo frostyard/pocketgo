@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide runs host-side gh, git and copies into the user's folders with pocketd stopped once agents have run, a new checkout included, since the stop ends every agent command that could change what they read.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 11 (codex-cli 0.169.0) of head 5d7bab5: [P1] Keep agents out of the checkout until the host clone finishes",
+  "promoted_to": "docs/design/setup.md"
+}

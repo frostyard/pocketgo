@@ -91,5 +91,6 @@
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#service), [specs/protocol.md](../specs/protocol.md) (rules 1 and 57)
+- Set up by: [design: setup guide](../design/setup.md)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (item 15, the night shift, slice 1)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0020](0020-plan-before-building-with-the-plan-gate-and-consults-in-code.md), [ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [ADR-0023](0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)

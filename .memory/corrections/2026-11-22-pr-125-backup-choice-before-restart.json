@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says before the backup block that it copies the whole data folder, sign-ins included, but no working folder or upload, so it is taken with no thread open.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 16 (codex-cli 0.169.0) of head c6f5a00: [P2] Put the work-in-flight backup choice before the restart",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's admin shell carries the service's XDG_CONFIG_HOME when pocketd.env sets one, so gh auth login writes where Engine.GH looks.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 5 (codex-cli 0.169.0) of head 2212e96: [P1] Use the service's config directory for the GitHub login",
+  "promoted_to": "docs/design/setup.md"
+}

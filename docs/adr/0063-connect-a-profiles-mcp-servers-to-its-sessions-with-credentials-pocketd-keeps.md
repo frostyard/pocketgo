@@ -141,6 +141,7 @@
 
 ## References
 
-- Shapes: [design: system architecture](../design/architecture.md#service) (MCP servers, the sign-ins and the sandbox in [operational notes](../design/architecture.md#operational-notes)), [plans: roadmap](../plans/roadmap.md) (item 36)
+- Shapes: [design: system architecture](../design/architecture.md#service) (MCP servers, the sign-ins and the sandbox in [operational notes](../design/architecture.md#operational-notes)), [plans: roadmap](../plans/roadmap.md) (item 37)
 - Builds on: [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md), [ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [ADR-0023](0023-add-the-owners-own-model-providers-from-a-file-checked-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), [ADR-0062](0062-sign-pocketd-in-to-github-copilot-from-the-desktop-with-a-device-flow-it-runs.md)
 - Issue: [frostyard/pocketgo#79](https://github.com/frostyard/pocketgo/issues/79)
+- Set up by: [design: setup guide](../design/setup.md)

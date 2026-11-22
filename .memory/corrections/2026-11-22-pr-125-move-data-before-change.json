@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says changing POCKETD_DATA moves nothing and hides only the new folder: stop pocketd and move the whole data folder first.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 4 (codex-cli 0.169.0) of head fa6ee29: [P1] Move existing state before changing POCKETD_DATA",
+  "promoted_to": "docs/design/setup.md"
+}

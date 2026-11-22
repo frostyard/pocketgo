@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's admin shell sets INPUTRC=/dev/null, so Readline reads no agent-written ~/.inputrc, and keeps ~/.local/bin off its PATH.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 5 (codex-cli 0.169.0) of head 2212e96: [P1] Keep agent-writable Readline settings out of the admin shell",
+  "promoted_to": "docs/design/setup.md"
+}

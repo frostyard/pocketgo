@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's restore puts saved uploads back at their paths, owned by the service user, with the working folders before pocketd starts, since messages name their attachments by path.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 23 (codex-cli 0.169.0) of head f031651: [P1] Restore saved uploads before resuming work",
+  "promoted_to": "docs/design/setup.md"
+}

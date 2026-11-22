@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says the data folder must share the uploads folder's file system when that one makes no O_TMPFILE files, since attachments are then staged in the data folder (uploads.Folder).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 9 (codex-cli 0.169.0) of head 0519584: [P2] Document the filesystem constraint when moving the data folder",
+  "promoted_to": "docs/design/setup.md"
+}

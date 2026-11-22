@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide matches the CLI to the folders and zone the service runs with, from pocketd.env, the user manager's environment or a drop-in's flags, not only pocketd.env.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 17 (codex-cli 0.169.0) of head 5a24d0a: [P2] Match the CLI to the service's effective profile and skill paths",
+  "promoted_to": "docs/design/setup.md"
+}

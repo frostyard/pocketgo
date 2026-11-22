@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's admin shell sets PAGER, SYSTEMD_PAGER, GIT_PAGER and GH_PAGER to cat, so no less reads the user's agent-writable configuration.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 19 (codex-cli 0.169.0) of head 5b6f3e6: [P1] Disable pagers in the service user's admin shell",
+  "promoted_to": "docs/design/setup.md"
+}

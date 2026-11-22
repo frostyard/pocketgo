@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says an unknown field in a schedules.json entry makes only that entry invalid, while one beside schedules sends none.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P2] Distinguish schedule-entry errors from whole-file errors",
+  "promoted_to": "docs/design/setup.md"
+}

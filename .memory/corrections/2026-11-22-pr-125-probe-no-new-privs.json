@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's step 1 bwrap probe runs under setpriv --no-new-privs, as the unit does, and prints bwrap's own error, which pocketd's log leaves out.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 10 (codex-cli 0.169.0) of head 55d8571: [P2] Run the diagnostic bwrap probe with the unit's privileges",
+  "promoted_to": "docs/design/setup.md"
+}

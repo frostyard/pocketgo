@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says a backup of the data folder holds no open session's files, takes it with no thread open, and names what a backup of work in flight would have to copy in the same stop.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 14 (codex-cli 0.169.0) of head 4434b73: [P1] Snapshot active worktrees before restarting after a backup",
+  "promoted_to": "docs/design/setup.md"
+}

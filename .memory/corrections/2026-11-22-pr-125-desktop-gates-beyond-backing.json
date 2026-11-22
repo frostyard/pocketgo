@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says pocketd's backing is a prerequisite of the desktop's merge, whose Check to Merge reads frostyard/pocket's gates and refuses some repositories, classic branch protection among them.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 5 (codex-cli 0.169.0) of head 2212e96: [P2] Distinguish desktop merge eligibility from pocketd's verdict",
+  "promoted_to": "docs/design/setup.md"
+}

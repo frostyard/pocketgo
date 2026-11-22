@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide keeps the service user out of cron and at, so nothing of the agents runs outside pocketd's unit, whose stop the guide relies on.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 14 (codex-cli 0.169.0) of head 4434b73: [P1] Check for host job runners available to the service user",
+  "promoted_to": "docs/design/setup.md"
+}

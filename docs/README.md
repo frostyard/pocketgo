@@ -89,6 +89,7 @@ Docs are split by the question they answer:
 
 - [Agent-ready repository](design/agent-ready-repository.md)
 - [System architecture](design/architecture.md)
+- [Setup guide: from a clone to a delegated thread](design/setup.md)
 
 ### Specs
 

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says the data folder must be on the same mount as the uploads folder, not only the same file system, when the uploads' file system makes no O_TMPFILE files (uploads.sameDevice compares mount ids).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 20 (codex-cli 0.169.0) of head bceed2b: [P2] Require the same mount for fallback upload staging",
+  "promoted_to": "docs/design/setup.md"
+}

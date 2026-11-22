@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide has the owner check with systemctl --user show -p UnitPath --value, which asks the running manager, that the user's systemd looks in ~/.config/systemd/user, where deploy.sh puts the unit and the guide's drop-in goes.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 15 (codex-cli 0.169.0) of head c7edb48: [P1] Check the user manager's unit path before deploying",
+  "promoted_to": "docs/design/setup.md"
+}

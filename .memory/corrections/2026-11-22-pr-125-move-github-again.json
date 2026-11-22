@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide makes the GitHub sign-in again on a new host, with the profile folder, the global AGENTS.md and the skills, since none of them is in the data folder.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 18 (codex-cli 0.169.0) of head 7bfc254: [P2] Reprovision the GitHub sign-in before resuming on a new host",
+  "promoted_to": "docs/design/setup.md"
+}

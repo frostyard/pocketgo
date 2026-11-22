@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The setup guide links each ADR it follows directly, and each of those ADRs, and the protocol spec, links the guide back in its References (test/doc-backlinks.test.mjs).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Link the setup guide directly to its rationale and back",
+  "promoted_to": "docs/design/setup.md"
+}

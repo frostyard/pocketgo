@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide has the owner's commands pass -data when the service's data folder, named by the pocketd serving log line, is not the shell's default, not only when POCKETD_DATA is set.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P1] Match the CLI data path when XDG_STATE_HOME differs",
+  "promoted_to": "docs/design/setup.md"
+}

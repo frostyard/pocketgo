@@ -105,5 +105,6 @@
 ## References
 
 - Shapes: [specs/protocol.md](../specs/protocol.md) (rules 1, 5, 11, 21, 25 and 60 to 62), [design/architecture.md](../design/architecture.md#service) (the question tool), [design/architecture.md](../design/architecture.md#desktop-client)
+- Set up by: [design: setup guide](../design/setup.md)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (item 22, the question tool)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0046](0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0030](0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md), [ADR-0032](0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md)

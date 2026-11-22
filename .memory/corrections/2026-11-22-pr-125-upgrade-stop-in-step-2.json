@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's step 2 names the stop before an upgrade where it first names the upgrade, and points to the Upgrades section.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 6 (codex-cli 0.169.0) of head aa1dac0: [P1] Require a stop at the first upgrade instruction",
+  "promoted_to": "docs/design/setup.md"
+}

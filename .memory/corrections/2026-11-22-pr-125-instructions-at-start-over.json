@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says the global and folder AGENTS.md and skills are read when a session is made and at a standing session's Start Over, never at a later message, while a profile's edit reaches a standing session at its refresh.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Explain when edited instructions reach a standing session",
+  "promoted_to": "docs/design/setup.md"
+}

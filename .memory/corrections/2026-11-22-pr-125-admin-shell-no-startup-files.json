@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide runs the owner's commands as the service user from root with runuser, env -i and bash --noprofile --norc, never a login shell, whose startup files the agents can change (ADR-0012), and makes /bin/sh the user's shell for an ssh deploy.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 4 (codex-cli 0.169.0) of head fa6ee29: [P1] Account for agent-writable login files on the SSH path",
+  "promoted_to": "docs/design/setup.md"
+}

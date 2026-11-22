@@ -83,5 +83,6 @@
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#operational-notes), [specs/protocol.md](../specs/protocol.md) (rules 10a, 14e and 57)
+- Set up by: [design: setup guide](../design/setup.md)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (item 18, read-only folders and upright photos)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md) (a profile with another name is no profile), [ADR-0025](0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md), [ADR-0029](0029-attach-the-owners-files-to-a-message-stored-outside-the-data-folder.md) (its open question of a read-only uploads folder), [ADR-0033](0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md) (its consequence that an agent could change a skill)

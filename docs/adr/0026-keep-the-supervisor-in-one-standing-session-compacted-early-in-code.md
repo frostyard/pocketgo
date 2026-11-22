@@ -59,4 +59,5 @@ compactAt: 300000
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#service), [specs/protocol.md](../specs/protocol.md), [plans/roadmap.md](../plans/roadmap.md#phase-2--team-work-board-and-inbox)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0015](0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md), [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md)

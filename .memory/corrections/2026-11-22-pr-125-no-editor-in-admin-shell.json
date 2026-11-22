@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide writes pocketd.env and the unit's drop-in from a trusted copy or a here-document, never with an editor started as the service user, which loads configuration agents can change; the example profile is edited in the owner's own copy.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 8 (codex-cli 0.169.0) of head 01008a6: [P1] Edit pocketd.env without loading the service user's editor config",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says a cross-review gets neither its folder's AGENTS.md nor its .pi/skills, only the global ones.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Exclude cross-reviews from the folder-instructions promise",
+  "promoted_to": "docs/design/setup.md"
+}

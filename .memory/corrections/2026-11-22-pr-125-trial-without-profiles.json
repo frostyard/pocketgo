@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's trial run passes -profiles \"\" so no profile, schedule or provider of the owner's runs during a sandbox test.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P2] Disable live profiles during the disposable sandbox test",
+  "promoted_to": "docs/design/setup.md"
+}

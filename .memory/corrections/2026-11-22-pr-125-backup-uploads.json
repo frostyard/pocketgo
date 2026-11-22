@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says the backup holds no attachment, takes it with no thread open, and names the uploads among what a backup of work in flight must copy; a host move copies the uploads folder.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 17 (codex-cli 0.169.0) of head 5a24d0a: [P2] Include attachments in backups meant to resume active work",
+  "promoted_to": "docs/design/setup.md"
+}

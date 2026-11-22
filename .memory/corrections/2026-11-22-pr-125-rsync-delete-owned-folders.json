@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide copies the global AGENTS.md as a single file and keeps rsync --delete to folders the private copy holds whole (the profile folder, skills/), never ~/.pi/agent, which holds Pi's own files.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P1] Limit rsync deletions to directories owned by the sync",
+  "promoted_to": "docs/design/setup.md"
+}

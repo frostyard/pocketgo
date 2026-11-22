@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says a message reopens a merged thread only while its worktree is still there (team.FolderGone), and to delegate a new thread once pocketd removed it.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 13 (codex-cli 0.169.0) of head b90cbe8: [P1] Explain when a merged thread can take follow-up work",
+  "promoted_to": "docs/design/setup.md"
+}

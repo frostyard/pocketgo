@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide changes the global AGENTS.md only with pocketd stopped: a session made during an in-place write keeps the partial copy it read (Engine.loadContext).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 8 (codex-cli 0.169.0) of head 01008a6: [P2] Keep live in-place writes out of session initialization",
+  "promoted_to": "docs/design/setup.md"
+}

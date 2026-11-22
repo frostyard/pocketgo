@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide takes a backup with no thread open, and leaves a backup of work in flight to the owner, naming what it must copy: each working folder as its session names it, links and where they lead, a linked checkout's common git folder, and the uploads.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 21 (codex-cli 0.169.0) of head b29b5d2: [P1] Include backing directories in work-in-flight backups",
+  "promoted_to": "docs/design/setup.md"
+}

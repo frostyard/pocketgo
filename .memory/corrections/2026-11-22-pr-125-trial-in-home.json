@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's trial runs pocketd from ~/pocketd-trial, since /tmp may be mounted noexec.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 20 (codex-cli 0.169.0) of head bceed2b: [P2] Run the sandbox trial from an executable filesystem",
+  "promoted_to": "docs/design/setup.md"
+}

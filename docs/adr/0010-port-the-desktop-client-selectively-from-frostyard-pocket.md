@@ -55,4 +55,5 @@ The desktop client is built on MyGo and frostui, in the `desktop` module ([ADR-0
 ## References
 
 - Shapes: [design: system architecture](../design/architecture.md), [plan: roadmap](../plans/roadmap.md)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0006](0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0007](0007-split-the-repository-into-three-go-modules.md)

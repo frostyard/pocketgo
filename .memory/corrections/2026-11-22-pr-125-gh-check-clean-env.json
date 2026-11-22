@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide checks gh's stored token with env -i and pocketd's command environment, so GH_TOKEN or a session bus in the owner's shell cannot make the check pass.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Test gh's stored credential without shell token overrides",
+  "promoted_to": "docs/design/setup.md"
+}

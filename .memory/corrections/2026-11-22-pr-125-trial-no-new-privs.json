@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's trial runs pocketd under setpriv --no-new-privs, as the unit's NoNewPrivileges=yes does, so a bwrap that works only as setuid fails the trial too.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 6 (codex-cli 0.169.0) of head aa1dac0: [P2] Match the unit's privilege restriction in the host trial",
+  "promoted_to": "docs/design/setup.md"
+}

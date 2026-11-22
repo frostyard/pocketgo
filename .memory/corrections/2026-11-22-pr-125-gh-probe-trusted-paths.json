@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's gh check uses /usr/bin, /bin and /usr/local/bin in trustedGH's order, and XDG_CONFIG_HOME when pocketd.env sets it.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Probe the same gh executable and config directory pocketd uses",
+  "promoted_to": "docs/design/setup.md"
+}

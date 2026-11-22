@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "A corrections record states the rule at the pull request's last head: the git record of round 1 now says 2.45, as the guide does.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P3] Bring the earlier Git minimum record up to date",
+  "promoted_to": "docs/design/setup.md"
+}

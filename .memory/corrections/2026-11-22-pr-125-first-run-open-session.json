@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's first run picks the Supervisor profile in New Session and then chooses Open Session.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 4 (codex-cli 0.169.0) of head fa6ee29: [P3] Include the Open Session action in the first-run walkthrough",
+  "promoted_to": "docs/design/setup.md"
+}

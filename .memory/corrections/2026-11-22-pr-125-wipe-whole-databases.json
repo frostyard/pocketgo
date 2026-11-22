@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's only wipe moves durable.sqlite and work.sqlite whole: emptying tables would delete seeded rows, PiG's durable_metadata among them.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P1] Remove the instruction to empty PiG's tables",
+  "promoted_to": "docs/design/setup.md"
+}

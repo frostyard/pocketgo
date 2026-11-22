@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide syncs the private configuration with pocketd stopped; while it runs, only the profile folder and skills, with rsync -rt (whole files renamed into place). The global AGENTS.md is copied only with pocketd stopped.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 6 (codex-cli 0.169.0) of head aa1dac0: [P2] Publish individual live profiles atomically",
+  "promoted_to": "docs/design/setup.md"
+}

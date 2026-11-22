@@ -79,5 +79,6 @@ The code holds a single file a mount shows, but every folder pocketd names must 
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#operational-notes), [specs/protocol.md](../specs/protocol.md) (rule 14e)
+- Set up by: [design: setup guide](../design/setup.md)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (Phase 2, item 20)
 - Builds on: [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0025](0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md), [ADR-0035](0035-make-the-skills-and-uploads-folders-read-only-to-agents.md), [ADR-0043](0043-load-the-global-and-folder-agents-md-and-the-skills-into-every-session.md) (its known limit)

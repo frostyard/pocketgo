@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The round 19 trial record states the final path, ~/pocketd-trial.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 22 (codex-cli 0.169.0) of head 2db1c44: [P3] Record the final executable path for the sandbox trial",
+  "promoted_to": "docs/design/setup.md"
+}

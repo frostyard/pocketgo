@@ -60,5 +60,6 @@
 ## References
 
 - Shapes: [specs: protocol rules 1, 5, 9 and 68](../specs/protocol.md), [design: system architecture](../design/architecture.md#service), [design: desktop client](../design/architecture.md#desktop-client), [plans: roadmap](../plans/roadmap.md) (item 31)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0010](0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0027](0027-start-the-owners-session-on-a-repository-in-a-new-worktree-named-in-code.md), [ADR-0028](0028-let-the-owner-change-a-sessions-model-from-the-composer.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md), [ADR-0050](0050-search-every-session-through-an-fts5-index-in-the-work-database.md)
 - Issue: [frostyard/pocketgo#78](https://github.com/frostyard/pocketgo/issues/78)

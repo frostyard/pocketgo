@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says the Linux packages make app builds depend on WebKitGTK, since desktop/mygo.json leaves linux.webview unset, while a run from source needs GTK 3.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 5 (codex-cli 0.169.0) of head 2212e96: [P2] Distinguish Linux package dependencies from source-run needs",
+  "promoted_to": "docs/design/setup.md"
+}

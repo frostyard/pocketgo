@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide checks sshd -T -C with the deploying machine's name and address as the host sees them, and names the values it must show.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 19 (codex-cli 0.169.0) of head 5b6f3e6: [P1] Check SSH policy for the actual deploy connection",
+  "promoted_to": "docs/design/setup.md"
+}

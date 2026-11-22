@@ -64,4 +64,5 @@ The owner also considered specpi-jev-guard. It settles obvious commands with loc
 ## References
 
 - Shapes: [design: system architecture](../design/architecture.md#service), [operational notes](../design/architecture.md#operational-notes), [specs: protocol](../specs/protocol.md), [plans: roadmap](../plans/roadmap.md)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md)

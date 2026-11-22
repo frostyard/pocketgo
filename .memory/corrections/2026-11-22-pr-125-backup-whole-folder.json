@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says the backup block copies the whole data folder, sign-ins included, not the databases alone.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 17 (codex-cli 0.169.0) of head 5a24d0a: [P2] Describe the backup as a copy of the whole data folder",
+  "promoted_to": "docs/design/setup.md"
+}

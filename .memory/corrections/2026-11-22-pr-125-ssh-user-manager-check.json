@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide sends a host whose sshd runs with UsePAM no to the incus deploy, and checks over the deploy's own ssh connection that ssh <user>@<host> systemctl --user is-system-running answers, since an ssh command without pam_systemd has no XDG_RUNTIME_DIR.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 23 (codex-cli 0.169.0) of head f031651: [P1] Check the user systemd bus over the actual SSH deploy connection",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says pocketd counts CI only when it reads the checks and statuses whole within ten pages of 100 (github.CIChecks), and a longer or shifting list counts as pending.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 6 (codex-cli 0.169.0) of head aa1dac0: [P2] Qualify the green-CI rule for incomplete GitHub reads",
+  "promoted_to": "docs/design/setup.md"
+}

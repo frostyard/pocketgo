@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says a private profile's sessions start only in its home and have no team tools, not that its commands are confined there.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P2] Describe private home as a starting directory, not confinement",
+  "promoted_to": "docs/design/setup.md"
+}

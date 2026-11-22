@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's clone passes an empty credential.helper before gh's, so no helper the system's git configuration names runs.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 19 (codex-cli 0.169.0) of head 5b6f3e6: [P2] Reset inherited credential helpers for the clone",
+  "promoted_to": "docs/design/setup.md"
+}

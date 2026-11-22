@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide drops user_readenv=1 from pam_env.so in /etc/pam.d/sshd for an ssh deploy, since PAM reads the agent-writable ~/.pam_environment with it, whatever sshd's own settings.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 21 (codex-cli 0.169.0) of head b29b5d2: [P1] Check PAM's user-environment setting on SSH deploy hosts",
+  "promoted_to": "docs/design/setup.md"
+}
