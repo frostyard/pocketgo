@@ -69,7 +69,7 @@ All three build with `CGO_ENABLED=0`. The iPad build is the one exception: Go li
 
 - **Commands:** REST calls with JSON bodies.
 - **Live updates:** one SSE stream. It opens with a `hello`, at the client's `Last-Event-ID` or at the newest event, so a client always has an event to come back from; before a `resync`, at a number that resyncs again. Each entry is followed by its session, with the new `updatedAt` and usage. A session's live state carries the messages that wait for a run.
-- **Version:** the client sends the protocol version, and the service checks it. The version is `proto.Version`, 31 now: a client and a service of different versions refuse each other, so neither keeps code for the other's.
+- **Version:** the client sends the protocol version, and the service checks it. The version is `proto.Version`, 32 now: a client and a service of different versions refuse each other, so neither keeps code for the other's.
 - **Sessions:** a session carries the profile it started from and the route that chose its model; a thread's worker also names the specialist's session that started it, `startedBy`, read from the thread that names it its worker in every copy of the session, the list's, the detail's and the events' ([protocol rule 23a](../specs/protocol.md)). The desktop nests the worker under that session. A private agent's session also carries `renamable`, which the owner's rename checks again ([ADR-0058](../adr/0058-rename-a-private-agents-session-from-the-desktop-checked-in-code.md), [protocol rule 68](../specs/protocol.md)).
 - **Request ids:** every state-changing request carries one. The service applies each request id once and records its author.
 - **Authentication:** one owner, with a token per device (`pocketd device add NAME`).

@@ -263,8 +263,9 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	}
 	// The thread it carries on names it as its successor (ADR-0061): one
 	// of the caller's profile's threads, no cross-review, and no plan's
-	// work, whose threads its plan delivers.
-	if d.Follows != 0 {
+	// work, whose threads its plan delivers. A caller that is no
+	// supervisor is refused as such below.
+	if d.Follows != 0 && caller != nil && caller.Role == profiles.RoleSupervisor {
 		if d.Plan != nil {
 			return store.ThreadRow{}, errors.New("a plan's thread carries on no thread: leave follows out")
 		}
