@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Build a test fixture's JSON escape in code: a tool that writes the file may turn the escape into the character, and the test then guards nothing.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 3 (codex-cli 0.169.0) of head 35c53ab: [P2] Exercise decoded-secret detection in its regression test",
+  "promoted_to": "service/pig/mcp_round3_test.go"
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
@@ -22,11 +23,9 @@ func (s *Server) StartMCP() {
 	if len(s.engine.MCPProfiles()) == 0 {
 		return
 	}
-	s.mcpPass(func(ctx context.Context) error {
+	s.mcpGo(func(ctx context.Context) {
 		s.engine.ConnectMCP(ctx)
-		s.mcpMu.Lock()
-		defer s.mcpMu.Unlock()
-		return s.upgradeMCPTools(ctx, "")
+		s.mcpUpgrade(ctx, "", mcpRetryFirst)
 	})
 }
 
@@ -34,16 +33,19 @@ func (s *Server) StartMCP() {
 // which just changed (pig.Options.OnMCPTools), in a pass of its own that
 // nothing waits for. It does not block.
 func (s *Server) MCPToolsChanged(profile string) {
-	s.mcpPass(func(ctx context.Context) error {
-		s.mcpMu.Lock()
-		defer s.mcpMu.Unlock()
-		return s.upgradeMCPTools(ctx, profile)
-	})
+	s.mcpGo(func(ctx context.Context) { s.mcpUpgrade(ctx, profile, mcpRetryFirst) })
 }
 
-// mcpPass runs pass in the background unless the server stopped; Stop
-// waits for it and ends its context.
-func (s *Server) mcpPass(pass func(context.Context) error) {
+// The waits before a pass that failed is tried again: mcpRetryFirst,
+// doubled each time, up to mcpRetryMost.
+const (
+	mcpRetryFirst = time.Minute
+	mcpRetryMost  = 30 * time.Minute
+)
+
+// mcpGo runs f in the background unless the server stopped; Stop waits
+// for it and ends its context.
+func (s *Server) mcpGo(f func(context.Context)) {
 	s.sessionMu.Lock()
 	if s.stopped {
 		s.sessionMu.Unlock()
@@ -53,10 +55,30 @@ func (s *Server) mcpPass(pass func(context.Context) error) {
 	s.sessionMu.Unlock()
 	go func() {
 		defer s.passes.Done()
-		if err := pass(s.passCtx); err != nil {
-			s.log.Warn("give sessions their profiles' MCP tools", "err", err)
-		}
+		f(s.passCtx)
 	}()
+}
+
+// mcpUpgrade runs a pass (upgradeMCPTools) under mcpMu. A pass that
+// failed for a session is tried again after wait, then twice the wait
+// each time, up to mcpRetryMost, until it succeeds: no new listing may
+// come to start another.
+func (s *Server) mcpUpgrade(ctx context.Context, only string, wait time.Duration) {
+	s.mcpMu.Lock()
+	err := s.upgradeMCPTools(ctx, only)
+	s.mcpMu.Unlock()
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	s.log.Warn("give sessions their profiles' MCP tools; tried again later", "err", err, "in", wait)
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.stopped {
+		return
+	}
+	s.mcpStops = append(s.mcpStops, s.mcpTimer(wait, func() {
+		s.mcpGo(func(ctx context.Context) { s.mcpUpgrade(ctx, only, min(2*wait, mcpRetryMost)) })
+	}))
 }
 
 // mcpAfterCreate gives session id, just recorded, its profile's MCP tools

@@ -3,6 +3,7 @@ package pig
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -66,6 +67,11 @@ const (
 	maxMCPImageBytes = 4 << 20
 	// maxMCPServerText bounds what a server's own error says, in bytes.
 	maxMCPServerText = 1000
+	// maxMCPMessage bounds one message a server sends, in bytes, and
+	// maxMCPListPages the pages of its tool list pocketd reads: so a list,
+	// whatever its length, holds at most their product in memory.
+	maxMCPMessage   = 8 << 20
+	maxMCPListPages = 4
 	// mcpLoginTimeout bounds each request of pocketd mcp login.
 	mcpLoginTimeout = 30 * time.Second
 	// The waits before pocketd tries again to connect a server that failed
@@ -120,14 +126,16 @@ func mcpPlainName(server, tool string) string {
 	return mcpToolPrefix + profiles.MCPNamespace(server) + "__" + profiles.MCPNamespace(tool)
 }
 
-// mcpDigestName is a server's tool named by its plain name, cut, and a
-// digest of the server's and the tool's names: the same for the same
-// tool, whatever else the servers list.
+// mcpDigestName is a server's tool named by its plain name, cut, then __
+// and a digest of the server's and the tool's names: the same for the
+// same tool, whatever else the servers list. It ends with __ and the
+// digest, which no plain name does (a plain name's tool part holds no
+// __), so no tool's plain name is another's digest name.
 func mcpDigestName(server, tool string) string {
 	name := mcpPlainName(server, tool)
 	sum := sha256.Sum256([]byte(server + "\x00" + tool))
 	digest := hex.EncodeToString(sum[:])[:8]
-	return name[:min(len(name), maxMCPToolName-len(digest)-1)] + "_" + digest
+	return name[:min(len(name), maxMCPToolName-len(digest)-2)] + "__" + digest
 }
 
 // delimited says whether a part of a plain tool name leaves the __
@@ -432,7 +440,7 @@ func mayPass(err error) bool {
 	var oauthErr *oauth.OAuthError
 	var auth *mcp.McpAuthRequiredError
 	return !errors.Is(err, errMCPNeedsHeader) && !errors.Is(err, errMCPNotSignedIn) && !errors.Is(err, errMCPSignIn) &&
-		!errors.As(err, &oauthErr) && !errors.As(err, &auth)
+		!errors.As(err, &oauthErr) && !errors.As(err, &auth) && !errors.Is(err, errMCPScope)
 }
 
 // retryLater connects c again after wait, and again after twice the wait,
@@ -556,7 +564,111 @@ func normalSchema(input json.RawMessage) json.RawMessage {
 	if err != nil || len(data) > maxMCPSchema {
 		return json.RawMessage(emptySchema)
 	}
+	var decoded any
+	if json.Unmarshal(data, &decoded) != nil || !validSchema(decoded, 0) {
+		return json.RawMessage(emptySchema)
+	}
 	return data
+}
+
+// maxSchemaDepth bounds how deep validSchema reads a schema.
+const maxSchemaDepth = 32
+
+// validSchema says whether a decoded JSON Schema holds a schema wherever
+// its keywords take one, as a model provider checks it: an object or a
+// boolean under properties, items and the like, lists of them under
+// allOf and the like, a type that is a name or a list of names, and a
+// required list of names. Any other keyword is the server's.
+func validSchema(value any, depth int) bool {
+	if depth > maxSchemaDepth {
+		return false
+	}
+	if _, ok := value.(bool); ok {
+		return true
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	for key, v := range object {
+		switch key {
+		case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
+			fields, ok := v.(map[string]any)
+			if !ok {
+				return false
+			}
+			for _, field := range fields {
+				if !validSchema(field, depth+1) {
+					return false
+				}
+			}
+		case "items":
+			if list, ok := v.([]any); ok {
+				for _, item := range list {
+					if !validSchema(item, depth+1) {
+						return false
+					}
+				}
+			} else if !validSchema(v, depth+1) {
+				return false
+			}
+		case "additionalProperties", "additionalItems", "not", "contains", "propertyNames", "if", "then", "else",
+			"unevaluatedProperties", "unevaluatedItems":
+			if !validSchema(v, depth+1) {
+				return false
+			}
+		case "allOf", "anyOf", "oneOf", "prefixItems":
+			list, ok := v.([]any)
+			if !ok || len(list) == 0 {
+				return false
+			}
+			for _, item := range list {
+				if !validSchema(item, depth+1) {
+					return false
+				}
+			}
+		case "type":
+			if !schemaType(v) {
+				return false
+			}
+		case "required":
+			list, ok := v.([]any)
+			if !ok {
+				return false
+			}
+			for _, item := range list {
+				if _, ok := item.(string); !ok {
+					return false
+				}
+			}
+		case "enum":
+			if _, ok := v.([]any); !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// schemaTypes are JSON Schema's type names.
+var schemaTypes = []string{"object", "array", "string", "number", "integer", "boolean", "null"}
+
+// schemaType says whether a schema's type is a type name or a list of
+// them.
+func schemaType(v any) bool {
+	if name, ok := v.(string); ok {
+		return slices.Contains(schemaTypes, name)
+	}
+	list, ok := v.([]any)
+	if !ok || len(list) == 0 {
+		return false
+	}
+	for _, item := range list {
+		if name, ok := item.(string); !ok || !slices.Contains(schemaTypes, name) {
+			return false
+		}
+	}
+	return true
 }
 
 // mcpSchema is a tool's schema from its input schema, as normalSchema
@@ -605,6 +717,11 @@ var (
 	// server_error, or the sign-in holds no refresh token. PiG's flow then
 	// starts an authorization, which refreshOnly refuses with it.
 	errMCPRefresh = errors.New("could not refresh its sign-in")
+	// errMCPScope is a call the server refused for a scope pocketd's
+	// sign-in lacks (403 insufficient_scope): a step up needs the owner.
+	errMCPScope = errors.New("needs a scope its sign-in lacks")
+	// errMCPList is a tool list that is no list.
+	errMCPList = errors.New("answered its tool list with no list")
 )
 
 // mcpAttempt is one attempt to connect a server, which every caller that
@@ -688,7 +805,8 @@ func (c *mcpConn) open(ctx context.Context) (*mcp.Client, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("%w: %s (pocketd mcp set-header %s %s)", errMCPNeedsHeader, missing[0], server.Name, missing[0])
 	}
-	options := mcp.StreamableHTTPTransportOptions{URL: server.URL, Headers: headers, Fetch: mcpClient(server.Timeout), OpenGetStream: new(false)}
+	options := mcp.StreamableHTTPTransportOptions{URL: server.URL, Headers: headers, Fetch: mcpClient(server.Timeout), OpenGetStream: new(false),
+		MaxMessageBytes: maxMCPMessage}
 	if server.OAuth != nil {
 		if !store.signedIn(server.Name, server.URL) {
 			return nil, errMCPNotSignedIn
@@ -701,7 +819,7 @@ func (c *mcpConn) open(ctx context.Context) (*mcp.Client, error) {
 		if err != nil {
 			return nil, err
 		}
-		options.AuthProvider = oauth.AdaptOAuthProvider(refreshOnly{provider})
+		options.AuthProvider = scopeGuard{oauth.AdaptOAuthProvider(refreshOnly{provider})}
 	}
 	transport, err := mcp.NewStreamableHTTPTransport(options)
 	if err != nil {
@@ -719,11 +837,34 @@ func (c *mcpConn) open(ctx context.Context) (*mcp.Client, error) {
 // registration.
 const mcpClientName = "pocketd"
 
-// list reads the server's tools on client.
+// list reads the server's tools on client, a page at a time, and keeps no
+// more than pocketd takes: at most maxMCPTools tools, from at most
+// maxMCPListPages pages of at most maxMCPMessage bytes each. PiG's own
+// ListTools reads every page, up to a thousand, before it returns.
 func (c *mcpConn) list(ctx context.Context, client *mcp.Client) error {
-	listed, err := client.ListTools(ctx, mcp.RequestOptions{})
-	if err != nil {
-		return err
+	var listed []mcp.Tool
+	var cursor *string
+	for page := 0; page < maxMCPListPages && len(listed) < maxMCPTools; page++ {
+		var params any
+		if cursor != nil {
+			params = map[string]string{"cursor": *cursor}
+		}
+		raw, err := client.Request(ctx, "tools/list", params, mcp.RequestOptions{})
+		if err != nil {
+			return err
+		}
+		var result struct {
+			Tools      []mcp.Tool `json:"tools"`
+			NextCursor *string    `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return errMCPList
+		}
+		listed = append(listed, result.Tools[:min(len(result.Tools), maxMCPTools-len(listed))]...)
+		if result.NextCursor == nil || *result.NextCursor == "" {
+			break
+		}
+		cursor = result.NextCursor
 	}
 	c.hub.listed(c.server.Name, toolsOf(listed))
 	return nil
@@ -804,6 +945,7 @@ func (c *mcpConn) call(ctx context.Context, tool string, args any) durable.ToolE
 		var abort *mcp.McpAbortError
 		var timeout *mcp.McpTimeoutError
 		var status *mcp.McpHttpError
+		var oauthErr *oauth.OAuthError
 		switch {
 		case errors.As(err, &expired) && attempt == 0:
 			c.drop(client)
@@ -811,9 +953,11 @@ func (c *mcpConn) call(ctx context.Context, tool string, args any) durable.ToolE
 		case errors.As(err, &rpc):
 			// The server's own answer to the call: the connection holds.
 			return toolText("", fmt.Errorf("MCP server %s refused the call: %s", c.server.Name, c.serverText(rpc.Message)))
-		case ctx.Err() != nil, errors.As(err, &abort), errors.As(err, &timeout), errors.As(err, &status):
+		case ctx.Err() != nil, errors.As(err, &abort), errors.As(err, &timeout), errors.As(err, &status), errors.As(err, &oauthErr),
+			errors.Is(err, errMCPScope), errors.Is(err, errMCPRefresh), errors.Is(err, errMCPSignIn):
 			// This call alone ended, or the server refused it alone (an
-			// HTTP status, a 401 included): the connection holds.
+			// HTTP status, a 401 included, or its sign-in, which the next
+			// request tries again): the connection holds.
 			return c.errorResult(err)
 		}
 		c.drop(client)
@@ -853,6 +997,10 @@ func (c *mcpConn) failure(err error) string {
 		return "refused pocketd's sign-in, and its refresh: the owner signs in again with pocketd mcp login " + name
 	case errors.Is(err, errMCPRefresh):
 		return "refused pocketd's sign-in, and pocketd could not refresh it now: try again later; if it goes on, the owner signs in again with pocketd mcp login " + name
+	case errors.Is(err, errMCPScope):
+		return "refused the call for a scope pocketd's sign-in lacks (HTTP 403): the owner adds it to the server's oauth scope in mcp.json and signs in again with pocketd mcp login " + name
+	case errors.Is(err, errMCPList):
+		return errMCPList.Error() + ": try again later"
 	case errors.As(err, &auth):
 		if c.server.OAuth != nil {
 			return "refused pocketd's sign-in (HTTP 401): the owner signs in again with pocketd mcp login " + name
@@ -970,7 +1118,7 @@ func holdsSecret(text string, secrets []string) bool {
 // room for before any text. A structured result is redacted before PiG
 // renders it as JSON, whose escapes a secret's spelling would not match.
 func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult {
-	const imagesNotice = "[pocketd left out %d images: a result takes at most %d, of at most %d bytes each]"
+	const imagesNotice = "[pocketd left out %d images: a result takes at most %d, of at most %d bytes each, png, jpeg, gif or webp]"
 	cutMark := fmt.Sprintf("\n[pocketd cut the rest: the result is longer than %d bytes]", maxMCPOutput)
 	budget := maxMCPOutput - len(fmt.Sprintf(imagesNotice, 9_999_999_999, maxMCPImages, maxMCPImageBytes)) - len(cutMark)
 	secrets := c.hub.store.secrets()
@@ -980,7 +1128,7 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 	images, dropped, done := 0, 0, false
 	for _, block := range mcp.ToLLMContent(safe) {
 		if block.Type == mcp.LLMContentTypeImage {
-			if images >= maxMCPImages || len(block.Data) > maxMCPImageBytes {
+			if images >= maxMCPImages || len(block.Data) > maxMCPImageBytes || !mcpImage(block.MimeType, block.Data, secrets) {
 				dropped++
 				continue
 			}
@@ -1014,6 +1162,38 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 		r.IsError = &isError
 	}
 	return r
+}
+
+// scopeGuard is the OAuth sign-in of a serving pocketd's connection: a
+// 403 that asks for more scope (PiG hands it here as an insufficient_scope
+// challenge) is errMCPScope at once, since the step up needs the owner,
+// and a 401 is PiG's refresh (refreshOnly).
+type scopeGuard struct{ mcp.AuthProvider }
+
+func (g scopeGuard) OnUnauthorized(ctx context.Context, unauthorized mcp.UnauthorizedContext) error {
+	if unauthorized.Response != nil && unauthorized.Response.StatusCode == http.StatusForbidden {
+		return errMCPScope
+	}
+	if handler, ok := g.AuthProvider.(mcp.UnauthorizedHandler); ok {
+		return handler.OnUnauthorized(ctx, unauthorized)
+	}
+	return nil
+}
+
+// mcpImageTypes are the image types a result's image may have: the ones
+// the model providers take.
+var mcpImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+// mcpImage says whether an image of a result goes to the model: one of
+// mcpImageTypes, its data base64 that decodes, and neither holding a
+// secret the store keeps. A server's image is never redacted inside; one
+// that fails is left out.
+func mcpImage(mimeType, data string, secrets []string) bool {
+	if !slices.Contains(mcpImageTypes, mimeType) || holdsSecret(data, secrets) {
+		return false
+	}
+	_, err := base64.StdEncoding.DecodeString(data)
+	return err == nil
 }
 
 // refreshOnly is the OAuth sign-in a serving pocketd connects with: it

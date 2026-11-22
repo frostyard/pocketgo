@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/team"
@@ -123,6 +124,37 @@ func TestAPlansLeadTakesNoMCPTool(t *testing.T) {
 	h.server.passes.Wait()
 	if got := h.engine.mcpTools[thread.Session]; !slices.Equal(got, []string{"", ""}) {
 		t.Fatalf("the lead was given the MCP tools of %q", got)
+	}
+}
+
+// A pass that failed for a session is tried again later, waiting longer
+// each time, with no new listing to start it (Codex review of #126,
+// round 3).
+func TestAFailedMCPPassIsTriedAgain(t *testing.T) {
+	h := newTeamHarness(t)
+	own, _, _ := mcpSessions(t, h)
+	h.engine.mcpProfiles = []string{"duncan"}
+	h.engine.mcpFails = 3
+	var waits []time.Duration
+	var runs []func()
+	h.server.mcpTimer = func(d time.Duration, f func()) func() {
+		waits, runs = append(waits, d), append(runs, f)
+		return func() {}
+	}
+	h.server.MCPToolsChanged("duncan")
+	h.server.passes.Wait()
+	if len(runs) != 1 || len(h.engine.mcpTools[own]) != 0 {
+		t.Fatalf("retries %v, tools %v", waits, h.engine.mcpTools[own])
+	}
+	runs[0]()
+	h.server.passes.Wait()
+	if len(runs) != 2 || !slices.Equal(waits, []time.Duration{mcpRetryFirst, 2 * mcpRetryFirst}) {
+		t.Fatalf("retries %v", waits)
+	}
+	runs[1]()
+	h.server.passes.Wait()
+	if got := h.engine.mcpTools[own]; len(got) == 0 || got[len(got)-1] != "duncan" || len(runs) != 2 {
+		t.Fatalf("tools %v after %d retries", got, len(runs))
 	}
 }
 

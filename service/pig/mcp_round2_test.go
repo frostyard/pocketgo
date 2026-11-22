@@ -27,7 +27,7 @@ func TestASchemaThatSpellsASecretWithEscapesIsOfferedWithNone(t *testing.T) {
 	f.keepHeader(notesKey)
 	fake.set(func() {
 		fake.tools = []map[string]any{{"name": "escaped",
-			"inputSchema": json.RawMessage(`{"type":"object","properties":{"k":{"type":"string","default":"notes-secret-value"}}}`)}}
+			"inputSchema": json.RawMessage(`{"type":"object","properties":{"k":{"type":"string","default":"notes-` + "\\u" + `0073ecret-value"}}}`)}}
 	})
 	e := f.openMCP(fauxModels(), mcpServers(t), map[string][]string{"chani": {"notes"}})
 	e.ConnectMCP(context.Background())

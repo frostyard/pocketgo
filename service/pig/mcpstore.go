@@ -62,6 +62,56 @@ type mcpStore struct {
 	mu    sync.Mutex
 	creds map[string]*mcpCredential
 	tools map[string]mcpListing
+	// former are the secrets the store held and replaced or dropped since
+	// it opened, newest last, at most maxFormerSecrets, in memory alone: an
+	// exchange that went out with one may answer after a refresh replaced
+	// it, and its answer is redacted all the same (secrets).
+	former []string
+}
+
+// maxFormerSecrets bounds mcpStore.former.
+const maxFormerSecrets = 256
+
+// retireLocked keeps each secret of c, about to be replaced or dropped,
+// among the former ones; mu is held.
+func (s *mcpStore) retireLocked(c *mcpCredential) {
+	if c == nil {
+		return
+	}
+	for _, secret := range credentialSecrets(c) {
+		if !slices.Contains(s.former, secret) {
+			s.former = append(s.former, secret)
+		}
+	}
+	if extra := len(s.former) - maxFormerSecrets; extra > 0 {
+		s.former = slices.Delete(s.former, 0, extra)
+	}
+}
+
+// credentialSecrets are the secrets c holds: each header's value and its
+// credential, the OAuth tokens (an OpenID one too) and the client secret.
+func credentialSecrets(c *mcpCredential) []string {
+	var out []string
+	add := func(secret string) {
+		if secret != "" {
+			out = append(out, secret)
+		}
+	}
+	for _, v := range c.Headers {
+		add(v)
+		add(headerCredential(v))
+	}
+	if c.OAuth != nil {
+		if t := c.OAuth.Tokens; t != nil {
+			add(t.AccessToken)
+			add(t.RefreshToken)
+			add(t.IDToken)
+		}
+		if ci := c.OAuth.ClientInformation; ci != nil {
+			add(ci.ClientSecret)
+		}
+	}
+	return out
 }
 
 // errMCPStoreUnreadable is a store file that does not parse. Its own
@@ -161,6 +211,7 @@ func (s *mcpStore) saveCredsLocked() error {
 func (s *mcpStore) entryLocked(name, url string) *mcpCredential {
 	c := s.creds[name]
 	if c == nil || c.URL != url {
+		s.retireLocked(c)
 		c = &mcpCredential{URL: url}
 		s.creds[name] = c
 	}
@@ -194,6 +245,7 @@ func (s *mcpStore) setHeader(name, url, header, value string) error {
 	if c.Headers == nil {
 		c.Headers = map[string]string{}
 	}
+	s.retireLocked(&mcpCredential{Headers: map[string]string{header: c.Headers[header]}})
 	c.Headers[header] = value
 	return s.saveCredsLocked()
 }
@@ -203,9 +255,11 @@ func (s *mcpStore) setHeader(name, url, header, value string) error {
 func (s *mcpStore) forget(name string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.creds[name]; !ok {
+	c, ok := s.creds[name]
+	if !ok {
 		return false, nil
 	}
+	s.retireLocked(c)
 	delete(s.creds, name)
 	return true, s.saveCredsLocked()
 }
@@ -227,7 +281,9 @@ func (s *mcpStore) saveOAuth(name, url string, state oauth.McpOAuthState) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clone := state.Clone()
-	s.entryLocked(name, url).OAuth = &clone
+	c := s.entryLocked(name, url)
+	s.retireLocked(&mcpCredential{OAuth: c.OAuth})
+	c.OAuth = &clone
 	return s.saveCredsLocked()
 }
 
@@ -262,9 +318,9 @@ func (s *mcpStore) setListing(name, url string, tools []mcpTool) error {
 
 // secrets are every secret the store holds, longest first: each header's
 // value, and its credential (headerCredential) on its own, as a server
-// may echo the token alone; and the OAuth tokens (an OpenID one too) and
-// client secrets. No
-// text pocketd shows, a tool's result included, holds one (redact).
+// may echo the token alone; the OAuth tokens (an OpenID one too) and
+// client secrets; and the ones it held since it opened (former). No text
+// pocketd shows, a tool's result included, holds one (redact).
 func (s *mcpStore) secrets() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -275,21 +331,12 @@ func (s *mcpStore) secrets() []string {
 		}
 	}
 	for _, c := range s.creds {
-		for _, v := range c.Headers {
-			add(v)
-			add(headerCredential(v))
+		for _, secret := range credentialSecrets(c) {
+			add(secret)
 		}
-		if c.OAuth == nil {
-			continue
-		}
-		if t := c.OAuth.Tokens; t != nil {
-			add(t.AccessToken)
-			add(t.RefreshToken)
-			add(t.IDToken)
-		}
-		if ci := c.OAuth.ClientInformation; ci != nil {
-			add(ci.ClientSecret)
-		}
+	}
+	for _, secret := range s.former {
+		add(secret)
 	}
 	slices.SortStableFunc(out, func(a, b string) int { return len(b) - len(a) })
 	return out

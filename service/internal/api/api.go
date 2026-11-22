@@ -606,6 +606,11 @@ type Server struct {
 	pullsStarted bool
 	pullTimer    func(d time.Duration, f func()) (cancel func())
 	pullStop     func()
+	// mcpTimer schedules an MCP tools' pass tried again (mcpUpgrade;
+	// tests replace it), and mcpStops cancel the ones set; sessionMu
+	// guards mcpStops.
+	mcpTimer func(d time.Duration, f func()) (cancel func())
+	mcpStops []func()
 	// consultTimer wakes a delivery pass at a consult's deadline
 	// (armConsults; tests replace it), and consultCancel stops the one
 	// set; sessionMu guards consultCancel.
@@ -802,6 +807,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		retries: map[int64]*pendingRetry{}, retry: func(f func()) func() { t := time.AfterFunc(retryDelay, f); return func() { t.Stop() } },
 		untouched: map[int64]time.Time{}, touch: s.TouchSession, emit: func(e proto.Event) { hub.Publish(e) }, deskCap: team.DefaultDeskCap,
 		openThread: s.OpenThread, closeFailed: s.FailThread, releaseRequest: s.ReleaseRequest, unreleased: map[string]string{}, stale: map[string]bool{}, pullTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
+		mcpTimer:      func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		consultTimer:  func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		shiftTimer:    func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		scheduleTimer: func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
@@ -879,6 +885,10 @@ func (s *Server) Stop() {
 			s.launchCancel()
 			s.launchCancel = nil
 		}
+		for _, stop := range s.mcpStops {
+			stop()
+		}
+		s.mcpStops = nil
 		s.sessionMu.Unlock()
 		// A delivery pass, or a round of pull requests, that runs ends
 		// before the engine and the stores close.

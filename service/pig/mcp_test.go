@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -73,6 +74,9 @@ type fakeMCP struct {
 	// hold, when set, keeps every initialize waiting until it is closed,
 	// after it says so on arrived.
 	hold, arrived chan struct{}
+	// perPage, when set, makes tools/list answer pages of that many tools,
+	// each with a next cursor, and pages counts them.
+	perPage, pages int
 }
 
 func newFakeMCP(t *testing.T) *fakeMCP {
@@ -223,9 +227,23 @@ func (f *fakeMCP) serveMCP(w http.ResponseWriter, r *http.Request, body []byte) 
 		w.Header().Set("Mcp-Session-Id", "s1")
 		result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "fake", "version": "1"}}
 	case "tools/list":
+		if f.perPage > 0 {
+			f.pages++
+			var page []map[string]any
+			for i := range f.perPage {
+				page = append(page, map[string]any{"name": fmt.Sprintf("p%d_%d", f.pages, i), "inputSchema": map[string]any{"type": "object"}})
+			}
+			result = map[string]any{"tools": page, "nextCursor": "more"}
+			break
+		}
 		result = map[string]any{"tools": f.tools}
 	case "tools/call":
 		f.calls = append(f.calls, message.Params.Name)
+		if message.Params.Name == "admin" {
+			w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="admin"`)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		if message.Params.Name == "busy" {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return

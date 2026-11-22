@@ -323,11 +323,15 @@ func safeWord(code string) string {
 }
 
 // readLine reads one line of at most limit bytes from in, its line end
-// and the spaces around it dropped.
+// and the spaces around it dropped. A longer line is refused, never cut:
+// a part of an address would lose its iss, or cut its code.
 func readLine(in io.Reader, limit int) (string, error) {
 	line, err := bufio.NewReader(io.LimitReader(in, int64(limit)+2)).ReadString('\n')
 	if err != nil && (!errors.Is(err, io.EOF) || line == "") {
 		return "", err
+	}
+	if len(strings.TrimRight(line, "\r\n")) > limit {
+		return "", fmt.Errorf("the line is longer than %d bytes", limit)
 	}
 	return strings.TrimSpace(line), nil
 }
