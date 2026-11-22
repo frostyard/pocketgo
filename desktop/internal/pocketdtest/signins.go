@@ -68,7 +68,9 @@ func (s *Server) EndSignIn(provider string, state proto.SignInFlowState, account
 	if state == proto.FlowApproved {
 		flow.Account = account
 		row.State, row.Account = proto.SignInSignedIn, account
-		s.models = append(s.models, models...)
+		// The account's models replace the provider's earlier ones, as
+		// pocketd lists them (Codex review of #123, round 2).
+		s.models = append(slices.DeleteFunc(s.models, func(m proto.Model) bool { return m.Provider == provider }), models...)
 	}
 	row.Flow = &flow
 	s.emitLocked(proto.Event{Type: proto.EventSignIn, SignIn: new(*row)})

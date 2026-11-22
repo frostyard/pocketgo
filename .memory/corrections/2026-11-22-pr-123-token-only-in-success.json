@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "signins.parsePoll takes a token only in a 2xx answer with no error beside it; a token in another answer fails the flow, and RFC 8628's errors are read whatever the status.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 2 (codex-cli 0.169.0) of head 5877502: [P2] Require a successful poll response before accepting a token",
+  "promoted_to": "service/internal/signins/round2_test.go"
+}

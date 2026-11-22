@@ -49,23 +49,26 @@ func (d *Data) SignIn(provider string) (proto.SignIn, bool) {
 
 // SetSignIns records fetch f's sign-ins, unless a fetch begun later
 // already answered; a provider whose event came since f began keeps the
-// event's row.
-func (d *Data) SetSignIns(f Fetch, rows []proto.SignIn) {
+// event's row. It says whether a row the client had moved the models
+// pocketd runs (modelsMoved): a fetch may bring a sign-in before its
+// event, which then changes nothing (Codex review of #123, round 2).
+func (d *Data) SetSignIns(f Fetch, rows []proto.SignIn) (moved bool) {
 	if !d.signIns.list.answer(f) {
-		return
+		return false
 	}
 	d.rev++
 	d.signIns.list.status, d.signIns.list.err = ListLoaded, ""
 	out := make([]proto.SignIn, 0, len(rows))
 	for _, row := range rows {
-		if newer(d.signIns.touched[row.Provider], f) {
-			if kept, ok := d.SignIn(row.Provider); ok {
-				row = kept
-			}
+		before, had := d.SignIn(row.Provider)
+		if had && newer(d.signIns.touched[row.Provider], f) {
+			row = before
 		}
+		moved = moved || had && modelsMoved(before, row)
 		out = append(out, row)
 	}
 	d.signIns.rows = out
+	return moved
 }
 
 // SetSignInsError records that the sign-ins' fetch f failed, unless a
@@ -178,8 +181,19 @@ type signInSheet struct {
 	closed bool
 	// checking says the sheet asks pocketd for its flow, which the
 	// provider's row no longer names, and lost that pocketd answered it
-	// keeps it no more (settleSheet).
+	// keeps it no more (settleSheet); rev counts the copies of the flow
+	// the sheet took, so an answer read before the last is dropped.
 	checking, lost bool
+	rev            int
+}
+
+// orphanStart is a start whose sheet the owner closed while it went, and
+// whose answer never came: the start is sent again with its request id
+// until pocketd answers, then the flow it names is canceled (Codex review
+// of #123, round 2).
+type orphanStart struct {
+	provider string
+	busy     bool
 }
 
 // SheetView is the sign-in sheet as the window draws it.
@@ -277,9 +291,20 @@ func (s *Store) LoadSignIns() {
 			s.Data.SetSignInsError(f, err.Error())
 			return
 		}
-		s.Data.SetSignIns(f, rows)
+		if s.Data.SetSignIns(f, rows) {
+			s.modelsMoved()
+		}
 		s.settleSheet()
+		s.settleOrphan()
 	}))
+}
+
+// modelsMoved fetches what follows the models pocketd runs: the models,
+// and the profiles, whose model and problem pocketd decides from them
+// (Codex review of #123, round 2).
+func (s *Store) modelsMoved() {
+	s.LoadModels()
+	s.LoadProfiles()
 }
 
 // WantSignIns fetches the sign-ins once, for a view that shows them (the
@@ -307,6 +332,11 @@ func (s *Store) StartSignIn(provider string) {
 		sh.closed = false
 		return
 	}
+	// A closed start whose answer never came is the owner's again: this
+	// start, with its request id, shows its flow.
+	if s.orphan != nil && s.orphan.provider == provider && !s.orphan.busy {
+		s.orphan = nil
+	}
 	sh := &signInSheet{provider: provider}
 	s.sheet = sh
 	key := signInKey(provider)
@@ -330,11 +360,18 @@ func (s *Store) StartSignIn(provider string) {
 			// round 1). An answer that never came keeps it.
 			if gone(err) {
 				s.ids.Done(key)
+			} else if sh.closed {
+				// No answer came, and the owner canceled: the start goes
+				// again, now and after each event, fetch or reconnect
+				// until pocketd names its flow, which is canceled.
+				s.orphan = &orphanStart{provider: sh.provider}
+				s.settleOrphan()
 			}
 			return
 		}
 		s.ids.Done(key)
 		sh.flow = flow
+		sh.rev++
 		s.settleSheet()
 		// The owner closed the sheet while the start went: its flow is
 		// canceled too.
@@ -388,25 +425,67 @@ func (s *Store) settleSheet() {
 		return
 	}
 	if row.Flow != nil && row.Flow.ID == sh.flow.ID {
-		sh.flow = *row.Flow
+		if *row.Flow != sh.flow {
+			sh.flow = *row.Flow
+			sh.rev++
+		}
 		return
 	}
 	if sh.flow.State.Ended() || sh.checking {
 		return
 	}
 	sh.checking = true
-	id := sh.flow.ID
+	id, rev := sh.flow.ID, sh.rev
 	var flow proto.SignInFlow
 	s.do("Reading the sign-in to "+sh.provider, func(ctx context.Context, c *proto.Client) (err error) {
 		flow, err = c.SignInFlow(ctx, id)
 		return err
 	}, func(err error) {
 		sh.checking = false
+		// A copy the sheet took since the read went, an event's, is newer
+		// than its answer (Codex review of #123, round 2).
+		if sh.rev != rev || sh.flow.State.Ended() {
+			return
+		}
 		switch {
 		case err == nil && flow.ID == sh.flow.ID:
 			sh.flow = flow
+			sh.rev++
 		case gone(err):
 			sh.lost = true
+		}
+	})
+}
+
+// settleOrphan sends a closed start whose answer never came again, with
+// its request id, and cancels the flow pocketd names; one pocketd no
+// longer has is dropped. The store runs it after each event, each fetch of
+// the sign-ins and each reconnect, until it is settled.
+func (s *Store) settleOrphan() {
+	o := s.orphan
+	if o == nil || o.busy {
+		return
+	}
+	o.busy = true
+	key := signInKey(o.provider)
+	request := proto.StartSignIn{RequestID: s.ids.For(key, "start")}
+	var flow proto.SignInFlow
+	s.do("Settling the canceled sign-in to "+o.provider, func(ctx context.Context, c *proto.Client) (err error) {
+		flow, err = c.StartSignIn(ctx, o.provider, request)
+		return err
+	}, func(err error) {
+		o.busy = false
+		if s.orphan != o {
+			return
+		}
+		switch {
+		case err == nil:
+			s.orphan = nil
+			s.ids.Done(key)
+			s.cancelFlow(o.provider, flow)
+		case gone(err):
+			s.orphan = nil
+			s.ids.Done(key)
 		}
 	})
 }
@@ -455,7 +534,7 @@ func (s *Store) SignOutOf(provider string) {
 			return
 		}
 		s.Data.signedOut(f, row)
-		s.LoadModels()
+		s.modelsMoved()
 	})
 }
 

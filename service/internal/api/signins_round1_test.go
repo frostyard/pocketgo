@@ -26,28 +26,29 @@ func failRecordOnce(sh *signInHarness, kind string) {
 	}
 }
 
-// A start whose record failed still answers its flow to a retry with the
-// same request id, once that flow ended too, and never starts a second
-// one (Codex review of #123, round 1).
-func TestAStartWhoseRecordFailedAnswersItsFlowAgain(t *testing.T) {
+// A start whose record failed started nothing, so no flow runs that its
+// request id does not name: the retry with the same id starts the flow,
+// and a second retry answers that one (Codex review of #123, rounds 1
+// and 2).
+func TestAStartWhoseRecordFailedStartsNothing(t *testing.T) {
 	sh := newSignInHarness(t)
 	ctx := context.Background()
 	failRecordOnce(sh, startSignInKind+signins.Copilot)
 	_, err := sh.client.StartSignIn(ctx, signins.Copilot, proto.StartSignIn{RequestID: "s1"})
 	asError(t, err, http.StatusInternalServerError, proto.ErrorCodeInternal)
-	flow, ok := sh.server.signIns.flows.Latest(signins.Copilot)
-	if !ok || flow.State != proto.FlowWaiting {
-		t.Fatalf("the started flow %+v %v", flow, ok)
+	if flow, ok := sh.server.signIns.flows.Latest(signins.Copilot); ok {
+		t.Fatalf("a start whose record failed started %+v", flow)
 	}
-	if _, err := sh.client.CancelSignIn(ctx, flow.ID, proto.CancelSignIn{RequestID: "c1"}); err != nil {
+	first, err := sh.client.StartSignIn(ctx, signins.Copilot, proto.StartSignIn{RequestID: "s1"})
+	if err != nil || first.State != proto.FlowWaiting {
+		t.Fatalf("the retry %+v %v", first, err)
+	}
+	if _, err := sh.client.CancelSignIn(ctx, first.ID, proto.CancelSignIn{RequestID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
 	again, err := sh.client.StartSignIn(ctx, signins.Copilot, proto.StartSignIn{RequestID: "s1"})
-	if err != nil || again.ID != flow.ID || again.State != proto.FlowCanceled {
-		t.Fatalf("the retry answered %+v %v, want the first flow, canceled", again, err)
-	}
-	if latest, _ := sh.server.signIns.flows.Latest(signins.Copilot); latest.ID != flow.ID {
-		t.Fatalf("the retry started %s", latest.ID)
+	if err != nil || again.ID != first.ID || again.State != proto.FlowCanceled {
+		t.Fatalf("the second retry answered %+v %v, want the first flow, canceled", again, err)
 	}
 }
 

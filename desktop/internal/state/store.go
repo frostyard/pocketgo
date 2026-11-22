@@ -287,6 +287,9 @@ type Store struct {
 	sheet         *signInSheet
 	signOuts      map[string]*Pending
 	signInsWanted bool
+	// orphan is a start the owner canceled whose answer never came
+	// (settleOrphan).
+	orphan *orphanStart
 }
 
 // New returns a store with no sign-in.
@@ -343,7 +346,7 @@ func (s *Store) resetActions() {
 	s.launchKept = nil
 	s.launched = nil
 	s.drops = map[int64]*Pending{}
-	s.sheet, s.signOuts, s.signInsWanted = nil, map[string]*Pending{}, false
+	s.sheet, s.signOuts, s.signInsWanted, s.orphan = nil, map[string]*Pending{}, false, nil
 	for _, files := range s.attachments {
 		for _, a := range files {
 			if a.cancel != nil {
@@ -661,8 +664,9 @@ func (s *Store) apply(ev proto.Event) {
 		s.refetchUsage()
 	case RefetchModels:
 		// A provider signed in or out: New Session and the composer offer
-		// the models pocketd runs now, with no restart (ADR-0062).
-		s.LoadModels()
+		// the models pocketd runs now, with no restart, and the profiles
+		// pocketd routes on them (ADR-0062).
+		s.modelsMoved()
 	}
 	if s.Data.takeUsageMoved() && refetch != RefetchUsage && refetch != RefetchAll {
 		s.refetchUsage()
@@ -678,6 +682,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settlePlans()
 	s.settleProposals()
 	s.settleSheet()
+	s.settleOrphan()
 	s.changesEvent(ev)
 	// A live event, which streams a reply as it is written, changes the
 	// open session's run alone, and an entry a transcript alone: nothing
@@ -875,10 +880,12 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.PromptsStatus(); status != ListLoaded || s.fetching["prompts"] > 0 {
 		s.LoadPrompts()
 	}
-	// The sign-ins, once the Sign-ins page asked for them (ADR-0062).
+	// The sign-ins, once the Sign-ins page asked for them, and a start
+	// canceled whose answer never came (ADR-0062).
 	if status, _ := s.Data.SignInsStatus(); s.signInsWanted && (status != ListLoaded || s.fetching["signins"] > 0) {
 		s.LoadSignIns()
 	}
+	s.settleOrphan()
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -921,6 +928,7 @@ func (s *Store) Refresh() {
 	if s.signInsWanted {
 		s.LoadSignIns()
 	}
+	s.settleOrphan()
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}

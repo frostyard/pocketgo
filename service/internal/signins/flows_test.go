@@ -16,9 +16,7 @@ import (
 func flowsOn(t *testing.T, g *fakeGitHub, k *keeper) (*Flows, *fakeClock, *changes) {
 	t.Helper()
 	clock, ch := newFakeClock(), newChanges()
-	n := 0
-	f := New(Options{GitHub: g.client(), Keep: k.keep, Changed: ch.changed, Now: clock.Now, After: clock.After,
-		NewID: func() string { n++; return "flow" + string(rune('0'+n)) }})
+	f := New(Options{GitHub: g.client(), Keep: k.keep, Changed: ch.changed, Now: clock.Now, After: clock.After})
 	t.Cleanup(f.Stop)
 	return f, clock, ch
 }

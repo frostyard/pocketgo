@@ -209,16 +209,23 @@ func (g *GitHub) Poll(ctx context.Context, deviceCode string) (Poll, error) {
 	return parsePoll(body, status)
 }
 
-// parsePoll checks GitHub's answer to a poll: a token of printable
-// characters within its bound, or one of RFC 8628's errors. Any other
-// error ends the flow with GitHub's code and the start of its
-// description.
+// parsePoll checks GitHub's answer to a poll, of HTTP status status: a
+// token of printable characters within its bound, in a 2xx answer with no
+// error, or one of RFC 8628's errors, whatever the status. Any other error
+// ends the flow in pocketd's words (refusal).
 func parsePoll(body []byte, status int) (Poll, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return Poll{}, fmt.Errorf("GitHub's answer to a poll (%d) is no JSON object", status)
 	}
-	if _, ok := raw["access_token"]; ok {
+	// A token counts only in a success: a 2xx answer with no error beside
+	// it (Codex review of #123, round 2).
+	_, hasToken := raw["access_token"]
+	_, hasError := raw["error"]
+	if hasToken {
+		if status/100 != 2 || hasError {
+			return Poll{}, fmt.Errorf("GitHub's answer to a poll (%d) holds a token it does not grant", status)
+		}
 		token, err := stringField(raw, "access_token", maxSecret)
 		if err != nil {
 			return Poll{}, err

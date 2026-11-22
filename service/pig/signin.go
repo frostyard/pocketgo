@@ -38,14 +38,20 @@ var copilotExchange = func(ctx context.Context, p *ai.ModelsProvider, githubToke
 }
 
 // StoredSignIn is what the engine's credential store holds for provider,
-// with no secret in it (signins.State decides its state from it).
+// with no secret in it (signins.State decides its state from it). Its
+// error is its own words: PiG's read of a sign-ins file that does not
+// parse may quote the file, a credential included, and the error is
+// logged (Codex review of #123, round 2).
 func (e *Engine) StoredSignIn(_ context.Context, provider string) (signins.Stored, error) {
 	if e.auth == nil {
 		return signins.Stored{}, errNoStore
 	}
 	cred, ok, err := e.auth.GetRaw(provider)
-	if err != nil || !ok {
-		return signins.Stored{}, err
+	switch {
+	case err != nil:
+		return signins.Stored{}, errUnreadable
+	case !ok:
+		return signins.Stored{}, nil
 	}
 	return storedOf(cred, credentialNow()), nil
 }
@@ -118,16 +124,25 @@ func (e *Engine) KeepSignIn(ctx context.Context, provider, token string) (string
 
 // KeepSignIn's errors, which name no secret.
 var (
-	errKeepStopped = errors.New("the sign-in stopped before pocketd kept it")
+	errKeepStopped = errors.New("the request stopped before pocketd changed the sign-in")
 	errExchange    = errors.New("the Copilot token exchange or model list refused the GitHub sign-in")
 	errNoExchange  = errors.New("the Copilot exchange answered no sign-in")
 	errNotKept     = errors.New("the credential store did not keep the sign-in")
+	errNotRemoved  = errors.New("the credential store did not remove the sign-in")
+	errUnreadable  = errors.New("pocketd could not read its sign-ins file")
 )
 
-// SignOut takes provider's sign-in out of the engine's own credential
-// store, under its lock: a refresh after it finds none and writes
-// nothing, and the next model call of a session on the provider fails for
-// want of a sign-in. Only a provider a client signs in to signs out so.
+// SignOut takes provider's subscription sign-in out of the engine's own
+// credential store, under its lock: a refresh after it finds none and
+// writes nothing, and the next model call of a session on the provider
+// fails for want of a sign-in. Only a provider a client signs in to signs
+// out so. A credential that is no subscription's, as an API key a
+// Pi-format file may hold, stays: it is no sign-in pocketd lists, and a
+// sign-out with none changes nothing (Codex review of #123, round 2).
+// PiG's store has no delete on a condition, so the kind is read first;
+// the caller holds signins.Flows' write lock, which orders pocketd's own
+// writes of the provider, and PiG's refresh never changes a credential's
+// kind. Its errors are its own words, as StoredSignIn's are.
 func (e *Engine) SignOut(ctx context.Context, provider string) error {
 	if p, ok := signins.Find(provider); !ok || !p.Device {
 		return signins.ErrNoDeviceFlow
@@ -135,5 +150,18 @@ func (e *Engine) SignOut(ctx context.Context, provider string) error {
 	if e.auth == nil {
 		return errNoStore
 	}
-	return e.auth.Delete(ctx, provider)
+	cred, ok, err := e.auth.GetRaw(provider)
+	switch {
+	case err != nil:
+		return errUnreadable
+	case !ok || cred.Type != ai.CredentialOAuth:
+		return nil
+	}
+	if err := e.auth.Delete(ctx, provider); err != nil {
+		if ctx.Err() != nil {
+			return errKeepStopped
+		}
+		return errNotRemoved
+	}
+	return nil
 }

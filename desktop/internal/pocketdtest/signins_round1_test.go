@@ -76,3 +76,26 @@ func TestTheFakesSignOutTakesTheProvidersModels(t *testing.T) {
 		t.Fatalf("the models after the sign-out %+v", models)
 	}
 }
+
+// A second account's approval replaces the provider's models, as pocketd
+// lists the new account's alone (Codex review of #123, round 2).
+func TestTheFakesNextAccountReplacesTheProvidersModels(t *testing.T) {
+	s := New()
+	opus := proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}}
+	s.AddModel(opus)
+	client, err := proto.NewClient(s.URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i, id := range []string{"gpt-5", "gpt-6"} {
+		if _, err := client.StartSignIn(ctx, "github-copilot", proto.StartSignIn{RequestID: id}); err != nil {
+			t.Fatal(err)
+		}
+		s.EndSignIn("github-copilot", proto.FlowApproved, "account"+id, "", proto.Model{ModelRef: proto.ModelRef{Provider: "github-copilot", ID: id}})
+		models, _ := client.Models(ctx)
+		if len(models) != 2 || models[0].ModelRef != opus.ModelRef || models[1].ID != id {
+			t.Fatalf("the models after approval %d: %+v", i+1, models)
+		}
+	}
+}

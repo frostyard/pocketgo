@@ -178,11 +178,13 @@ func (s *Server) listSignIns(w http.ResponseWriter, r *http.Request) {
 }
 
 // startSignIn is POST /v1/signins/{id}: provider's device flow
-// starts, or its running one answers (rule 69). The flows take the
-// request's key with the flow before it polls, and the request is recorded
-// with it, so a retry answers that flow as it is and never starts another,
-// whether the record was written or the client went (Codex review of #123,
-// round 1).
+// starts, or its running one answers (rule 69). The request is recorded
+// with the new flow's id before the flow is made, published or polled, so
+// a retry answers that flow as it is, or not_found once a restart or a
+// later start lost it, and never starts another; the id stays the
+// request's in the work database, whatever endpoint names it next (Codex
+// review of #123, rounds 1 and 2). A start that answers the provider's
+// running flow records that flow instead.
 func (s *Server) startSignIn(w http.ResponseWriter, r *http.Request) {
 	if !s.signInsReady(w) {
 		return
@@ -215,24 +217,30 @@ func (s *Server) startSignIn(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "the device flow this requestId started is gone: start another with a new requestId")
 		return
 	}
-	flow, started, err := s.signIns.flows.Start(p.ID, key)
+	// The record is written whatever becomes of the client.
+	ctx := context.WithoutCancel(r.Context())
+	id := signins.NewID()
+	if err := s.recordSignIn(ctx, key, kind, id); err != nil {
+		s.internal(w, "record the request", err)
+		return
+	}
+	flow, started, err := s.signIns.flows.Start(p.ID, id)
 	switch {
 	case errors.Is(err, signins.ErrStopped):
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the service is stopping: sign in once it is back")
-		return
-	case errors.Is(err, signins.ErrGone):
-		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "the device flow this requestId started is gone: start another with a new requestId")
 		return
 	case err != nil:
 		s.internal(w, "start the device flow", err)
 		return
 	}
-	// The record is written whatever became of the client. One that fails
-	// leaves the key with its flow in the flows: a retry in this run
-	// answers that flow.
-	if err := s.recordSignIn(context.WithoutCancel(r.Context()), key, kind, flow.ID); err != nil {
-		s.internal(w, "record the request", err)
-		return
+	// The provider's running flow answered: the request names it. A
+	// record that fails names a flow that never ran, which a retry is
+	// told is gone.
+	if flow.ID != id {
+		if err := s.store.CompleteRequest(ctx, key, flow.ID); err != nil {
+			s.internal(w, "record the request", err)
+			return
+		}
 	}
 	status := http.StatusOK
 	if started {
