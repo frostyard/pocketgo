@@ -459,8 +459,9 @@ func (e *Engine) teamExtension() *durable.Extension {
 			},
 			{
 				// After team_propose: a session's team tools follow this list's
-				// order (teamTools). A proposal session's, a consult's and a
-				// plan's lead's (roleTools, ADR-0036).
+				// order (teamTools). A proposal session's, a consult's, a
+				// plan's lead's and a cross-review's (roleTools, ADR-0036,
+				// ADR-0057).
 				ToolSchema: schema(toolGitHub, "Read GitHub with a GET call of its REST API, with the service user's sign-in: issues, pull requests, "+
 					"comments, checks, files. It changes nothing on GitHub. A long answer is cut, and says so: ask for fewer with per_page, then a later page.", githubParameters),
 				Replay: durable.ReplaySafe,
@@ -520,10 +521,11 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // to its threads (ADR-0032); a thread's specialist reports; a plan's
 // lead plans too; a consult files its finding, and nothing else
 // (ADR-0020); a gather's agent files its proposals, and nothing else
-// (ADR-0033). A consult, a gather's agent and a plan's lead read GitHub
-// with GET alone, too (team_github, ADR-0036), and no other session does.
-// A supervisor alone reads the owner's Inbox (team_inbox, ADR-0046). A
-// private agent has no team tool at all (ADR-0042).
+// (ADR-0033). A consult, a gather's agent, a plan's lead and a
+// cross-review read GitHub with GET alone, too (team_github, ADR-0036,
+// ADR-0057), and no other session does. A supervisor alone reads the
+// owner's Inbox (team_inbox, ADR-0046). A private agent has no team tool
+// at all (ADR-0042).
 func roleTools(spec api.SessionSpec) []string {
 	// A private agent has no team: no team tool, team_memory included,
 	// whatever its role (ADR-0042).
@@ -540,10 +542,12 @@ func roleTools(spec api.SessionSpec) []string {
 	if spec.Gather != 0 {
 		return []string{toolPropose, toolGitHub}
 	}
-	// A cross-review reads its change set and files its verdict, and
-	// nothing else (ADR-0019).
+	// A cross-review reads its change set and GitHub, with GET alone, and
+	// files its verdict: nothing else (ADR-0019, ADR-0057). What a pin
+	// bump brings in is in another repository, which team_diff does not
+	// show.
 	if spec.Review {
-		return []string{toolDiff, toolVerdict}
+		return []string{toolDiff, toolVerdict, toolGitHub}
 	}
 	// A worker has no team tool: it answers its specialist alone (ADR-0021).
 	if spec.Worker {
@@ -1319,13 +1323,14 @@ func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
-// SetGitHubTool gives team_github to a plan's lead or a consult whose
-// session was made before it (ADR-0036), in the order roleTools places it
-// among its team tools, after its other tools, and says whether it did. A
-// plan's lead gets it at start, since a plan lives for days, and either
-// gets it before its brief or question when an earlier run made its
-// session (Codex review of #61, round 2). A session with neither team_plan
-// nor team_finding, or with team_github already, is left as it is.
+// SetGitHubTool gives team_github to a plan's lead, a consult or a
+// cross-review whose session was made before it (ADR-0036, ADR-0057), in
+// the order roleTools places it among its team tools, after its other
+// tools, and says whether it did. A plan's lead and an open review get it
+// at start, and each gets it before its brief or question when an earlier
+// run made its session (Codex review of #61, round 2). A session with none
+// of team_plan, team_finding and team_diff (a review's alone), or with
+// team_github already, is left as it is.
 func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
@@ -1336,7 +1341,8 @@ func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 		return false, err
 	}
 	own, team, tail := e.splitTools(agent.Tools)
-	if !slices.Contains(team, toolPlan) && !slices.Contains(team, toolFinding) || slices.Contains(team, toolGitHub) {
+	reads := slices.Contains(team, toolPlan) || slices.Contains(team, toolFinding) || slices.Contains(team, toolDiff)
+	if !reads || slices.Contains(team, toolGitHub) {
 		return false, nil
 	}
 	list := append(append(own, e.teamTools(append(team, toolGitHub))...), tail...)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service/internal/team",
+  "correction": "A cross-review's brief says that GitHub's compare/<old>...<new> runs from the two commits' merge base: the reviewer reads its status, reads compare/<new>...<old> for a rollback (behind), whose compare shows nothing, and both compares for a diverged pin, so no empty or half compare passes for the whole pin change.",
+  "evidence": "frostyard/pocketgo#116, Codex CLI review round 1 of head 2978f60: [P2] Handle rollbacks and diverged pins in the review brief",
+  "promoted_to": "service/internal/team/reviews_test.go"
+}
