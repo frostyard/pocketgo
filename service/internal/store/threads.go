@@ -80,10 +80,31 @@ type ThreadRow struct {
 	// Plan is the plan the thread works for (ADR-0020), 0 for none;
 	// PlanTask the task of it the thread delivers, "" for the plan
 	// thread itself, whose specialist plans.
-	Plan      int64
-	PlanTask  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Plan     int64
+	PlanTask string
+	// Follows is the thread this one carries on, named by its delegation
+	// (ADR-0061), 0 for none; Successor the newest thread that carries
+	// this one on, 0 for none.
+	Follows   int64
+	Successor int64
+	// DeskCap, when set on a row to record, is the desk's cap the new
+	// thread is recorded under: the transaction that records it counts the
+	// desk again, and a full one is team.ErrDeskFull, since a reopen may
+	// have taken a place since the delegation counted it (ADR-0061; Codex
+	// review of #121, round 8). It is never stored.
+	DeskCap int
+	// Reopened counts the times a message took the thread from closed
+	// back to open (ADR-0061), ReopenedAt the last, nil for never, and
+	// ReopenSeq the order of GitHub's reads then (NextPullRead): only a
+	// pull request a later read found open closes it by its merge.
+	Reopened   int
+	ReopenedAt *time.Time
+	ReopenSeq  int64
+	// WorkerStopDue says its close owes its worker a stop not done yet: no
+	// message reopens it until it is (ADR-0061).
+	WorkerStopDue bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // IsPlanThread says whether the thread is a plan's own: its specialist
@@ -92,16 +113,22 @@ func (t ThreadRow) IsPlanThread() bool { return t.Plan != 0 && t.PlanTask == "" 
 
 const threadColumns = `id, key, title, agent, supervisor_session, session, repository, cwd, branch, task, state, report, owner,
 	task_id, brief, brief_submission, brief_attempt, briefed_at IS NOT NULL, review_pull, review_head, review_base, review_author_provider,
-	review_author_model, worker_session, worker_cursor, worker_provider, worker_model, plan, plan_task, created_at, updated_at`
+	review_author_model, worker_session, worker_cursor, worker_provider, worker_model, plan, plan_task, follows, successor, reopened, reopened_at,
+	reopen_seq, worker_stop_due, created_at, updated_at`
 
 func scanThread(scan func(...any) error) (ThreadRow, error) {
 	var row ThreadRow
 	var created, updated int64
+	var reopened sql.NullInt64
 	err := scan(&row.ID, &row.Key, &row.Title, &row.Agent, &row.SupervisorSession, &row.Session, &row.Repository, &row.Cwd,
 		&row.Branch, &row.Task, &row.State, &row.Report, &row.Owner, &row.TaskID, &row.Brief, &row.BriefSubmission, &row.BriefAttempt, &row.Briefed,
 		&row.ReviewPull, &row.ReviewHead, &row.ReviewBase, &row.ReviewAuthor.Provider, &row.ReviewAuthor.ID, &row.WorkerSession, &row.WorkerCursor, &row.WorkerAsked.Provider, &row.WorkerAsked.ID,
-		&row.Plan, &row.PlanTask, &created, &updated)
+		&row.Plan, &row.PlanTask, &row.Follows, &row.Successor, &row.Reopened, &reopened, &row.ReopenSeq, &row.WorkerStopDue, &created, &updated)
 	row.CreatedAt, row.UpdatedAt = fromMillis(created), fromMillis(updated)
+	if reopened.Valid {
+		at := fromMillis(reopened.Int64)
+		row.ReopenedAt = &at
+	}
 	return row, err
 }
 
@@ -333,6 +360,11 @@ type ReportRow struct {
 	// tells its specialist it unblocks a blocked thread (FileSend), so its
 	// delivery may: one kept before migration 20 does not.
 	Unblocks bool
+	// Reopens is, for a supervisor's message kept while its thread was
+	// closed, the thread's reopened count its delivery brings (ADR-0061):
+	// it reopens the thread, and goes, only while the thread has not
+	// reopened since it was kept. 0 for any other message.
+	Reopens int
 }
 
 // FileReport files report call key on thread id, in one transaction: the
@@ -603,12 +635,12 @@ func (s *Store) ReportFiled(ctx context.Context, key string) (bool, error) {
 	return n > 0, err
 }
 
-const reportColumns = `key, thread_id, session_id, text, submission, attempt, sent_at, unblocked_at, unblocks`
+const reportColumns = `key, thread_id, session_id, text, submission, attempt, sent_at, unblocked_at, unblocks, reopens`
 
 func scanReport(scan func(...any) error) (ReportRow, error) {
 	var row ReportRow
 	var sent, unblocked sql.NullInt64
-	if err := scan(&row.Key, &row.ThreadID, &row.SessionID, &row.Text, &row.Submission, &row.Attempt, &sent, &unblocked, &row.Unblocks); err != nil {
+	if err := scan(&row.Key, &row.ThreadID, &row.SessionID, &row.Text, &row.Submission, &row.Attempt, &sent, &unblocked, &row.Unblocks, &row.Reopens); err != nil {
 		return ReportRow{}, err
 	}
 	if sent.Valid {
@@ -1294,12 +1326,21 @@ func (s *Store) ClosedReviewSessions(ctx context.Context) ([]int64, error) {
 // line when it has one, and says whether it did: a thread not closed
 // stays as it is.
 func (s *Store) NoteClosedThread(ctx context.Context, id int64, note string) (ThreadRow, bool, error) {
+	return s.NoteClosedThreadAt(ctx, id, -1, note)
+}
+
+// NoteClosedThreadAt is NoteClosedThread for the close that came after
+// the thread's reopened-th reopen (ADR-0061): a thread that reopened since
+// stays as it is too, so a note of one close never lands on a later one.
+// reopened -1 is any.
+func (s *Store) NoteClosedThreadAt(ctx context.Context, id int64, reopened int, note string) (ThreadRow, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `UPDATE threads SET report = CASE WHEN report = '' THEN ? ELSE report || char(10) || char(10) || ? END, updated_at = ? WHERE id = ? AND state = ?`, note, note, s.millis(), id, ThreadClosed)
+	result, err := tx.ExecContext(ctx, `UPDATE threads SET report = CASE WHEN report = '' THEN ? ELSE report || char(10) || char(10) || ? END, updated_at = ?
+		WHERE id = ? AND state = ? AND (? < 0 OR reopened = ?)`, note, note, s.millis(), id, ThreadClosed, reopened, reopened)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}

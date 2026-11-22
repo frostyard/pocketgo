@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A fetch's thread copy of a later lifetime wins over a held copy an event or a reply touched during the fetch: lifetimes are compared before that rule.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 8 (codex-cli 0.169.0) of head 03dba74: [P2] Prefer a fetched later lifetime over an in-flight close reply",
+  "promoted_to": "desktop/internal/state/reopen_test.go"
+}

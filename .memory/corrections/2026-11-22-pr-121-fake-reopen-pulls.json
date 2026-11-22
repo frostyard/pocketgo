@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The desktop's fake pocketd publishes a reopened thread's pull requests with its reopen, as pocketd does.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 8 (codex-cli 0.169.0) of head 03dba74: [P3] Emit linked pull requests when the desktop fake reopens a thread",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

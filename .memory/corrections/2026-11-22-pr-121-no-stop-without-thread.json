@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A worker stop aborts only a session a closed thread names as its worker: a due look at a session no thread names stops nothing.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 6 (codex-cli 0.169.0) of head 72e8eec: [P1] Verify retirement before aborting an unrecognized session",
+  "promoted_to": "service/internal/api/reopen_round6_test.go"
+}

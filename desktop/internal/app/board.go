@@ -143,6 +143,11 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			a.headTitle(c, name+" · "+th.Title)
 			threadPill(c, th.State)
+			// A message to its closed specialist took it back to open
+			// (ADR-0061).
+			if state.Reopened(th) {
+				frostui.Pill(c, "reopened", frostui.Warning)
+			}
 		})
 		where := "its folder is not set up yet"
 		switch {
@@ -162,6 +167,9 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 			a.taskLine(c, th)
 		}
 		frostui.Muted(c, a.threadWhy(th, m)).Wrap()
+		if links := state.ThreadLinks(th); links != "" {
+			frostui.Caption(c, links).Wrap()
+		}
 		if th.Shift != nil {
 			a.shiftLine(c, key, *th.Shift)
 		}

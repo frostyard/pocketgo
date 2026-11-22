@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A closed thread whose worker's stop is not done keeps its worktree and its worker: no reopen comes before the stop, and the cleanup checks that worker idle.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 6 (codex-cli 0.169.0) of head 72e8eec: [P1] Wait for retired workers before removing their worktree",
+  "promoted_to": "service/internal/api/reopen_round6_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A delegation counts the desk again in the transaction that records its thread (ThreadRow.DeskCap): a reopen that took the last place since the count refuses it, and a plan task's is held for the next free place.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 8 (codex-cli 0.169.0) of head 03dba74: [P2] Recheck desk capacity when committing a new delegation",
+  "promoted_to": "service/internal/store/reopen_desk_test.go"
+}

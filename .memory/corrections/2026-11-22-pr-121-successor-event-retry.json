@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The event of the thread a delegation follows goes out through publishThreadNow, so a failed read leaves it to a delivery pass, never lost.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 1 (codex-cli 0.169.0) of head a8a4cac: [P2] Retry publication of a predecessor's successor change",
+  "promoted_to": "service/internal/api/reopen_round1_test.go"
+}

@@ -19,8 +19,8 @@ import (
 // and each summary's, to the specialist; and the report pocketd files
 // when a shift ends with none.
 const (
-	shiftRoundPrefix   = "shift-round:"
-	shiftSummaryPrefix = "shift-summary:"
+	shiftRoundPrefix   = team.ShiftRoundPrefix
+	shiftSummaryPrefix = team.ShiftSummaryPrefix
 	shiftEndPrefix     = "shift-end:"
 )
 
@@ -816,7 +816,7 @@ func (s *Server) sendShiftMessages(ctx context.Context, thread int64) {
 // shift: called under workMu right after a change, so its event carries
 // the change, never a thread read before it (Codex review of #36).
 func (s *Server) publishThreadNow(ctx context.Context, id int64) {
-	row, err := s.store.Thread(ctx, id)
+	row, err := s.readThreadNow(ctx, id)
 	if err != nil {
 		// Its event is held back, and a delivery pass publishes it as it
 		// is then, as one whose shift cannot be read (Codex review of #36).
@@ -828,6 +828,16 @@ func (s *Server) publishThreadNow(ctx context.Context, id int64) {
 		return
 	}
 	s.publishThread(row)
+}
+
+// readThreadNow is store.Thread, which tests may fail (failRead).
+func (s *Server) readThreadNow(ctx context.Context, id int64) (store.ThreadRow, error) {
+	if s.failRead != nil {
+		if err := s.failRead("readThreadNow", id); err != nil {
+			return store.ThreadRow{}, err
+		}
+	}
+	return s.store.Thread(ctx, id)
 }
 
 // specialistShift is the thread whose shift's specialist runs in session,
@@ -1122,7 +1132,19 @@ func (s *Server) ownerShift(w http.ResponseWriter, r *http.Request, kind string,
 
 // writeThreadWithShift answers with thread id and its shift as one
 // transaction has them (Codex review of #36).
+//
+// The thread's messages already in its specialist's transcript are noted
+// first, under outboxMu, as any read of its state does: one may have
+// reopened it, also when the change was none, or a run again (ADR-0061;
+// Codex review of #121, round 6).
 func (s *Server) writeThreadWithShift(ctx context.Context, w http.ResponseWriter, id int64) {
+	s.outboxMu.Lock()
+	err := s.noteSendsPlaced(ctx, id)
+	s.outboxMu.Unlock()
+	if err != nil {
+		s.internal(w, "note the thread's messages", err)
+		return
+	}
 	thread, sh, err := s.store.ThreadWithShift(ctx, id)
 	if err != nil {
 		s.internal(w, "change a shift", err)

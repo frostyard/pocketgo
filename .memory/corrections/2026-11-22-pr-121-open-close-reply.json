@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A close's reply that is not closed, a close run again after a reopen, is a snapshot that applies only over an older copy, never over a later report's.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 2 (codex-cli 0.169.0) of head b5739da: [P2] Merge non-closed close replies as snapshots, not as closes",
+  "promoted_to": "desktop/internal/state/reopen_test.go"
+}

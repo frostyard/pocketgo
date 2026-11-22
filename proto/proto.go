@@ -72,12 +72,15 @@ package proto
 // Version 32 signs pocketd in to a subscription from a client (ADR-0062):
 // GET /v1/signins, POST and DELETE /v1/signins/{id}, a device
 // flow's GET and cancel, and the signin event.
-const Version = 32
+// Version 33 reopens a closed thread when a message reaches its
+// specialist (ADR-0061): a thread's follows, successor, reopens and
+// reopenedAt.
+const Version = 33
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 32. A path with {id} takes a session,
+// The request paths of protocol version 33. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan, terminal or device flow id in that
 // segment, and PathSignIn a provider's id;
 // PathQuestion takes its session's id there, and the question's in {qid}.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A plan held at the desk's cap is told of a free place, and its hold cleared, only once a close leaves the desk below that cap (plans.held_cap): a reopen may have put it over.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 4 (codex-cli 0.169.0) of head e29cfb3: [P2] Keep plans on hold until a close actually frees desk capacity",
+  "promoted_to": "service/internal/store/reopen_hold_test.go"
+}

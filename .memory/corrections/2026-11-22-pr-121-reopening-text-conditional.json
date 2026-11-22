@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A supervisor's message kept for a closed thread says it reopens the thread if the thread is still closed when it arrives, never that it is open then.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P3] Describe the reopening send conditionally to the specialist",
+  "promoted_to": "service/internal/team/reopen_test.go"
+}

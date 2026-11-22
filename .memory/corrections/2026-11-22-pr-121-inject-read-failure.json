@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A test of a retried publication fails the read itself (failRead) and exercises the production retry path, never a test-only branch.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P3] Inject the failed predecessor read, not the retry behavior",
+  "promoted_to": "service/internal/api/reopen_round1_test.go"
+}

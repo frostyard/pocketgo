@@ -49,6 +49,11 @@ type Data struct {
 	// of the thread applies: an older event is dropped while the copy is
 	// held (applyThread).
 	threadReplied map[int64]time.Time
+	// threadsResynced is the first epoch a threads fetch begun after a
+	// resync has, 0 for none waiting: that fetch is the list as pocketd has
+	// it, lifetimes not compared, since a restored database may have fewer
+	// reopens than the copies held (ADR-0061).
+	threadsResynced uint64
 	// plans are every plan, most recently changed first (plans.go).
 	plans keyed[proto.Plan]
 	// proposals are the board's proposals, in board order, and schedules
@@ -693,8 +698,12 @@ func (d *Data) Apply(ev proto.Event) Refetch {
 	case proto.EventResync:
 		// The events a reply's copy waits for may be among those lost, so
 		// no event is dropped for a reply held before (applyThread; Codex
-		// review of #117).
+		// review of #117). The fetch begun next is the thread list as
+		// pocketd has it, whatever lifetimes the copies held say: a
+		// restored database may have fewer reopens (SetThreads; Codex
+		// review of #121, round 8).
 		d.threadReplied = nil
+		d.threadsResynced = d.touched() + 1
 		return RefetchAll
 	case proto.EventSchedules:
 		return RefetchSchedules
