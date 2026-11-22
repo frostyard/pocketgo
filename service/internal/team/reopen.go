@@ -113,6 +113,15 @@ func ReportRefused(t ReopenTarget) string {
 	return head + fmt.Sprintf(" End your turn with what you did and what is left in your reply, and ask the owner: a message from the owner or the supervisor reopens T%d while its folder is still its own, and you report then; if it cannot, the work goes to a new thread.", t.ID)
 }
 
+// ReportHeld is team_message's answer on closed thread while a message
+// that reached its specialist waits to reopen it, which it does once its
+// worker's run of the closed time is stopped (ADR-0061): the report goes
+// then, so the specialist calls again, and ends nothing.
+func ReportHeld(thread int64) string {
+	return fmt.Sprintf("thread T%d reopens for the message that reached you once pocketd has stopped its worker's run of the closed time, "+
+		"which takes a moment: call team_message again with the same report, and do not end your turn for this.", thread)
+}
+
 // MergedOut says whether a thread's linked pull requests close it
 // (ADR-0016): none is open, given open, and one at least merged. A thread
 // that reopened (ADR-0061) closes so only by a merge of a pull request a

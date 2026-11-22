@@ -186,6 +186,12 @@ func (s *Server) sentText(ctx context.Context, caller int64, key string) (string
 		s.log.Warn("read a supervisor's message", "err", err)
 		return team.SentText(team.SentReceipt{State: team.SendUnconfirmed}), nil
 	}
+	// The owner's messages already in the transcript are noted first: one
+	// may have reopened the thread the answer names (ADR-0061; Codex review
+	// of #121, round 7). A failure leaves the answer as the thread is.
+	if _, err := s.noteOwnerMessages(ctx, row.ThreadID); err != nil {
+		s.log.Warn("note the owner's messages", "thread", row.ThreadID, "err", err)
+	}
 	// What the message's delivery may do is what it was kept to do: one kept
 	// before migration 20 unblocks nothing (Codex review of #62, round 2).
 	receipt := team.SentReceipt{Thread: row.ThreadID, Agent: "the specialist", State: team.SendUnconfirmed, Unblocks: row.Unblocks, Reopens: row.Reopens != 0}

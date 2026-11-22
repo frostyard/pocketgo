@@ -277,8 +277,14 @@ func (d *Data) BeginThreadChange() Fetch { return d.threads.begin(d) }
 // for a fetch, begun once the change committed, which settles it.
 func (d *Data) ThreadChanged(f Fetch, t proto.Thread) (refetch bool) {
 	defer d.threads.answered()
-	if cur, ok := d.Thread(t.ID); ok && !t.UpdatedAt.After(cur.UpdatedAt) {
-		return t.UpdatedAt.Equal(cur.UpdatedAt) && !reflect.DeepEqual(cur, t)
+	// By lifetime first, then by updatedAt (ADR-0061; Codex review of #121,
+	// round 7).
+	if cur, ok := d.Thread(t.ID); ok {
+		if newer, decided := lifetimeNewer(t, cur); decided && !newer {
+			return false
+		} else if !decided && !t.UpdatedAt.After(cur.UpdatedAt) {
+			return t.UpdatedAt.Equal(cur.UpdatedAt) && !reflect.DeepEqual(cur, t)
+		}
 	}
 	d.putReply(f.epoch, t)
 	return d.threads.inFlight > 1
@@ -315,6 +321,14 @@ func (d *Data) putReply(at uint64, t proto.Thread) {
 // event this stream never carries, so no event would follow to end a drop
 // where pocketd's clock moved back.
 func (d *Data) applyThread(t proto.Thread) {
+	// An event of an earlier lifetime than the copy held, or of its
+	// lifetime before its close, is stale, whatever a fetch or a reply
+	// brought first (ADR-0061; Codex review of #121, round 7).
+	if cur, ok := d.Thread(t.ID); ok {
+		if newer, decided := lifetimeNewer(t, cur); decided && !newer {
+			return
+		}
+	}
 	if at, ok := d.threadReplied[t.ID]; ok {
 		// An event of a later lifetime than the reply's, or its lifetime's
 		// close, applies whatever the clocks say (ADR-0061; Codex review of

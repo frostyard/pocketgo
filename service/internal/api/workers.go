@@ -556,8 +556,18 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 // #121, rounds 2 to 6). Only a read that finds the worker's thread closed
 // lets the stop go: a read that fails is tried again by the delivery pass
 // (round 3), and a worker no closed thread names is owed nothing.
+//
+// One stop of a worker goes at a time, from its look at the thread to the
+// note that it is done, and only a stop still owed goes: a second caller,
+// as the run-ended follow beside the close, finds it done, or the thread
+// reopened, and stops nothing of the reopened thread's work (Codex review
+// of #121, round 7).
 func (s *Server) stopWorker(ctx context.Context, worker int64) {
+	defer s.workerStops.lock(strconv.FormatInt(worker, 10))()
 	thread, err := s.readThreadOfWorker(ctx, worker)
+	if s.afterStopRead != nil {
+		s.afterStopRead(worker)
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		return
 	} else if err != nil {
@@ -565,14 +575,14 @@ func (s *Server) stopWorker(ctx context.Context, worker int64) {
 		s.workerDue(worker)
 		return
 	}
-	if thread.State != store.ThreadClosed {
+	if thread.State != store.ThreadClosed || !thread.WorkerStopDue {
 		return
 	}
 	busy, err := s.engine.Busy(ctx, worker)
 	if err == nil && busy {
 		err = s.engine.Abort(ctx, worker)
 	}
-	if err == nil && thread.WorkerStopDue {
+	if err == nil {
 		err = s.workerStopped(ctx, thread, worker)
 	}
 	if err != nil {

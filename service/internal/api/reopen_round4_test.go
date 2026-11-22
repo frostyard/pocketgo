@@ -33,8 +33,11 @@ func TestAClosesWorkerStopTargetsTheRunItFound(t *testing.T) {
 	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "m1", Text: "One more thing."}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "early"}, team.Report{Status: team.StatusWorking, Message: "x"}); err == nil {
-		t.Fatal("a report was taken before the worker's stop")
+	// Held, not refused: the specialist calls again, and ends nothing
+	// (Codex review of #121, round 7).
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "early"}, team.Report{Status: team.StatusWorking, Message: "x"}); err == nil ||
+		err.Error() != team.ReportHeld(thread.ID) {
+		t.Fatalf("the report before the worker's stop: %v", err)
 	}
 	h.server.stopWorker(ctx, row.WorkerSession)
 	h.engine.mu.Lock()

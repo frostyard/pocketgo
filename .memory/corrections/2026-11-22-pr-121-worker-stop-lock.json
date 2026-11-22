@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "One stop of a worker goes at a time, under its lock from the look at its thread to the note that the stop is done, and a stop no longer owed (worker_stop_due cleared) aborts nothing.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 7 (codex-cli 0.169.0) of head 39da877: [P1] Serialize worker stops across a thread's reopen",
+  "promoted_to": "service/internal/api/reopen_round7_test.go"
+}

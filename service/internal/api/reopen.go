@@ -291,8 +291,15 @@ func (s *Server) republishPulls(ctx context.Context) (done bool) {
 }
 
 // reportRefused is team_message's refusal on closed thread row: what its
-// specialist can do instead (team.ReportRefused).
+// specialist can do instead (team.ReportRefused), or, while a message that
+// reached it waits for its worker's stop to reopen it, to call again
+// (team.ReportHeld; Codex review of #121, round 7).
 func (s *Server) reportRefused(ctx context.Context, row store.ThreadRow) error {
+	if row.WorkerStopDue {
+		if waiting, err := s.store.MessagesToReopen(ctx, row.ID); err == nil && waiting {
+			return errors.New(team.ReportHeld(row.ID))
+		}
+	}
 	target := team.ReopenTarget{ID: row.ID, Plan: row.Plan, PlanTask: row.PlanTask}
 	target.Successor, target.SuccessorAgent = s.successorOf(ctx, row)
 	return errors.New(team.ReportRefused(target))

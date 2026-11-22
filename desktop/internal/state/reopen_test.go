@@ -7,6 +7,38 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
+// A fetch that brought a reopened thread is never undone by the event of
+// its earlier close, which the stream brings late (Codex review of #121,
+// round 7).
+func TestALateEventOfAnEarlierLifetimeIsDropped(t *testing.T) {
+	d := &Data{}
+	reopened := thread(1, proto.ThreadOpen, time.Minute)
+	at := reopened.UpdatedAt
+	reopened.Reopens, reopened.ReopenedAt = 1, &at
+	d.SetThreads(d.BeginThreads(), []proto.Thread{reopened})
+	closed := thread(1, proto.ThreadClosed, 2*time.Minute)
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &closed})
+	if th, _ := d.Thread(1); th.State != proto.ThreadOpen || th.Reopens != 1 {
+		t.Fatalf("a late event of the earlier lifetime undid the fetch: %+v", th)
+	}
+}
+
+// A shift's reply of an earlier lifetime never undoes the reopened thread,
+// whatever its updatedAt (Codex review of #121, round 7).
+func TestAShiftReplyOfAnEarlierLifetimeIsDropped(t *testing.T) {
+	d := &Data{}
+	reopened := thread(1, proto.ThreadOpen, time.Minute)
+	at := reopened.UpdatedAt
+	reopened.Reopens, reopened.ReopenedAt = 1, &at
+	d.SetThreads(d.BeginThreads(), []proto.Thread{reopened})
+	f := d.BeginThreadChange()
+	stopped := thread(1, proto.ThreadBlocked, 5*time.Minute)
+	d.ThreadChanged(f, stopped)
+	if th, _ := d.Thread(1); th.State != proto.ThreadOpen || th.Reopens != 1 {
+		t.Fatalf("a shift's reply of the earlier lifetime undid the reopen: %+v", th)
+	}
+}
+
 // After an open reply of a close run again, the close of the same
 // lifetime applies, as an event or a fetch's copy, though pocketd's clock
 // gave it an earlier updatedAt (Codex review of #121, round 5).

@@ -401,6 +401,7 @@ type Server struct {
 	// nothing.
 	afterOwnerSend   func()
 	beforeOwnerSend  func()
+	afterStopRead    func(worker int64)
 	afterCleanState  func(thread int64)
 	beforeMergeClose func(thread int64)
 	afterPullLocks   func()
@@ -462,6 +463,9 @@ type Server struct {
 	workerScanDue bool
 	// workerStartMu starts one worker at a time (Server.workerOf).
 	workerStartMu sync.Mutex
+	// workerStops hold one worker each (stopWorker), from the look at its
+	// thread to the note that its stop is done (ADR-0061).
+	workerStops keyLocks
 	// standingDue says a delivery pass looks after every standing session
 	// (standingPass): the first after start, as a run's end may have gone
 	// unseen while pocketd stopped. standingMu guards it.

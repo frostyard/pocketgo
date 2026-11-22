@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "team_send's answer notes the owner's placed messages before it reads the thread state it names.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 7 (codex-cli 0.169.0) of head 39da877: [P2] Note placed owner messages before replaying a send receipt",
+  "promoted_to": "service/internal/api/reopen_round7_test.go"
+}
