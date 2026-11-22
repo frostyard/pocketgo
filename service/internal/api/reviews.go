@@ -623,8 +623,10 @@ func (s *Server) upgradeScheduleTools(ctx context.Context) error {
 // one, which takes its tools at its own refresh, when idle and under
 // refreshMu, as upgradeSupervisorTools leaves it. A profile it cannot read
 // now, or a session it cannot change, is an error, and a later pass tries
-// again; scheduleMu is held. Each profile is read once a pass, and a
-// session's role only for a private profile.
+// again; scheduleMu is held. Each profile is read once a pass, one it
+// cannot read too, and its other sessions wait for the next pass, which
+// reads it afresh (Codex review of #120, round 1); a session's role is
+// read only for a private profile.
 func (s *Server) upgradePrivateSchedules(ctx context.Context) error {
 	if s.profiles == nil {
 		return nil
@@ -634,15 +636,17 @@ func (s *Server) upgradePrivateSchedules(ctx context.Context) error {
 		return err
 	}
 	read := map[string]*profiles.Profile{}
+	unreadable := map[string]bool{}
 	var failures []error
 	for _, row := range rows {
-		if row.Profile == "" || row.Standing {
+		if row.Profile == "" || row.Standing || unreadable[row.Profile] {
 			continue
 		}
 		p, known := read[row.Profile]
 		if !known {
 			found, err := s.profiles.Find(row.Profile)
 			if profiles.Unreadable(err) {
+				unreadable[row.Profile] = true
 				failures = append(failures, fmt.Errorf("profile %s: %w", row.Profile, err))
 				continue
 			}
@@ -679,7 +683,10 @@ func (s *Server) upgradePrivateSchedules(ctx context.Context) error {
 // its own refresh, when idle and under refreshMu: a direct change could
 // cross that refresh (Codex review of #51, round 2). A profile it cannot
 // read now, or a session it cannot change, is an error, and a later pass
-// tries again; scheduleMu is held.
+// tries again; scheduleMu is held. Each profile is read once a pass, one
+// it cannot read too, as upgradePrivateSchedules reads them, since the
+// two run together at start and at each pass while either failed (Codex
+// review of #120, round 1).
 func (s *Server) upgradeSupervisorTools(ctx context.Context) error {
 	if s.profiles == nil {
 		return nil
@@ -689,15 +696,17 @@ func (s *Server) upgradeSupervisorTools(ctx context.Context) error {
 		return err
 	}
 	supervisor := map[string]bool{}
+	unreadable := map[string]bool{}
 	var failures []error
 	for _, row := range rows {
-		if row.Profile == "" || row.Standing {
+		if row.Profile == "" || row.Standing || unreadable[row.Profile] {
 			continue
 		}
 		is, known := supervisor[row.Profile]
 		if !known {
 			p, err := s.profiles.Find(row.Profile)
 			if profiles.Unreadable(err) {
+				unreadable[row.Profile] = true
 				failures = append(failures, fmt.Errorf("profile %s: %w", row.Profile, err))
 				continue
 			}

@@ -322,7 +322,11 @@ func TestAPrivateScheduleEndToEndOverHTTP(t *testing.T) {
 		t.Fatalf("the schedules %+v, %v", list, err)
 	}
 
-	// Sunday 9:00: the pulse comes to the same session.
+	// Sunday 9:00: the schedules pass files the pulse once, then the
+	// delivery pass places it in the same session. The test waits for the
+	// pass's schedules event, which follows the filing, and runs the
+	// delivery pass itself: no timer of the server's decides when the
+	// message goes (Codex review of #120, round 1).
 	_, _, stream, cancel := hub.Subscribe(0)
 	defer cancel()
 	clockMu.Lock()
@@ -330,16 +334,35 @@ func TestAPrivateScheduleEndToEndOverHTTP(t *testing.T) {
 	clockMu.Unlock()
 	server.StartSchedules()
 	deadline := time.After(20 * time.Second)
-	for arrived := false; !arrived; {
+	for filed := false; !filed; {
 		select {
 		case e := <-stream:
-			arrived = e.Type == proto.EventEntry && e.Entry.SessionID == chani && e.Entry.Kind == proto.EntryUser && e.Entry.Text == "[scheduled] Run the memory pulse."
+			if e.Type != proto.EventSchedules {
+				continue
+			}
+			list, err := client.Schedules(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			filed = len(list.Schedules) == 1 && list.Schedules[0].Runs == 1
 		case <-deadline:
-			t.Fatal("the scheduled message did not come")
+			t.Fatal("the schedules pass filed no pulse")
 		}
+	}
+	if err := server.DeliverPending(ctx); err != nil {
+		t.Fatal(err)
 	}
 	if err := engine.WaitIdle(ctx, chani); err != nil {
 		t.Fatal(err)
+	}
+	entries, _, err := engine.Transcript(ctx, chani)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(e proto.Entry) bool {
+		return e.Kind == proto.EntryUser && e.Text == "[scheduled] Run the memory pulse."
+	}) {
+		t.Fatal("the scheduled message is not in the session")
 	}
 	if got := lastToolResult(t, engine, chani); !got.IsError || got.Text != team.ErrNobodyWatching.Error() {
 		t.Fatalf("a scheduled run's question %+v", got)
@@ -351,7 +374,7 @@ func TestAPrivateScheduleEndToEndOverHTTP(t *testing.T) {
 	if err := engine.WaitIdle(ctx, chani); err != nil {
 		t.Fatal(err)
 	}
-	entries, _, err := engine.Transcript(ctx, chani)
+	entries, _, err = engine.Transcript(ctx, chani)
 	if err != nil {
 		t.Fatal(err)
 	}
