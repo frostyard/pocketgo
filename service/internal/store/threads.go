@@ -94,8 +94,8 @@ type ThreadRow struct {
 	Reopened   int
 	ReopenedAt *time.Time
 	ReopenSeq  int64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // IsPlanThread says whether the thread is a plan's own: its specialist

@@ -57,7 +57,7 @@ type PullRow struct {
 	// OpenSeq is the last read that found it open (ReadSeq), 0 for none: a
 	// reopened thread closes by its merge only when that read came after
 	// the reopen (ADR-0061).
-	OpenSeq int64
+	OpenSeq   int64
 	CheckedAt time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
