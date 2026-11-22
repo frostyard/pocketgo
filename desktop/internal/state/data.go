@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -43,6 +44,11 @@ type Data struct {
 	// the linked pull requests, oldest first (board.go).
 	threads keyed[proto.Thread]
 	pulls   keyed[proto.PullRequest]
+	// threadReplied is the updatedAt of each thread's copy an owner's
+	// change answered with (ThreadChanged, ThreadClosed), until an event
+	// of the thread applies: an older event is dropped while the copy is
+	// held (applyThread).
+	threadReplied map[int64]time.Time
 	// plans are every plan, most recently changed first (plans.go).
 	plans keyed[proto.Plan]
 	// proposals are the board's proposals, in board order, and schedules

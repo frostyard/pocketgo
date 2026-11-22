@@ -196,6 +196,104 @@ func TestAShiftChangeReplyNeverUndoesANewerThread(t *testing.T) {
 	}
 }
 
+// An owner's change answers with the thread, and its reply can come before
+// the events of the changes ahead of it, the stream lagging behind: while
+// the client holds the reply's copy, an older event never replaces it.
+// Before, the thread showed the older copy until the change's own event
+// came (pocketgo#42), and that event ends the drop.
+func TestAnOlderThreadEventNeverUndoesAReply(t *testing.T) {
+	at := func(state proto.ShiftState, round int, minutes time.Duration) proto.Thread {
+		return shifted(1, proto.Shift{State: state, Round: round, MaxRounds: 8}, minutes*time.Minute)
+	}
+	shiftOf := func(d *Data) proto.Shift {
+		th, _ := d.Thread(1)
+		return *th.Shift
+	}
+	apply := func(d *Data, th proto.Thread) { d.Apply(proto.Event{Type: proto.EventThread, Thread: &th}) }
+	stopped := at(proto.ShiftEnded, 3, 1)
+	resumed := at(proto.ShiftRunning, 4, 2)
+	stoppedAgain := at(proto.ShiftEnded, 4, 3)
+
+	// The owner resumes the shift and stops it again, and both replies
+	// come before the resume's event.
+	var d Data
+	d.SetThreads(d.BeginThreads(), []proto.Thread{stopped})
+	d.ThreadChanged(d.BeginThreadChange(), resumed)
+	d.ThreadChanged(d.BeginThreadChange(), stoppedAgain)
+	apply(&d, resumed)
+	if sh := shiftOf(&d); sh.State != proto.ShiftEnded || sh.Round != 4 {
+		t.Errorf("the resume's event after the stop's reply: %s at round %d, want the stop's copy", sh.State, sh.Round)
+	}
+	apply(&d, stoppedAgain)
+	if sh := shiftOf(&d); sh.State != proto.ShiftEnded || sh.Round != 4 {
+		t.Errorf("the stop's own event: %s at round %d", sh.State, sh.Round)
+	}
+
+	// Once the change's own event came, the stream's order holds again,
+	// even for an older copy, as after pocketd's clock moved back.
+	back := at(proto.ShiftEnded, 4, 2)
+	back.Report = "a note after the clock moved back"
+	apply(&d, back)
+	if th, _ := d.Thread(1); th.Report != back.Report {
+		t.Errorf("an event after the stop's own: %q, want the event's", th.Report)
+	}
+}
+
+// An event applies unless it is older than a reply's copy the client
+// holds: one as old as the reply, since a change in the reply's
+// millisecond may have come after it; one with no updatedAt, which orders
+// nothing; and one older than a fetch's copy, by the Data merge rule, as a
+// fetch may hold a change whose event this stream never carries. So does
+// every event once a fetch's copy took the reply's place.
+func TestAThreadEventAppliesUnlessAReplyIsLater(t *testing.T) {
+	at := func(state proto.ShiftState, round int, minutes time.Duration) proto.Thread {
+		return shifted(1, proto.Shift{State: state, Round: round, MaxRounds: 8}, minutes*time.Minute)
+	}
+	stateOf := func(d *Data) proto.ShiftState {
+		th, _ := d.Thread(1)
+		return th.Shift.State
+	}
+	apply := func(d *Data, th proto.Thread) { d.Apply(proto.Event{Type: proto.EventThread, Thread: &th}) }
+	loaded := func() *Data {
+		d := &Data{}
+		d.SetThreads(d.BeginThreads(), []proto.Thread{at(proto.ShiftRunning, 3, 1)})
+		return d
+	}
+
+	d := loaded()
+	d.ThreadChanged(d.BeginThreadChange(), at(proto.ShiftEnded, 3, 2))
+	apply(d, at(proto.ShiftPaused, 3, 2))
+	if got := stateOf(d); got != proto.ShiftPaused {
+		t.Errorf("an event as old as the reply: %s, want the event's", got)
+	}
+
+	d = loaded()
+	d.ThreadChanged(d.BeginThreadChange(), at(proto.ShiftEnded, 3, 2))
+	bare := at(proto.ShiftPaused, 3, 0)
+	bare.UpdatedAt = time.Time{}
+	apply(d, bare)
+	if got := stateOf(d); got != proto.ShiftPaused {
+		t.Errorf("an event with no updatedAt: %s, want the event's", got)
+	}
+
+	// pocketd's clock moved back: the fetch's copy holds a change whose
+	// event came before this stream, and the next change's is older.
+	d = &Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(proto.ShiftRunning, 3, 5)})
+	apply(d, at(proto.ShiftPaused, 3, 2))
+	if got := stateOf(d); got != proto.ShiftPaused {
+		t.Errorf("an event older than a fetch's copy: %s, want the event's", got)
+	}
+
+	d = loaded()
+	d.ThreadChanged(d.BeginThreadChange(), at(proto.ShiftEnded, 3, 2))
+	d.SetThreads(d.BeginThreads(), []proto.Thread{at(proto.ShiftEnded, 3, 4)})
+	apply(d, at(proto.ShiftPaused, 3, 1))
+	if got := stateOf(d); got != proto.ShiftPaused {
+		t.Errorf("an event after a fetch's copy took the reply's place: %s, want the event's", got)
+	}
+}
+
 // A stop whose answer was lost keeps its request id only for the shift it
 // acted on: after a resume, the next stop is a new request, which pocketd
 // carries out, never a retry it answers with the running shift (Codex

@@ -361,6 +361,49 @@ func TestALostCloseReplyLeavesNoRetryState(t *testing.T) {
 	}
 }
 
+// A close's reply is the thread as pocketd closed it, and a closed thread
+// still changes (a note on its report): a later copy, which its event may
+// bring first, stays. A held copy as old as the reply stays too, and the
+// close's own event settles it.
+func TestACloseReplyNeverUndoesALaterCopy(t *testing.T) {
+	loaded := func() *Data {
+		d := &Data{}
+		d.SetThreads(d.BeginThreads(), []proto.Thread{thread(1, proto.ThreadOpen, 0)})
+		return d
+	}
+	apply := func(d *Data, th proto.Thread) { d.Apply(proto.Event{Type: proto.EventThread, Thread: &th}) }
+	closed := thread(1, proto.ThreadClosed, time.Minute)
+
+	d := loaded()
+	d.ThreadClosed(closed)
+	if th, _ := d.Thread(1); th.State != proto.ThreadClosed {
+		t.Errorf("the close's reply alone: %s", th.State)
+	}
+
+	d = loaded()
+	noted := thread(1, proto.ThreadClosed, 2*time.Minute)
+	noted.Report = "The worktree was removed."
+	apply(d, closed)
+	apply(d, noted)
+	d.ThreadClosed(closed)
+	if th, _ := d.Thread(1); th.Report != noted.Report {
+		t.Errorf("the close's reply undid a later note: %q", th.Report)
+	}
+
+	d = loaded()
+	same := thread(1, proto.ThreadBlocked, time.Minute)
+	same.Report = "a report in the close's millisecond"
+	apply(d, same)
+	d.ThreadClosed(closed)
+	if th, _ := d.Thread(1); th.State != proto.ThreadBlocked {
+		t.Errorf("a copy as old as the close's reply: %s, want it kept until the close's event", th.State)
+	}
+	apply(d, closed)
+	if th, _ := d.Thread(1); th.State != proto.ThreadClosed {
+		t.Errorf("the close's own event after a copy as old: %s", th.State)
+	}
+}
+
 // A closed thread's pull request shows only while open, as GET /v1/pulls
 // lists them, whichever event comes first: the merge or the close.
 func TestAClosedThreadsMergedPullLeavesInEitherOrder(t *testing.T) {

@@ -1302,7 +1302,8 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 }
 
 // closeThread closes a thread as the owner does: closing a closed one
-// changes nothing (protocol rule 28).
+// changes nothing (protocol rule 28), and a close moves the thread's
+// updatedAt on, never back, as every change does.
 func (s *Server) closeThread(w http.ResponseWriter, r *http.Request) {
 	var request proto.CloseThread
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
@@ -1322,7 +1323,7 @@ func (s *Server) closeThread(w http.ResponseWriter, r *http.Request) {
 	}
 	t := s.threads[i]
 	if t.State != proto.ThreadClosed {
-		t.State, t.UpdatedAt = proto.ThreadClosed, Now
+		t.State, t.UpdatedAt = proto.ThreadClosed, movedOn(t.UpdatedAt)
 		s.threads[i] = t
 		s.emitLocked(proto.Event{Type: proto.EventThread, Thread: &t})
 	}

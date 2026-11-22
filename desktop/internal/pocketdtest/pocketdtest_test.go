@@ -246,8 +246,18 @@ func TestAShiftChangeTriedAgainAnswersTheThreadAsItIs(t *testing.T) {
 	if _, err := client.StopShift(ctx, 4, proto.StopShift{RequestID: "s3"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CloseThread(ctx, 4, proto.CloseThread{RequestID: "c1"}); err != nil {
+	before, err := client.Threads(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	closed, err := client.CloseThread(ctx, 4, proto.CloseThread{RequestID: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A close moves updatedAt on as every change does, though the thread
+	// changed later than Now: the client keeps the later copy.
+	if i := slices.IndexFunc(before, func(th proto.Thread) bool { return th.ID == 4 }); i < 0 || !closed.UpdatedAt.After(before[i].UpdatedAt) {
+		t.Fatalf("the close's updatedAt %v did not move on from the thread's", closed.UpdatedAt)
 	}
 	if _, err := client.ResumeShift(ctx, 4, proto.ResumeShift{RequestID: "r2"}); !errors.As(err, &pe) || pe.Code != proto.ErrorCodeConflict {
 		t.Fatalf("a closed thread's resume: %v, want 409", err)

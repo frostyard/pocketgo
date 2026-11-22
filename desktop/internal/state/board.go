@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -196,9 +197,17 @@ func (d *Data) Thread(id int64) (proto.Thread, bool) {
 	return proto.Thread{}, false
 }
 
-// ThreadClosed applies the reply of POST /v1/threads/{id}/close, as the
-// thread's event would: a closed thread never changes again.
-func (d *Data) ThreadClosed(t proto.Thread) { d.applyThread(t) }
+// ThreadClosed applies the reply of POST /v1/threads/{id}/close unless the
+// copy the client holds is as new or newer, as ThreadChanged does: a
+// closed thread still changes (pocketd notes on its report), and the event
+// of such a change may come before the reply. The close's own event comes
+// too, and settles a copy as old as the reply (applyThread).
+func (d *Data) ThreadClosed(t proto.Thread) {
+	if cur, ok := d.Thread(t.ID); ok && !t.UpdatedAt.After(cur.UpdatedAt) {
+		return
+	}
+	d.putReply(d.touched(), t)
+}
 
 // BeginThreadChange starts an owner's request that answers with the thread
 // it changed (POST /v1/threads/{id}/shift/stop or .../resume, ADR-0024):
@@ -225,15 +234,46 @@ func (d *Data) ThreadChanged(f Fetch, t proto.Thread) (refetch bool) {
 	if cur, ok := d.Thread(t.ID); ok && !t.UpdatedAt.After(cur.UpdatedAt) {
 		return t.UpdatedAt.Equal(cur.UpdatedAt) && !reflect.DeepEqual(cur, t)
 	}
-	d.rev++
-	d.threads.put(f.epoch, t, threadID, threadLess)
+	d.putReply(f.epoch, t)
 	return d.threads.inFlight > 1
 }
 
 // ThreadChangeFailed ends a change begun as f that got no reply.
 func (d *Data) ThreadChangeFailed(Fetch) { d.threads.answered() }
 
+// putReply puts t, the reply of an owner's change, known at epoch at, and
+// notes its updatedAt until the change's own event comes (applyThread).
+func (d *Data) putReply(at uint64, t proto.Thread) {
+	d.rev++
+	d.threads.put(at, t, threadID, threadLess)
+	if d.threadReplied == nil {
+		d.threadReplied = map[int64]time.Time{}
+	}
+	d.threadReplied[t.ID] = t.UpdatedAt
+}
+
+// applyThread follows a thread's event. Events come in the order pocketd
+// made their changes, but an owner's change answers with the thread too,
+// and that reply may come before the events of the changes ahead of it,
+// the stream lagging behind. While the client holds the reply's copy, an
+// event older than it is dropped, where the thread showed the older copy
+// until the change's own event came (pocketgo#42). That event always
+// comes, pocketd sending one with each change, and ends the drop.
+//
+// Every other event applies, the stream's order making it the newest: one
+// as old as the reply, since a change in the reply's millisecond may have
+// come after it; one with no updatedAt, which orders nothing; and one
+// older than a fetch's copy, by the Data merge rule (an event that came
+// after a fetch began wins over its copy). A fetch may hold a change whose
+// event this stream never carries, so no event would follow to end a drop
+// where pocketd's clock moved back.
 func (d *Data) applyThread(t proto.Thread) {
+	if at, ok := d.threadReplied[t.ID]; ok {
+		if cur, _ := d.Thread(t.ID); cur.UpdatedAt.Equal(at) && at.After(t.UpdatedAt) && !t.UpdatedAt.IsZero() {
+			return
+		}
+		delete(d.threadReplied, t.ID)
+	}
 	d.rev++
 	d.threads.put(d.touched(), t, threadID, threadLess)
 }
