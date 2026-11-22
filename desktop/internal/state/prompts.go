@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -40,8 +41,10 @@ type SlashHead struct {
 
 // ParseSlashHead reads draft's first line as a call of a prompt: it starts
 // with /, then letters, digits and dashes, the name typed so far, then the
-// end of the line or white space before the arguments. Anything else, as a
-// path (/etc/hosts) or text before the /, is no call.
+// end of the line or white space before the arguments, any white space
+// TrimSpace trims, a pasted no-break space included (Codex review of #108,
+// round 2). Anything else, as a path (/etc/hosts) or text before the /, is
+// no call.
 func ParseSlashHead(draft string) (SlashHead, bool) {
 	rest, ok := strings.CutPrefix(draft, "/")
 	if !ok {
@@ -53,7 +56,7 @@ func ParseSlashHead(draft string) (SlashHead, bool) {
 		n++
 	}
 	name, after := line[:n], line[n:]
-	if after != "" && after[0] != ' ' && after[0] != '\t' {
+	if r, _ := utf8.DecodeRuneInString(after); after != "" && !unicode.IsSpace(r) {
 		return SlashHead{}, false
 	}
 	return SlashHead{Name: name, Args: strings.TrimSpace(after)}, true
@@ -224,6 +227,10 @@ type PromptMenu struct {
 	None bool
 	// Refused says why the prompt chosen did not go in, "" for nothing.
 	Refused string
+	// gone says the prompt shown highlighted for this name typed is no
+	// longer offered: Enter and Tab take nothing until the next frame
+	// shows another.
+	gone bool
 }
 
 // NoPrompts says prompts holds no valid prompt.
@@ -305,9 +312,12 @@ func (p *PromptPicker) menu(draft string, prompts proto.Prompts, status ListStat
 	m.Items, m.Broken = PromptMatches(prompts.Prompts, head.Name)
 	if len(m.Items) > 0 {
 		m.Highlight = 0
-		if head.Name == p.query {
-			m.Highlight = max(slices.IndexFunc(m.Items, func(q proto.Prompt) bool { return q.Name == p.highlight }), 0)
+		if head.Name == p.query && p.highlight != "" {
+			i := slices.IndexFunc(m.Items, func(q proto.Prompt) bool { return q.Name == p.highlight })
+			m.Highlight, m.gone = max(i, 0), i < 0
 		}
+	} else {
+		m.gone = head.Name == p.query && p.highlight != ""
 	}
 	return m
 }
@@ -345,6 +355,40 @@ func (p *PromptPicker) Hide() { p.shown = false }
 // its own.
 func (p *PromptPicker) EnterReleased() { p.holdEnter = false }
 
+// EnterPressed says Enter went down as the key comes, before the field
+// gets it: an auto-repeat (repeat) keeps a hold, and a press of its own
+// ends it, whether or not a frame saw the key let go between them (Codex
+// review of #108, round 2).
+func (p *PromptPicker) EnterPressed(repeat bool) {
+	if !repeat {
+		p.holdEnter = false
+	}
+}
+
+// HoldEnter says a prompt went in while Enter was down, as a row the
+// keyboard activated: its repeats are the picker's until it is let go, as
+// after Key's Enter (Codex review of #108, round 2).
+func (p *PromptPicker) HoldEnter() { p.holdEnter = true }
+
+// PromptEdit is a prompt's text on its way into a field, which the next
+// frame puts in as a step of undo of its own, and its caret, in
+// characters.
+type PromptEdit struct {
+	Text  string
+	Caret int
+}
+
+// Typed is the edit once text was typed into the field before it went
+// in: the text follows the prompt, at its caret, which moves past it, so
+// what the owner typed after Tab or Enter is not lost when the field's
+// text is replaced (Codex review of #108, round 2).
+func (e *PromptEdit) Typed(text string) {
+	runes := []rune(e.Text)
+	at := min(max(e.Caret, 0), len(runes))
+	e.Text = string(runes[:at]) + text + string(runes[at:])
+	e.Caret = at + utf8.RuneCountInString(text)
+}
+
 // Key is what key does in the picker with text, the field's text as the
 // key comes: while the picker shows, Up and Down move the highlight
 // through the prompts it offers, around at the ends; Enter and Tab put the
@@ -377,6 +421,12 @@ func (p *PromptPicker) Key(key PickerKey, text string, prompts proto.Prompts) Pi
 		p.highlight, p.query = m.Items[i].Name, m.Head.Name
 		return PickerResult{Took: true}
 	case PickerEnter, PickerTab:
+		if m.gone {
+			// The prompt shown went from the list since the frame drew
+			// it: the owner sees the one that takes its place first
+			// (Codex review of #108, round 2).
+			return PickerResult{Took: true}
+		}
 		if m.Highlight < 0 {
 			return PickerResult{Took: key == PickerEnter}
 		}

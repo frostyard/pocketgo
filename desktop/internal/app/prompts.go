@@ -22,9 +22,8 @@ import (
 // of its own, and puts the caret at an offset, in characters, after the
 // prompt (Codex review of #108, round 1).
 type fieldEdit struct {
-	key   any
-	text  string
-	caret int
+	key any
+	state.PromptEdit
 }
 
 // hidePicker says to session id's picker that its composer left the
@@ -109,8 +108,14 @@ func (a *App) promptMenu(c *ui.Context, id int64, draft *string, picker *state.P
 					}
 					if row.Clicked() {
 						if text, caret, ok := picker.Choose(p.Name, *draft, a.st.Data.Prompts()); ok {
-							cp.edit = &fieldEdit{key: id, text: text, caret: caret}
+							cp.edit = &fieldEdit{key: id, PromptEdit: state.PromptEdit{Text: text, Caret: caret}}
 							cp.refocus = true
+							// A row the keyboard chose holds Enter, as the
+							// field's Enter does (Codex review of #108,
+							// round 2).
+							if c.KeyDown(ui.KeyEnter) {
+								picker.HoldEnter()
+							}
 						}
 					}
 				}
@@ -172,7 +177,7 @@ func (a *App) summonPrompts() {
 	cp := &a.composer
 	draft := cp.draft(id)
 	text, caret := cp.picker(id).Summon(*draft)
-	cp.edit = &fieldEdit{key: id, text: text, caret: caret}
+	cp.edit = &fieldEdit{key: id, PromptEdit: state.PromptEdit{Text: text, Caret: caret}}
 	cp.refocus = true
 }
 
@@ -248,8 +253,11 @@ func (a *App) phonePrompts(c *ui.Context) {
 								// With its caret after it, as the picker's; one too
 								// long stays out, and the sheet says why.
 								if text, caret, ok := picker.Choose(p.Name, *draft, prompts); ok {
-									a.composer.edit = &fieldEdit{key: id, text: text, caret: caret}
+									a.composer.edit = &fieldEdit{key: id, PromptEdit: state.PromptEdit{Text: text, Caret: caret}}
 									a.composer.refocus = true
+									if c.KeyDown(ui.KeyEnter) {
+										picker.HoldEnter()
+									}
 									a.phone.prompts = false
 								}
 							}

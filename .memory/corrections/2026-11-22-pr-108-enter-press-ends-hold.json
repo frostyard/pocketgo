@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The field's Enter presses and releases are observed as they come: a press of its own or a release ends the hold, an auto-repeat keeps it, whether or not a frame saw the key let go.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 2 (codex-cli 0.169.0) of head 572058c: [P3] Track Enter release independently of rendered frames",
+  "promoted_to": "desktop/internal/state/prompts_review2_test.go"
+}

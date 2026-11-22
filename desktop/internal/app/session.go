@@ -521,7 +521,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				// A prompt on its way in is the text the picker reads.
 				text := *draft
 				if cp.edit != nil && cp.edit.key == any(id) {
-					text = cp.edit.text
+					text = cp.edit.Text
 				}
 				status, err := a.st.Data.PromptsStatus()
 				menu := picker.View(text, a.st.Data.Prompts(), status, err)
@@ -536,8 +536,26 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			}
 			// Keyed, so the field keeps its focus and caret as the picker
 			// or a problem shows above it.
-			ui.Column(c.Key("composer-box")).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
-				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS).Children(func() {
+			box := ui.Column(c.Key("composer-box")).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
+				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS)
+			// The field's keys as they come, before it takes them (Codex
+			// review of #108, round 2): a press of Enter of its own, or its
+			// release, ends a hold whether or not a frame saw it; and text
+			// typed before a prompt went in follows the prompt, as the
+			// field's text is replaced by it.
+			if composing.TakesPrompts() {
+				box.ObserveInput(func(ev ui.InputEvent) {
+					switch {
+					case ev.Kind == ui.InputKeyDown && ev.Key == ui.KeyEnter:
+						picker.EnterPressed(ev.Repeat)
+					case ev.Kind == ui.InputKeyUp && ev.Key == ui.KeyEnter:
+						picker.EnterReleased()
+					case ev.Kind == ui.InputText && cp.edit != nil && cp.edit.key == fieldKey:
+						cp.edit.Typed(ev.Text)
+					}
+				})
+			}
+			box.Children(func() {
 				a.attachmentChips(c, id)
 				hints := a.composerHints()
 				placeholder := hints.idle
@@ -564,7 +582,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 							if r.Insert {
 								// The next frame puts it in as an edit of
 								// its own, which one Undo takes back.
-								cp.edit = &fieldEdit{key: fieldKey, text: r.Text, caret: r.Caret}
+								cp.edit = &fieldEdit{key: fieldKey, PromptEdit: state.PromptEdit{Text: r.Text, Caret: r.Caret}}
 							}
 							if r.Took {
 								return true
@@ -602,8 +620,8 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				// the owner chose the prompt to write on (Codex review of
 				// #108, round 1).
 				if e := cp.edit; e != nil && e.key == fieldKey {
-					input.ReplaceText(0, math.MaxInt, e.text)
-					input.SetTextSelection(e.caret, e.caret)
+					input.ReplaceText(0, math.MaxInt, e.Text)
+					input.SetTextSelection(e.Caret, e.Caret)
 					cp.edit = nil
 				} else if e != nil {
 					// It was for a field this frame does not show.
@@ -611,7 +629,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				}
 				// The phone's sheet keeps the keys while it shows: the field
 				// takes them once it is gone.
-				if cp.refocus && !(a.compact && a.phone.promptsShown) {
+				if cp.refocus && (!a.compact || !a.phone.promptsShown) {
 					input.Focus()
 					cp.refocus = false
 				}
