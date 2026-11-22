@@ -25,5 +25,8 @@ func openHeld(string) (*os.File, error) { return nil, errNoBwrap }
 // mkdirNoFollow refuses every path, as rootOwned does.
 func mkdirNoFollow(string) error { return errNoBwrap }
 
+// makeFileNoFollow refuses every path, as rootOwned does.
+func makeFileNoFollow(string) error { return errNoBwrap }
+
 // statOwner refuses every path, as rootOwned does.
 var statOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0, errNoBwrap }

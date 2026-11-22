@@ -75,3 +75,19 @@ func TestInstructionsJoinTheirParts(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+// A global instructions file with more than one name could change outside
+// the read-only bind the sandbox keeps it under, so it is left out with a
+// note, as a global skill is (ADR-0044); a folder's own file is not.
+func TestAGlobalFileWithAnotherNameIsLeftOut(t *testing.T) {
+	got := GlobalSection(FileRead{Path: "/h/AGENTS.md", Found: true, Data: []byte("RULES"), Names: 2})
+	if !strings.Contains(got, "more than one name") || strings.Contains(got, "RULES") {
+		t.Errorf("a global file with another name: %q", got)
+	}
+	if got := GlobalSection(FileRead{Path: "/h/AGENTS.md", Found: true, Data: []byte("RULES"), Names: 1}); !strings.Contains(got, "RULES") {
+		t.Errorf("a global file with one name: %q", got)
+	}
+	if got := FolderSection(FileRead{Path: "/h/AGENTS.md", Found: true, Data: []byte("RULES"), Names: 2}); !strings.Contains(got, "RULES") {
+		t.Errorf("a folder's file with another name: %q", got)
+	}
+}

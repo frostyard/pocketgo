@@ -64,8 +64,12 @@ type Loaded struct {
 }
 
 // GlobalSection is the global AGENTS.md's section, the owner's rules for
-// every session.
+// every session. A global file with more than one name is left out with a
+// note, as a global skill is (ADR-0044).
 func GlobalSection(r FileRead) string {
+	if r.Err == "" && r.Found && r.Names > 1 {
+		return LeftOutNote(r.Path, "it has more than one name (hard links), through which it could change outside its read-only bind")
+	}
 	text, note := fileText(r)
 	switch {
 	case note != "":

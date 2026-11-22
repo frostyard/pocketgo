@@ -637,13 +637,22 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	// sandbox shows them (ADR-0029), read-only, as the skills folder a
 	// gather reads is (ADR-0035).
 	uploadsDir := uploads.Dir(home)
+	// The owner's global AGENTS.md, which every session's instructions
+	// hold (ADR-0043): one absolute path, whatever the working directory.
+	if instructionsFile != "" {
+		if instructionsFile, err = filepath.Abs(instructionsFile); err != nil {
+			return err
+		}
+	}
 	// Every command a tool starts runs in the sandbox (ADR-0012): without
 	// one that works, pocketd does not start. It makes the skills folder
 	// and the uploads folder when they are missing, empty, so a host
 	// without them starts, and no agent can make one first; and it names
 	// each as the folder it keeps, links resolved, which the gathers and
-	// the uploads use from then on.
-	sandbox, err := newSandbox(data, profileDir, &skillsDir, &uploadsDir)
+	// the uploads use from then on. It keeps the owner's global
+	// instructions file read-only too, makes it empty when missing, and
+	// names it as the file it keeps, which every session reads (ADR-0044).
+	sandbox, err := newSandbox(data, profileDir, []*string{&instructionsFile}, &skillsDir, &uploadsDir)
 	if err != nil {
 		return err
 	}
@@ -699,14 +708,9 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 			own = profiles.Own{}
 		}
 	}
-	// Every session's instructions hold the owner's global AGENTS.md, and
-	// list the skills of the skills folder kept above (ADR-0043): one
-	// absolute path, whatever the working directory.
-	if instructionsFile != "" {
-		if instructionsFile, err = filepath.Abs(instructionsFile); err != nil {
-			return err
-		}
-	}
+	// Every session's instructions hold the owner's global AGENTS.md and
+	// list the skills of the skills folder, both as the sandbox above keeps
+	// them (ADR-0043, ADR-0044).
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox, Own: own,
 		Instructions: instructionsFile, Skills: skillsDir,

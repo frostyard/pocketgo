@@ -103,8 +103,11 @@ type Engine struct {
 	closeOnce sync.Once
 	protected []string
 	// readOnly are the folders the file tools read but never change
-	// (guardedEnv.readOnly, ADR-0035).
+	// (guardedEnv.readOnly, ADR-0035); the sandbox's shown paths, which
+	// since ADR-0044 include the owner's global instructions file.
 	readOnly []string
+	// readOnlyFiles are the sandbox's files among readOnly (ADR-0044).
+	readOnlyFiles []string
 	// stopShown ends the sandbox's watch of those folders
 	// (Sandbox.watchShown), and waits, until ctx ends, for the look it may
 	// be in to end too.
@@ -254,6 +257,7 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		// a link put in one's place since leads nowhere the tools do not
 		// watch (Codex review of #63, round 3).
 		e.readOnly = slices.Clone(opts.Sandbox.Shown)
+		e.readOnlyFiles = slices.Clone(opts.Sandbox.files)
 	}
 	e.coding = tools.CreateCodingTools(nil)
 	e.approval = &durable.Extension{
@@ -287,7 +291,7 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 				return nil, errors.New("the session has no working directory")
 			}
 			local := envnode.NewNodeExecutionEnv(envnode.NodeExecutionEnvOptions{Cwd: *target.Cwd})
-			return &guardedEnv{ExecutionEnv: local, protected: e.protected, readOnly: e.readOnly, commands: e.commands, sandbox: opts.Sandbox}, nil
+			return &guardedEnv{ExecutionEnv: local, protected: e.protected, readOnly: e.readOnly, files: e.readOnlyFiles, commands: e.commands, sandbox: opts.Sandbox}, nil
 		},
 	})
 	if err != nil {
