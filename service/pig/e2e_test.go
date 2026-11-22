@@ -14,7 +14,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/events"
-	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/store/storetest"
 )
 
 // TestEndToEndOverHTTP wires the service as pocketd serve does and drives it
@@ -25,10 +25,7 @@ import (
 func TestEndToEndOverHTTP(t *testing.T) {
 	ctx := context.Background()
 	dataDir, work := t.TempDir(), t.TempDir()
-	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(dataDir, "work.sqlite"), nil)
 	defer func() { _ = s.Close() }()
 	_, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {
@@ -183,10 +180,7 @@ func boolText(b bool) string {
 func TestEndToEndWithoutApprovalsOverHTTP(t *testing.T) {
 	ctx := context.Background()
 	dataDir, work := t.TempDir(), t.TempDir()
-	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(dataDir, "work.sqlite"), nil)
 	defer func() { _ = s.Close() }()
 	_, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {

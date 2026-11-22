@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -16,9 +18,63 @@ type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { c.t = c.t.Add(time.Millisecond); return c.t }
 
+var migratedTemplate = sync.OnceValues(func() ([]byte, error) {
+	dir, err := os.MkdirTemp("", "storetest-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	path := filepath.Join(dir, "w.sqlite")
+	s, err := Open(context.Background(), path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Close(); err != nil {
+		return nil, err
+	}
+	if info, err := os.Stat(path + "-wal"); err == nil {
+		if info.Size() > 0 {
+			return nil, fmt.Errorf("template has uncheckpointed WAL: %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	return os.ReadFile(path)
+})
+
+func copyTemplate(t *testing.T, path string) {
+	t.Helper()
+	data, err := migratedTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func open(t *testing.T) (*Store, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "work.sqlite")
+	copyTemplate(t, path)
+	return openPath(t, path)
+}
+
+func openFresh(t *testing.T) (*Store, string) {
+	t.Helper()
+	return openPath(t, filepath.Join(t.TempDir(), "work.sqlite"))
+}
+
+func openPath(t *testing.T, path string) (*Store, string) {
+	t.Helper()
 	c := &clock{t: time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)}
 	s, err := Open(ctx, path, c.now)
 	if err != nil {
@@ -29,7 +85,7 @@ func open(t *testing.T) (*Store, string) {
 }
 
 func TestOpenMigratesAndReopens(t *testing.T) {
-	s, path := open(t)
+	s, path := openFresh(t)
 	var version int
 	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatalf("version %d, %v", version, err)
@@ -50,7 +106,7 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 }
 
 func TestOpenRefusesANewerSchema(t *testing.T) {
-	s, path := open(t)
+	s, path := openFresh(t)
 	if _, err := s.db.Exec(`UPDATE schema_version SET version = ?`, SchemaVersion+1); err != nil {
 		t.Fatal(err)
 	}

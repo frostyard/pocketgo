@@ -105,7 +105,7 @@ func TestCloseMergedThread(t *testing.T) {
 }
 
 func TestPullQueriesUseTheirIndexes(t *testing.T) {
-	s, _ := open(t)
+	s, _ := openFresh(t)
 	for query, index := range map[string]string{
 		`SELECT ` + pullColumns + ` FROM pull_requests WHERE ` + openPulls + ` ORDER BY id`: "pull_requests_open",
 		`SELECT ` + pullColumns + ` FROM pull_requests WHERE thread_id = 1 ORDER BY id`:     "pull_requests_thread",

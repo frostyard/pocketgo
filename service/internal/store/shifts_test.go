@@ -431,7 +431,7 @@ func TestAThreadIsReadWithItsShift(t *testing.T) {
 // The live shifts are read through their partial index, never every shift
 // that ended (Codex review of #36).
 func TestLiveShiftsUseTheirIndex(t *testing.T) {
-	s, _ := open(t)
+	s, _ := openFresh(t)
 	if plan := planOf(t, s, `SELECT thread_id FROM shifts WHERE `+liveShiftPredicate+` ORDER BY thread_id`); !strings.Contains(plan, "shifts_live") {
 		t.Fatalf("the plan %q", plan)
 	}

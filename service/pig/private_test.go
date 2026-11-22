@@ -18,6 +18,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/store/storetest"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
@@ -239,10 +240,7 @@ func TestAPrivateProfileEndToEndOverHTTP(t *testing.T) {
 	}
 	write("chani.md", "---\nmodel: faux/faux-1\nhome: ~\nprivate: true\n---\n# Chani\n\nShe keeps the owner's notes.\n")
 	write("duncan.md", "---\nmodel: faux/faux-1\nhome: ~\n---\n# Duncan\n\nHe tends the garden.\n")
-	s, err := store.Open(ctx, filepath.Join(dataDir, "work.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(dataDir, "work.sqlite"), nil)
 	defer func() { _ = s.Close() }()
 	_, token, err := auth.CreateDevice(ctx, s, "laptop")
 	if err != nil {

@@ -7,15 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/store/storetest"
 )
 
 func TestDeviceTokens(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "w.sqlite"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := storetest.Open(t, filepath.Join(t.TempDir(), "w.sqlite"), nil)
 	defer func() { _ = s.Close() }()
 	device, token, err := CreateDevice(ctx, s, " laptop ")
 	if err != nil || device.Name != "laptop" || !strings.HasPrefix(token, tokenPrefix) {

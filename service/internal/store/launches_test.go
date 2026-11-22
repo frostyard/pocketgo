@@ -118,7 +118,7 @@ func TestALaunchItemPastItsEndStartsNoThread(t *testing.T) {
 
 // The launch pass reads the running launches by their index.
 func TestLaunchQueriesUseTheirIndexes(t *testing.T) {
-	s, _ := open(t)
+	s, _ := openFresh(t)
 	if plan := planOf(t, s, `SELECT id FROM launches WHERE state = 'running' ORDER BY id`); !strings.Contains(plan, "launches_running") {
 		t.Errorf("plan %q does not use launches_running", plan)
 	}

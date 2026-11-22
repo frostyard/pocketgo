@@ -298,7 +298,7 @@ var tableScan = regexp.MustCompile(`SCAN (lessons|sessions)($|;| [^U])`)
 // that are gone (Codex review of #18, round 2), and the sessions of one
 // profile are found by theirs (round 4).
 func TestLessonQueriesUseTheirIndexes(t *testing.T) {
-	s, _ := open(t)
+	s, _ := openFresh(t)
 	for query, index := range map[string]string{
 		`SELECT ` + lessonColumns + ` FROM lessons WHERE ` + liveLessons + ` ORDER BY id`: "lessons_live",
 		`SELECT ` + lessonColumns + ` FROM lessons WHERE ` + lessonsOf + ` ORDER BY id`:   "lessons_agent",

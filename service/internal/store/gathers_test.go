@@ -269,7 +269,7 @@ func TestATimedEndIsDecidedByTheStoresClock(t *testing.T) {
 
 // The passes read their partial indexes.
 func TestGatherQueriesUseTheirIndexes(t *testing.T) {
-	s, _ := open(t)
+	s, _ := openFresh(t)
 	for query, index := range map[string]string{
 		`SELECT id FROM gathers WHERE state = 'running'`:                                                            "gathers_running",
 		`SELECT COUNT(*) FROM gather_asks WHERE gather_id = 3 AND state IN ('starting', 'running')`:                 "gather_asks_open",
