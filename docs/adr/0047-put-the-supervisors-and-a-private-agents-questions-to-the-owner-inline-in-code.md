@@ -52,7 +52,7 @@
    - A call run again after a restart finds its question. It waits again for one still waiting, announcing it again, and answers as it did for one settled.
    - The owner's answer wakes the call; the answer is its result, in the same run.
    - An abort skips it, with the reason `aborted`, once its task ended, after the approvals are retired (`Questions.RetireEnded`). pocketd's start skips one whose task ended while it stopped. So does every end of the session's run (`Server.questionsRunEnded`): an abort that a stop cut off before its task ended is finished by PiG once the tasks resume, with no request and no wait left to skip the question.
-   - A wait that ends leaves no wake registered behind it.
+   - A wait that ends leaves no wake registered behind it. A read of the question that fails is tried again with the deadline's backoff, and a skip at a run's end that fails is tried again every second, its task checked again: the call never leaves a question it showed, and no question of an ended run waits for good.
    - `approvals.NeedsApproval` still selects no tool. The question is no approval: it carries an answer, not an allow or a deny.
 
 5. **Timeout.** A question with no answer by its deadline is skipped, with the reason `timeout`, by pocketd, and the agent goes on.
