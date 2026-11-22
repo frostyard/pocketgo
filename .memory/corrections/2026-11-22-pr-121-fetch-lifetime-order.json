@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A fetched thread copy is ordered against the held one by reopens first, then by updatedAt, so a resync never keeps an earlier lifetime.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 4 (codex-cli 0.169.0) of head e29cfb3: [P2] Use reopen counts when merging a resync snapshot",
+  "promoted_to": "desktop/internal/state/reopen_test.go"
+}

@@ -1,6 +1,6 @@
 # 0054 — Remove a closed thread's worktree in code, with no GitHub write
 
-- **Status:** Accepted
+- **Status:** Accepted; a closed thread's worktree waits for a message that may reopen the thread, and a message to a closed thread whose folder is gone is refused, by [ADR-0061](0061-reopen-a-closed-thread-when-a-message-reaches-its-specialist.md)
 - **Date:** 2026-11-22
 
 ## Context

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Each worktree cleanup decision belongs to one close, by the thread's reopen count: a kept line not written for a close a reopen ended lands on no later close, and a decided close masks no later one.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 1 (codex-cli 0.169.0) of head a8a4cac: [P2] Scope cleanup decisions to the close they describe",
+  "promoted_to": "service/internal/api/reopen_round1_test.go"
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -329,12 +330,29 @@ func insertThread(ctx context.Context, tx *sql.Tx, row ThreadRow, now int64) (Th
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
+	// A new thread on the desk takes a place only while one is free, in
+	// this transaction: a delegation run again finds its own (DeskCap).
+	if row.DeskCap > 0 && (row.Plan == 0 || row.PlanTask != "") {
+		var made int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE key = ?`, row.Key).Scan(&made); err != nil {
+			return ThreadRow{}, false, err
+		}
+		if made == 0 {
+			desk, err := deskCount(ctx, tx)
+			if err != nil {
+				return ThreadRow{}, false, err
+			}
+			if desk >= row.DeskCap {
+				return ThreadRow{}, false, fmt.Errorf("%w: %d threads are on the desk, and its cap is %d", team.ErrDeskFull, desk, row.DeskCap)
+			}
+		}
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id,
-		review_pull, review_head, review_author_provider, review_author_model, worker_provider, worker_model, plan, plan_task, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		review_pull, review_head, review_author_provider, review_author_model, worker_provider, worker_model, plan, plan_task, follows, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, owner, row.TaskID,
 		row.ReviewPull, row.ReviewHead, row.ReviewAuthor.Provider, row.ReviewAuthor.ID, row.WorkerAsked.Provider, row.WorkerAsked.ID, row.Plan,
-		row.PlanTask, now, now)
+		row.PlanTask, row.Follows, now, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
@@ -343,7 +361,19 @@ func insertThread(ctx context.Context, tx *sql.Tx, row ThreadRow, now int64) (Th
 		return ThreadRow{}, false, err
 	}
 	got, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE key = ?`, row.Key).Scan)
-	return got, n == 0, err
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	// The thread it carries on names it as its successor, in the
+	// transaction that records it (ADR-0061): the newest one wins, and
+	// only an older thread is named, so the chain has no loop.
+	if n == 1 && got.Follows != 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET successor = ?, updated_at = MAX(updated_at, ?) WHERE id = ? AND id < ?`,
+			got.ID, now, got.Follows, got.ID); err != nil {
+			return ThreadRow{}, false, err
+		}
+	}
+	return got, n == 0, nil
 }
 
 // CreatePlanThread records a new plan and its plan thread, starting, in
@@ -684,6 +714,17 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 	if before.State == ThreadClosed || after.State != ThreadClosed {
 		return nil
 	}
+	// Its messages that go only while it is open, and are not placed, go
+	// to no one, dropped in the transaction that closes it: a stop of
+	// pocketd right after the close leaves none to go once a message
+	// reopens the thread (ADR-0061). Its worker is owed a stop, which no
+	// reopen overtakes (Codex review of #121, round 6).
+	if err := dropAtClose(ctx, tx, before.ID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET worker_stop_due = 1 WHERE id = ? AND worker_session != 0`, before.ID); err != nil {
+		return err
+	}
 	// A thread's close ends its shift, whatever closed it (ADR-0024).
 	if err := shiftClosed(ctx, tx, before, now); err != nil {
 		return err
@@ -750,6 +791,15 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 		if gateClosed {
 			return nil
 		}
+		// A plan the cap held stays held while the desk is not below that
+		// cap: its supervisor hears at the close that frees a place
+		// (freedPlace), with every ready task (Codex review of #121, round
+		// 5).
+		if facts.Plan.Held {
+			if free, err := heldPlaceFree(ctx, tx, plan); err != nil || !free {
+				return err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
 			return err
 		}
@@ -789,6 +839,11 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 		if t.State != team.TaskDone {
 			if len(ready) == 0 || gateClosed {
 				return nil
+			}
+			if facts.Plan.Held {
+				if free, err := heldPlaceFree(ctx, tx, plan); err != nil || !free {
+					return err
+				}
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 0 WHERE id = ?`, plan); err != nil {
 				return err
@@ -841,7 +896,7 @@ func (s *Store) HoldIfFull(ctx context.Context, plan int64, cap int, check func(
 	if n < cap {
 		return false, nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 1 WHERE id = ? AND state IN (?, ?)`, plan, team.PlanApproved, team.PlanBuilding); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE plans SET held = 1, held_cap = ? WHERE id = ? AND state IN (?, ?)`, cap, plan, team.PlanApproved, team.PlanBuilding); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
@@ -850,18 +905,51 @@ func (s *Store) HoldIfFull(ctx context.Context, plan int64, cap int, check func(
 // heldQuery reads the held plans through plans_held: every close on the
 // desk runs it, never over the whole history of plans (Codex review of
 // #25, round 4).
-const heldQuery = `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) ORDER BY id`
+const heldQuery = `SELECT id FROM plans WHERE held = 1 AND state IN (?, ?) AND (held_cap = 0 OR held_cap > ?) ORDER BY id`
+
+// deskCount is the number of threads on the desk, in tx: every one not
+// closed, but a plan's own thread (OpenThreads).
+func deskCount(ctx context.Context, tx *sql.Tx) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE state != 'closed' AND (plan = 0 OR plan_task != '')`).Scan(&n)
+	return n, err
+}
+
+// heldPlaceFree says whether held plan, in tx, may hear of a free place:
+// one held at no known cap, or with the desk below the cap it was held at,
+// which reopens may have put it over (ADR-0061; Codex review of #121,
+// rounds 4 and 5).
+func heldPlaceFree(ctx context.Context, tx *sql.Tx, plan int64) (bool, error) {
+	var heldCap int
+	if err := tx.QueryRowContext(ctx, `SELECT held_cap FROM plans WHERE id = ?`, plan).Scan(&heldCap); err != nil {
+		return false, err
+	}
+	if heldCap == 0 {
+		return true, nil
+	}
+	desk, err := deskCount(ctx, tx)
+	return desk < heldCap, err
+}
 
 // freedPlace tells the supervisor of each plan the cap held back
 // (HoldPlan), once, that the close of thread before freed a place on the
 // desk, naming its ready tasks, when its gate lets them go (Codex review
 // of #25, round 3). A plan held with an open ask learns of it when the
 // ask clears (askCleared).
+//
+// A plan held at a cap (HoldIfFull) is told only once the desk, after the
+// close, is below that cap: a reopen may have put it over (ADR-0061; Codex
+// review of #121, round 4). A plan held with no cap known is told at any
+// close, as before.
 func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) error {
+	desk, err := deskCount(ctx, tx)
+	if err != nil {
+		return err
+	}
 	held, err := queryRows(ctx, tx, func(scan func(...any) error) (int64, error) {
 		var id int64
 		return id, scan(&id)
-	}, heldQuery, team.PlanApproved, team.PlanBuilding)
+	}, heldQuery, team.PlanApproved, team.PlanBuilding, desk)
 	if err != nil {
 		return err
 	}
@@ -885,7 +973,14 @@ func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) er
 		if len(ready) == 0 {
 			continue
 		}
-		if err := insertNote(ctx, tx, NoteRow{Key: "plan:" + facts.Thread.Owner + ":free:" + before.Owner, SessionID: facts.Plan.SupervisorSession,
+		// One note per close of the thread: a thread a message reopened
+		// frees its place again at its next close (ADR-0061; Codex review
+		// of #121, round 2).
+		key := "plan:" + facts.Thread.Owner + ":free:" + before.Owner
+		if before.Reopened > 0 {
+			key += ":" + strconv.Itoa(before.Reopened)
+		}
+		if err := insertNote(ctx, tx, NoteRow{Key: key, SessionID: facts.Plan.SupervisorSession,
 			Text: team.FreeNote(plan, before.ID, team.TasksNamed(facts.Graph.Tasks, ready))}, now); err != nil {
 			return err
 		}

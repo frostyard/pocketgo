@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A close's worker stop that failed keeps the reopen held back until the delivery pass's retry stops the run; the start stops every closed thread's worker a stop is owed.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 5 (codex-cli 0.169.0) of head 220dc87: [P2] Preserve the worker run ID when retrying a failed stop",
+  "promoted_to": "service/internal/api/reopen_round3_test.go"
+}

@@ -605,6 +605,47 @@ var migrations = []string{
 		account TEXT NOT NULL,
 		kept_at INTEGER NOT NULL
 	);`,
+	// Version 25: a closed thread reopens when a message pocketd follows
+	// reaches its specialist (ADR-0061). follows names the thread a
+	// delegation carries on, and successor the newest thread that carries
+	// this one on; reopened counts the reopens, reopened_at is the last,
+	// and reopen_seq the order of GitHub's reads then (pull_reads): only a
+	// pull request a later read found open closes it by its merge, which
+	// open_seq, the last read that found a pull request open, says.
+	// held_cap is the desk's cap a plan was held at: a close frees its
+	// place only below it, though reopens put the desk over it. A supervisor's message kept
+	// while its thread was closed names the reopen it brings, the thread's
+	// reopened count after it (reports.reopens, 0 for any other). Each of
+	// the owner's messages to a thread's specialist is followed by its
+	// request key from when PiG took it until pocketd notes it placed or
+	// gone (owner_messages). A close owes its thread's worker a stop
+	// (worker_stop_due), and no message reopens the thread until it is
+	// done: a closed thread of an earlier version owes one too, which the
+	// start does. A close before this version marked its
+	// thread's worker's, shift's and supervisor's messages sent after it
+	// committed: one a stop cut off between the two is marked now, so no
+	// reopen sends it (Codex review of #121, round 3).
+	`ALTER TABLE threads ADD COLUMN follows INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE threads ADD COLUMN successor INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE threads ADD COLUMN reopened INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE threads ADD COLUMN reopened_at INTEGER;
+	ALTER TABLE threads ADD COLUMN reopen_seq INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE pull_requests ADD COLUMN open_seq INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE plans ADD COLUMN held_cap INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE reports ADD COLUMN reopens INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE owner_messages (
+		key TEXT PRIMARY KEY,
+		thread_id INTEGER NOT NULL,
+		session_id INTEGER NOT NULL,
+		created_at INTEGER NOT NULL
+	);
+	CREATE INDEX owner_messages_thread ON owner_messages (thread_id);
+	ALTER TABLE threads ADD COLUMN worker_stop_due INTEGER NOT NULL DEFAULT 0;
+	UPDATE threads SET worker_stop_due = 1 WHERE state = 'closed' AND worker_session != 0;
+	UPDATE reports SET sent_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 WHERE sent_at IS NULL
+		AND thread_id IN (SELECT id FROM threads WHERE state = 'closed')
+		AND (substr(key, 1, 13) = 'worker-reply:' OR substr(key, 1, 11) = 'worker-msg:' OR substr(key, 1, 12) = 'shift-round:'
+			OR substr(key, 1, 14) = 'shift-summary:' OR substr(key, 1, 10) = 'team-send:');`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

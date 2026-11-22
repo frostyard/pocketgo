@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The first threads fetch after a resync is taken as pocketd answers it, lifetimes not compared, and no event is dropped by lifetime until it answers: a restored database may have fewer reopens.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 8 (codex-cli 0.169.0) of head 03dba74: [P2] Let a resync recover thread state after a database restore",
+  "promoted_to": "desktop/internal/state/reopen_test.go"
+}

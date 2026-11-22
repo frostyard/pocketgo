@@ -83,6 +83,15 @@ func (k *keyed[T]) set(f Fetch, list []T, id func(T) int64, less func(a, b T) bo
 // setKeeping is set, and also keeps an object held over the fetch's copy
 // when keep says the held one is newer, nil for none.
 func (k *keyed[T]) setKeeping(f Fetch, list []T, id func(T) int64, less func(a, b T) bool, keep func(held, got T) bool) bool {
+	return k.setDeciding(f, list, id, less, keep, nil)
+}
+
+// setDeciding is setKeeping whose decide, when it tells (ok), says which
+// of the held object and the fetch's copy stands before any other rule,
+// the one that an object an event touched after the fetch began stands
+// included; nil for none.
+func (k *keyed[T]) setDeciding(f Fetch, list []T, id func(T) int64, less func(a, b T) bool, keep func(held, got T) bool,
+	decide func(held, got T) (heldWins, ok bool)) bool {
 	defer k.answered()
 	if !k.list.answer(f) {
 		return false
@@ -96,8 +105,14 @@ func (k *keyed[T]) setKeeping(f Fetch, list []T, id func(T) int64, less func(a, 
 			continue
 		}
 		seen[key] = true
-		if i := k.index(key, id); i >= 0 && (newer(k.touched[key], f) || keep != nil && keep(k.items[i], x)) {
-			x = k.items[i]
+		if i := k.index(key, id); i >= 0 {
+			heldWins, decided := false, false
+			if decide != nil {
+				heldWins, decided = decide(k.items[i], x)
+			}
+			if decided && heldWins || !decided && (newer(k.touched[key], f) || keep != nil && keep(k.items[i], x)) {
+				x = k.items[i]
+			}
 		}
 		out = append(out, x)
 	}
@@ -162,14 +177,53 @@ func (d *Data) BeginThreads() Fetch { return d.threads.begin(d) }
 // moves a thread's updatedAt with each change, never back, so f read it
 // before that change, as a fetch begun while a shift's stop was on its way
 // may have (Codex review of #37, round 2).
+//
+// A copy of a later lifetime wins over one of an earlier, the fetch's or
+// the held one, before the rule that an event after the fetch began wins
+// (Codex review of #121, round 8). The first fetch begun after a resync
+// is the thread list as pocketd has it: lifetimes are not compared then,
+// since a restored database may have fewer reopens than the copies held
+// (round 8).
 func (d *Data) SetThreads(f Fetch, list []proto.Thread) {
-	if d.threads.setKeeping(f, list, threadID, threadLess, threadNewer) {
+	decide, keep := threadDecides, threadNewer
+	if d.threadsResynced != 0 && f.epoch >= d.threadsResynced {
+		decide, keep = nil, nil
+		d.threadsResynced = 0
+	}
+	if d.threads.setDeciding(f, list, threadID, threadLess, keep, decide) {
 		d.rev++
 	}
 }
 
+// threadDecides orders a held copy and a fetch's copy of a thread by
+// lifetime, when that tells (lifetimeNewer).
+func threadDecides(held, got proto.Thread) (heldWins, ok bool) { return lifetimeNewer(held, got) }
+
 // threadNewer says whether held is a later copy of its thread than got.
-func threadNewer(held, got proto.Thread) bool { return held.UpdatedAt.After(got.UpdatedAt) }
+func threadNewer(held, got proto.Thread) bool {
+	// A copy of a later lifetime, by reopens, or the closed one of the same
+	// lifetime, is newer whatever the clocks say (ADR-0061; Codex review
+	// of #121, rounds 4 and 5).
+	if newer, ok := lifetimeNewer(held, got); ok {
+		return newer
+	}
+	return held.UpdatedAt.After(got.UpdatedAt)
+}
+
+// lifetimeNewer orders two copies of a thread by what no clock moves: a
+// later lifetime (more reopens) is newer, and within one lifetime, which
+// closes once, a closed copy is newer than one that is not. ok is false
+// when neither tells.
+func lifetimeNewer(a, b proto.Thread) (aNewer, ok bool) {
+	aClosed, bClosed := a.State == proto.ThreadClosed, b.State == proto.ThreadClosed
+	switch {
+	case a.Reopens != b.Reopens:
+		return a.Reopens > b.Reopens, true
+	case aClosed != bClosed:
+		return aClosed, true
+	}
+	return false, false
+}
 
 // SetThreadsError records that the threads' fetch f failed, unless a fetch
 // begun later already answered; the threads stay.
@@ -198,17 +252,38 @@ func (d *Data) Thread(id int64) (proto.Thread, bool) {
 }
 
 // ThreadClosed applies the reply of POST /v1/threads/{id}/close over a
-// copy that is not closed, whatever its updatedAt: a thread never leaves
-// closed, so that copy is older, though pocketd's clock may give the close
-// the same updatedAt or an earlier one (Codex review of #117). Over a
-// closed copy it applies only when later, as ThreadChanged does: a closed
-// thread still changes (pocketd notes on its report), and the event of
-// such a change may come before the reply.
+// copy that is not closed, whatever its updatedAt: a thread leaves closed
+// only by a reopen, which counts in reopens, so a copy of the same reopens
+// that is not closed is older, though pocketd's clock may give the close
+// the same updatedAt or an earlier one (Codex review of #117). A copy with
+// more reopens is of a later reopen than the close, and stays (ADR-0061;
+// Codex review of #121, round 1). Over a closed copy it applies only when
+// later, as ThreadChanged does: a closed thread still changes (pocketd
+// notes on its report), and the event of such a change may come before
+// the reply.
+//
+// A reply that is not closed is a close run again after a reopen, which
+// answers with the thread as it is: a snapshot, which applies only over an
+// older copy, as ThreadChanged's does (Codex review of #121, round 2).
+//
+// The copies are ordered by their lifetime first, by reopens, then by
+// closure within one lifetime, which closes once, and by updatedAt only
+// when neither tells (Codex review of #121, round 3).
 func (d *Data) ThreadClosed(t proto.Thread) {
-	if cur, ok := d.Thread(t.ID); ok && cur.State == proto.ThreadClosed && !t.UpdatedAt.After(cur.UpdatedAt) {
+	if cur, ok := d.Thread(t.ID); ok && !replyNewer(cur, t) {
 		return
 	}
 	d.putReply(d.touched(), t)
+}
+
+// replyNewer says whether t, a close's reply, is newer than cur, the copy
+// the client holds: of a later lifetime (more reopens); in the same one,
+// closed over a copy that is not; else later by updatedAt.
+func replyNewer(cur, t proto.Thread) bool {
+	if newer, ok := lifetimeNewer(t, cur); ok {
+		return newer
+	}
+	return t.UpdatedAt.After(cur.UpdatedAt)
 }
 
 // BeginThreadChange starts an owner's request that answers with the thread
@@ -233,8 +308,14 @@ func (d *Data) BeginThreadChange() Fetch { return d.threads.begin(d) }
 // for a fetch, begun once the change committed, which settles it.
 func (d *Data) ThreadChanged(f Fetch, t proto.Thread) (refetch bool) {
 	defer d.threads.answered()
-	if cur, ok := d.Thread(t.ID); ok && !t.UpdatedAt.After(cur.UpdatedAt) {
-		return t.UpdatedAt.Equal(cur.UpdatedAt) && !reflect.DeepEqual(cur, t)
+	// By lifetime first, then by updatedAt (ADR-0061; Codex review of #121,
+	// round 7).
+	if cur, ok := d.Thread(t.ID); ok {
+		if newer, decided := lifetimeNewer(t, cur); decided && !newer {
+			return false
+		} else if !decided && !t.UpdatedAt.After(cur.UpdatedAt) {
+			return t.UpdatedAt.Equal(cur.UpdatedAt) && !reflect.DeepEqual(cur, t)
+		}
 	}
 	d.putReply(f.epoch, t)
 	return d.threads.inFlight > 1
@@ -271,8 +352,27 @@ func (d *Data) putReply(at uint64, t proto.Thread) {
 // event this stream never carries, so no event would follow to end a drop
 // where pocketd's clock moved back.
 func (d *Data) applyThread(t proto.Thread) {
+	// An event of an earlier lifetime than the copy held, or of its
+	// lifetime before its close, is stale, whatever a fetch or a reply
+	// brought first (ADR-0061; Codex review of #121, round 7). After a
+	// resync, until the fetch it asks for answers, the copies held may be
+	// of another history, a restored database's: the stream's order
+	// stands then (round 8).
+	if cur, ok := d.Thread(t.ID); ok && d.threadsResynced == 0 {
+		if newer, decided := lifetimeNewer(t, cur); decided && !newer {
+			return
+		}
+	}
 	if at, ok := d.threadReplied[t.ID]; ok {
-		if cur, _ := d.Thread(t.ID); cur.UpdatedAt.Equal(at) && at.After(t.UpdatedAt) && !t.UpdatedAt.IsZero() {
+		// An event of a later lifetime than the reply's, or its lifetime's
+		// close, applies whatever the clocks say (ADR-0061; Codex review of
+		// #121, round 5).
+		// An event of an earlier lifetime than the reply's copy, or of its
+		// lifetime before its close, is dropped whatever the clocks say
+		// (round 6).
+		cur, _ := d.Thread(t.ID)
+		newer, decided := lifetimeNewer(t, cur)
+		if cur.UpdatedAt.Equal(at) && (decided && !newer || !decided && at.After(t.UpdatedAt) && !t.UpdatedAt.IsZero()) {
 			return
 		}
 		delete(d.threadReplied, t.ID)

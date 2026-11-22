@@ -147,7 +147,7 @@ func TestAnOwnersSessionWorktreeIsNeverRemoved(t *testing.T) {
 	}
 	row := cleanupClose(t, h, thread)
 	h.server.cleanMu.Lock()
-	decided := h.server.cleanDone[thread.ID]
+	_, decided := h.server.cleanDone[thread.ID]
 	h.server.cleanMu.Unlock()
 	if !decided {
 		t.Fatal("cleanup never decided to leave the owner's worktree alone")
@@ -188,7 +188,7 @@ func TestAKeptWorktreesNoteThatFailedToWriteIsWrittenAtTheNextPass(t *testing.T)
 		t.Fatalf("failed write was noted: %q", row.Report)
 	}
 	h.server.cleanMu.Lock()
-	decided := h.server.cleanDone[thread.ID]
+	_, decided := h.server.cleanDone[thread.ID]
 	h.server.cleanMu.Unlock()
 	if decided {
 		t.Fatal("thread decided before its note was written")

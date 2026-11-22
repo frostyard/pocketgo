@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A thread's copies are ordered by lifetime, then by closure within it, before updatedAt, for an event after a close's reply and for a fetch's copy as for the reply.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 5 (codex-cli 0.169.0) of head 220dc87: [P2] Honor closure ordering after applying an open close reply",
+  "promoted_to": "desktop/internal/state/reopen_test.go"
+}

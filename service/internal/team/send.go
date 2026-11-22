@@ -56,12 +56,15 @@ type SendTarget struct {
 	// Own says a session of the caller's own profile delegated it, as
 	// team_close asks.
 	Own bool
+	// Reopen is what CheckReopen reads of a closed thread (ADR-0061).
+	Reopen ReopenTarget
 }
 
 // CheckSendTarget refuses a thread a supervisor's message cannot go to: a
 // cross-review, one another supervisor delegated, one still starting, whose
-// specialist has no session to take it yet, and a closed one. An open, a
-// done and a blocked thread take one.
+// specialist has no session to take it yet, and a closed one its message
+// could not reopen (CheckReopen). An open, a done and a blocked thread take
+// one, and so does a closed one whose message reopens it (ADR-0061).
 func CheckSendTarget(t SendTarget) error {
 	switch {
 	case t.Review:
@@ -69,7 +72,7 @@ func CheckSendTarget(t SendTarget) error {
 	case !t.Own:
 		return fmt.Errorf("thread T%d was delegated by another supervisor", t.ID)
 	case t.State == "closed":
-		return fmt.Errorf("thread T%d is closed: delegate the work again in a new thread", t.ID)
+		return CheckReopen(t.Reopen, FromSupervisor)
 	case t.State == "starting":
 		return fmt.Errorf("thread T%d is still starting: send once team_delegate has answered", t.ID)
 	}
@@ -160,6 +163,9 @@ type SentReceipt struct {
 	// kept before that takes only a done thread back to open (ADR-0037;
 	// Codex review of #62, round 2).
 	Unblocks bool
+	// Reopens says the message was kept while its thread was closed, so
+	// its delivery reopens it (ADR-0061).
+	Reopens bool
 	// Unnoted says the delivered message is in the transcript, but pocketd
 	// could not note it yet, so what its noting does to the thread is to
 	// come (Codex review of #62, round 3).
@@ -193,7 +199,9 @@ func SentText(r SentReceipt) string {
 		fmt.Fprintf(&b, "Delivered to thread T%d: the message is in %s's session.", r.Thread, r.Agent)
 		if r.Unnoted {
 			fmt.Fprintf(&b, " pocketd could not note it there yet, so it cannot say what it does to T%d: ", r.Thread)
-			if r.Unblocks {
+			if r.Reopens {
+				b.WriteString("a closed thread opens once pocketd notes it.")
+			} else if r.Unblocks {
 				b.WriteString("a done or blocked thread opens, and a blocked one's asks that wait for the owner are withdrawn, once pocketd notes it.")
 			} else {
 				b.WriteString("a done thread opens once pocketd notes it.")
@@ -211,7 +219,9 @@ func SentText(r SentReceipt) string {
 		}
 	case SendQueued:
 		fmt.Fprintf(&b, "Queued for thread T%d: pocketd delivers it to %s's session once, as soon as it can take it; ", r.Thread, r.Agent)
-		if r.Unblocks {
+		if r.Reopens {
+			b.WriteString("the closed thread is open again then, unless a close comes first.")
+		} else if r.Unblocks {
 			b.WriteString("a done or blocked thread is open again then, and a blocked one's asks that wait for the owner are withdrawn.")
 		} else {
 			b.WriteString("a done thread is open again then.")

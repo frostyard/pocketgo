@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A closed thread's cleanup reads the thread and the messages that may reopen it from one snapshot (store.CleanState), under the thread's cleanup lock, so a noting that reopens it between two reads never lets an open thread's worktree go.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 1 (codex-cli 0.169.0) of head a8a4cac: [P1] Read cleanup eligibility from one database snapshot",
+  "promoted_to": "service/internal/api/reopen_round1_test.go"
+}

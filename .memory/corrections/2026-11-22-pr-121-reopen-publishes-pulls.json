@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A reopen publishes the thread's pull requests with it: a client lists a closed thread's only while open, and has no copy of a merged one.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 2 (codex-cli 0.169.0) of head b5739da: [P2] Refresh newly visible pull requests when a thread reopens",
+  "promoted_to": "service/internal/api/reopen_round2_test.go"
+}

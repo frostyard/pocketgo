@@ -38,9 +38,17 @@ func TestASupervisorsMessageIsKeptOnce(t *testing.T) {
 	if err != nil || kept.Key != row.Key || kept.SessionID != 9 || kept.Text != row.Text || kept.SentAt != nil {
 		t.Fatalf("kept %+v %v", kept, err)
 	}
+	// It is owed to the specialist's session until it is noted delivered,
+	// or a close drops it, in the close's transaction (ADR-0061).
+	if reports, _, err := s.Owed(ctx, 9); err != nil || len(reports) != 1 || reports[0].Key != row.Key {
+		t.Fatalf("owed %d, %v", len(reports), err)
+	}
 	// The same call again finds its row, whatever the thread is now.
 	if _, err := s.CloseThread(ctx, thread.ID); err != nil {
 		t.Fatal(err)
+	}
+	if reports, _, err := s.Owed(ctx, 9); err != nil || len(reports) != 0 {
+		t.Fatalf("owed after the close %d, %v", len(reports), err)
 	}
 	again, err := s.FileSend(ctx, ReportRow{Key: row.Key, ThreadID: thread.ID, SessionID: 9, Text: "other"})
 	if err != nil || again.Text != row.Text {
@@ -77,10 +85,6 @@ func TestASupervisorsMessageIsKeptOnce(t *testing.T) {
 		if _, err := s.FileSend(ctx, ReportRow{Key: "team-send:1:" + state, ThreadID: th.ID, SessionID: int64(20 + i), Text: "x"}); err != nil {
 			t.Fatalf("%d: to a %s thread: %v", i, state, err)
 		}
-	}
-	// It is owed to the specialist's session until it is noted delivered.
-	if reports, _, err := s.Owed(ctx, 9); err != nil || len(reports) != 1 || reports[0].Key != row.Key {
-		t.Fatalf("owed %d, %v", len(reports), err)
 	}
 }
 

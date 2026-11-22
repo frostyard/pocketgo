@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "team_message's refusal on a closed thread says a message reopens it while its folder is its own, and that the work goes to a new thread if it cannot.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 5 (codex-cli 0.169.0) of head 220dc87: [P3] Avoid promising a reopen when the folder check can refuse it",
+  "promoted_to": "service/internal/team/reopen_test.go"
+}

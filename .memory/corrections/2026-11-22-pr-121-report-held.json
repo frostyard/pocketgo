@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "team_message on a closed thread whose reopening message waits for its worker's stop tells the specialist to call again (team.ReportHeld), not to end its turn.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 7 (codex-cli 0.169.0) of head 39da877: [P2] Distinguish a pending reopen from a final report refusal",
+  "promoted_to": "service/internal/api/reopen_round4_test.go"
+}

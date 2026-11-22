@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A plan's free-place note is keyed by the closing thread's reopen count as well as its owner, so each close of a reopened thread tells a held plan once.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 2 (codex-cli 0.169.0) of head b5739da: [P2] Key desk-space notifications by the individual close",
+  "promoted_to": "service/internal/store/reopen_test.go"
+}

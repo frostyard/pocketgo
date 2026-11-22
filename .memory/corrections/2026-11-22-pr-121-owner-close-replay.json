@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The owner's close run again with its request id answers with the thread as it is and closes nothing again: a message may have reopened the thread since.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 1 (codex-cli 0.169.0) of head a8a4cac: [P1] Make replaying an owner's completed close a no-op",
+  "promoted_to": "service/internal/api/reopen_round1_test.go"
+}

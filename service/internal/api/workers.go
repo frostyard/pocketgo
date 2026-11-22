@@ -33,6 +33,14 @@ func (s *Server) TeamWorker(ctx context.Context, call TeamCall, w team.WorkerMes
 	} else if err != nil {
 		return "", err
 	}
+	// A closed thread's messages already in the transcript are noted
+	// first, as a report notes them: the one this run acts on may reopen
+	// it (ADR-0061; Codex review of #121, round 1).
+	if thread.State == store.ThreadClosed {
+		if thread, err = s.noteClosed(ctx, thread); err != nil {
+			return "", err
+		}
+	}
 	// A call run again whose message was kept answers as the first did,
 	// whatever the thread is now: it sends nothing again (Codex review of
 	// #29, round 6).
@@ -155,14 +163,7 @@ func (s *Server) workerOf(ctx context.Context, id int64, briefKey, briefText str
 
 // workerMessagePrefix begins the key of a message to a worker among its
 // thread's reports.
-const workerMessagePrefix = "worker-msg:"
-
-// isWorkerReport says whether a report's key is a message between a
-// thread's worker and its specialist: it goes only while the thread is
-// open.
-func isWorkerReport(key string) bool {
-	return strings.HasPrefix(key, workerReplyPrefix) || strings.HasPrefix(key, workerMessagePrefix)
-}
+const workerMessagePrefix = team.WorkerMessagePrefix
 
 // queueWorkerMessage keeps text for thread's worker, by key, under
 // outboxMu, which every close holds as it commits: a thread that closed
@@ -352,7 +353,7 @@ func (s *Server) queueWorkerReplies(ctx context.Context, thread store.ThreadRow,
 
 // workerReplyPrefix begins the key of a worker's reply among a thread's
 // reports.
-const workerReplyPrefix = "worker-reply:"
+const workerReplyPrefix = team.WorkerReplyPrefix
 
 // workerReply is a reply a worker's run ended with, by the entry that
 // names it, and the entry that began its run.
@@ -547,15 +548,78 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 // stopWorker stops worker's run, if one goes: its thread closed. A stop,
 // or a look at the worker, that fails is tried again by the delivery pass
 // (Codex review of #29, round 1); the run's reply reaches no one.
+//
+// No message reopens the thread until the stop is done (worker_stop_due):
+// the run of the closed time stops before any work of the reopened thread
+// reaches the worker, and the worker's cursor moves past that time, so its
+// runs reply to no one (store.WorkerStopped; ADR-0061; Codex review of
+// #121, rounds 2 to 6). Only a read that finds the worker's thread closed
+// lets the stop go: a read that fails is tried again by the delivery pass
+// (round 3), and a worker no closed thread names is owed nothing.
+//
+// One stop of a worker goes at a time, from its look at the thread to the
+// note that it is done, and only a stop still owed goes: a second caller,
+// as the run-ended follow beside the close, finds it done, or the thread
+// reopened, and stops nothing of the reopened thread's work (Codex review
+// of #121, round 7).
 func (s *Server) stopWorker(ctx context.Context, worker int64) {
+	defer s.workerStops.lock(strconv.FormatInt(worker, 10))()
+	thread, err := s.readThreadOfWorker(ctx, worker)
+	if s.afterStopRead != nil {
+		s.afterStopRead(worker)
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return
+	} else if err != nil {
+		s.log.Warn("read a worker's thread before its stop", "session", worker, "err", err)
+		s.workerDue(worker)
+		return
+	}
+	if thread.State != store.ThreadClosed || !thread.WorkerStopDue {
+		return
+	}
 	busy, err := s.engine.Busy(ctx, worker)
 	if err == nil && busy {
 		err = s.engine.Abort(ctx, worker)
+	}
+	if err == nil {
+		err = s.workerStopped(ctx, thread, worker)
 	}
 	if err != nil {
 		s.log.Warn("stop a closed thread's worker", "session", worker, "err", err)
 		s.workerDue(worker)
 	}
+}
+
+// workerStopped notes the stop of closed thread's worker done, its
+// cursor moved past the closed time's runs (store.WorkerStopped), and has
+// a pass note the messages the stop held back. No work reaches the worker
+// while the thread is closed, so its newest entry ends that time.
+func (s *Server) workerStopped(ctx context.Context, thread store.ThreadRow, worker int64) error {
+	entries, _, err := s.engine.TranscriptAfter(ctx, worker, thread.WorkerCursor)
+	if err != nil {
+		return err
+	}
+	floor := thread.WorkerCursor
+	for _, e := range entries {
+		floor = max(floor, e.ID)
+	}
+	if err := s.store.WorkerStopped(ctx, thread.ID, worker, floor); err != nil {
+		return err
+	}
+	s.deliverLater()
+	return nil
+}
+
+// readThreadOfWorker is store.ThreadOfWorker, which tests may fail
+// (failRead).
+func (s *Server) readThreadOfWorker(ctx context.Context, worker int64) (store.ThreadRow, error) {
+	if s.failRead != nil {
+		if err := s.failRead("readThreadOfWorker", worker); err != nil {
+			return store.ThreadRow{}, err
+		}
+	}
+	return s.store.ThreadOfWorker(ctx, worker)
 }
 
 // settleWorkers, at the service's start, sends each open thread's

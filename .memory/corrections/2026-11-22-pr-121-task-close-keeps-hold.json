@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A held plan's own task that closes with the desk not below the cap it was held at keeps the hold and files no note; the close that frees a place tells.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 5 (codex-cli 0.169.0) of head 220dc87: [P2] Keep a plan held when its own task closes at capacity",
+  "promoted_to": "service/internal/store/reopen_hold_test.go"
+}
