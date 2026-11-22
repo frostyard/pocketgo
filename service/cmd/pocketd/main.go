@@ -68,6 +68,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == pig.ReadHelper {
 		os.Exit(pig.RunReadHelper(os.Args[2:], os.Stdout))
 	}
+	// Engine.ReadIn runs it there to read a file of a session's checkout,
+	// through no link (pig.ReadBeneathHelper, ADR-0053).
+	if len(os.Args) > 1 && os.Args[1] == pig.ReadBeneathHelper {
+		os.Exit(pig.RunReadBeneathHelper(os.Args[2:], os.Stdout))
+	}
 	// Engine.loadContext runs it there to read the files a session's
 	// instructions hold (pig.ContextHelper, ADR-0043).
 	if len(os.Args) > 1 && os.Args[1] == pig.ContextHelper {

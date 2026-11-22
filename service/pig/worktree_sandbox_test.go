@@ -3,6 +3,7 @@ package pig
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,8 +17,8 @@ import (
 
 // A read of a session's changes runs in the sandbox, with the isolation
 // options, the trusted git and bounded output (ADR-0053): the checkout's
-// fsmonitor never runs, its index stays as it was, and a new file's diff,
-// which git ends with status 1, is the answer.
+// fsmonitor never runs, and a new file is read by pocketd's own read in the
+// sandbox, through no link.
 func TestAChangesReadRunsInTheSandbox(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git")
@@ -66,21 +67,80 @@ func TestAChangesReadRunsInTheSandbox(t *testing.T) {
 	if len(numstat) != 0 || !slices.Equal(fresh, []string{"new.txt"}) {
 		t.Fatalf("numstat %q, new %q", numstat, fresh)
 	}
-	page, _, err := e.GitPage(ctx, checkout, 0, 4096, changes.NewNumstatArgs("new.txt")...)
-	page, err = changes.Differs(page, err)
-	if err != nil {
+	kind, data, err := e.ReadIn(ctx, checkout, "new.txt", 4096)
+	if err != nil || kind != changes.KindFile || string(data) != "one\ntwo\n" {
+		t.Fatalf("the new file read %q %q %v", kind, data, err)
+	}
+	if added, _, counted := changes.CountNew(kind, data); added != 2 || !counted {
+		t.Fatalf("count %d %v", added, counted)
+	}
+	// pocketd's sign-ins, behind a link in the checkout, stay hidden.
+	if err := os.Symlink(filepath.Join(l.data, "auth.json"), filepath.Join(checkout, "keys")); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := changes.NewCount(page); err != nil || count.Added != 2 {
-		t.Fatalf("count %+v %v", count, err)
-	}
-	diff, more, err := e.GitPage(ctx, checkout, 0, 4096, changes.NewPatchArgs("new.txt")...)
-	diff, err = changes.Differs(diff, err)
-	if err != nil || more || !strings.Contains(diff, "+++ b/new.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n") {
-		t.Fatalf("diff %q, more %v, %v", diff, more, err)
+	if kind, data, err := e.ReadIn(ctx, checkout, "keys", 4096); err != nil || kind != changes.KindLink || strings.Contains(string(data), "sk-secret") {
+		t.Fatalf("a link to the sign-ins read %q %q %v", kind, data, err)
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the checkout's fsmonitor ran")
+	}
+}
+
+// pocketd's read of a checkout's file goes below its root through no link,
+// whichever part a link is, never waits on a named pipe, reads no folder,
+// and gives a link's target, as git shows a link (ADR-0053; Codex review
+// of #109, round 1).
+func TestReadBeneathFollowsNoLink(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	for path, text := range map[string]string{
+		filepath.Join(root, "a", "b.txt"):       "in\n",
+		filepath.Join(outside, "b.txt"):         "outside\n",
+		filepath.Join(root, "dir", "inner.txt"): "x",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../target", filepath.Join(root, "a", "ln")); err != nil {
+		t.Fatal(err)
+	}
+	pipe := filepath.Join(root, "pipe")
+	havePipe := mkfifo(pipe) == nil
+	run := func(rel string, max string) (string, int) {
+		var out strings.Builder
+		code := RunReadBeneathHelper([]string{root, rel, max}, &out)
+		return out.String(), code
+	}
+	for rel, want := range map[string]string{
+		"a/b.txt":    "file\nin\n",
+		"link/b.txt": "none\n",
+		"a/ln":       "link\n../target",
+		"dir":        "none\n",
+		"missing":    "none\n",
+		"a/b.txt/x":  "none\n",
+	} {
+		if got, code := run(rel, "100"); got != want || code != 0 {
+			t.Errorf("%s: %q, status %d", rel, got, code)
+		}
+	}
+	if got, code := run("a/b.txt", "2"); got != "file\nin" || code != 0 {
+		t.Errorf("a bounded read: %q %d", got, code)
+	}
+	if havePipe {
+		if got, code := run("pipe", "100"); got != "none\n" || code != 0 {
+			t.Errorf("a named pipe: %q %d", got, code)
+		}
+	}
+	for _, bad := range [][]string{{root, "../x", "1"}, {root, "/etc/passwd", "1"}, {"", "a", "1"}, {root, "a", "-1"}, {root, "a"}} {
+		if code := RunReadBeneathHelper(bad, io.Discard); code != 2 {
+			t.Errorf("%q: status %d", bad, code)
+		}
 	}
 }
 

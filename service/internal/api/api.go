@@ -168,9 +168,7 @@ type Engine interface {
 	Git(ctx context.Context, dir string, args ...string) (string, error)
 	// GitPage runs git as Git does and keeps limit bytes of its output from
 	// offset on, with its whole length: a review pages through a patch
-	// larger than Git's bound (ADR-0019). An error comes back with what
-	// git printed of the page before it: a diff of a new file ends with
-	// git's status 1 after it printed the diff (ADR-0053).
+	// larger than Git's bound (ADR-0019).
 	GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (page string, more bool, err error)
 	// GitEach runs git as Git does and gives each record of its output,
 	// split at sep, to each, with bounded memory (worktree.Each).
@@ -182,6 +180,13 @@ type Engine interface {
 	// there. A gather's skill is read so (ADR-0033). A file with more
 	// than one name is ErrManyNames, never read.
 	ReadUpTo(ctx context.Context, path string, max int) (data []byte, ok bool, err error)
+	// ReadIn is the file at rel below the folder root as a command in the
+	// sandbox reads it, each folder of rel opened from the one above it
+	// and none through a link (ADR-0053): kind "file" with at most max+1
+	// bytes, "link" with a symbolic link's target, or "none" for neither,
+	// a path through a link included. rel is a path
+	// proto.CheckChangedPath takes.
+	ReadIn(ctx context.Context, root, rel string, max int) (kind string, data []byte, err error)
 	Same(ctx context.Context, a, b string) (bool, error)
 	// Dir says whether path is a folder, a link to one included, as a
 	// command in the sandbox sees it.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A changes read, or the diff shown, whose fetch failed or was in flight is fetched again as the stream comes back, as the session detail is.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P2] Retry failed Changes fetches when the stream reconnects",
+  "promoted_to": "desktop/internal/state/changes_test.go"
+}

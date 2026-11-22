@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -164,4 +165,32 @@ func TestThePhoneChangesSnapshot(t *testing.T) {
 	if x.a.phone.changes {
 		t.Fatal("Close left the sheet open")
 	}
+}
+
+// A read of a session's changes that failed shows in its header, not as a
+// session in no checkout: the pane says why, and Refresh reads again
+// (Codex review of #109, round 1).
+func TestAFailedChangesReadSaysWhy(t *testing.T) {
+	x := newTestApp(t)
+	x.seedTeam()
+	x.seedChanges()
+	path := "/v1/sessions/11/changes"
+	x.srv.FailOnce("GET", path, http.StatusInternalServerError)
+	x.connect(t)
+	x.a.openSession(11)
+	x.until(t, func() bool {
+		c, ok := x.a.st.Data.Changes(11)
+		return ok && c.Status == state.ListFailed && x.a.st.InFlight() == 0
+	})
+	x.hasAll(t, "Changes not read")
+	x.srv.FailOnce("GET", path, http.StatusInternalServerError)
+	x.click(t, "Changes: Changes not read")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	if !x.a.changesPaneShown() {
+		t.Fatal("a failed read opened no pane")
+	}
+	x.hasAll(t, "Reading the changes failed: internal: made to fail")
+	x.click(t, "Refresh the changes")
+	x.until(t, func() bool { c, ok := x.a.st.Data.Changes(11); return ok && c.Status == state.ListLoaded })
+	x.hasAll(t, "4 files +54 −9", ".github/workflows/ci.yml")
 }

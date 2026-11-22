@@ -1,13 +1,16 @@
 // Package changes holds the rules of a session's Changes view (ADR-0053):
 // the git a read runs on the session's checkout and its options, the base
-// its changes are counted from, the parse of git's numstat, and the bounds
-// of what an answer carries. The API runs the git, in the sandbox, through
-// the engine (AGENTS.md); this package decides what it runs and reads.
+// its changes are counted from, the parse of git's numstat, a new file's
+// count and diff, and the bounds of what an answer carries. The API runs
+// the git, in the sandbox, through the engine (AGENTS.md); this package
+// decides what it runs and reads.
 package changes
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,32 +18,84 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/team"
-	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
 
-// EmptyTree is git's empty tree: the base of a branch with no commit yet.
-const EmptyTree = team.EmptyTree
+// EmptyTree is git's empty tree in a SHA-1 repository, and EmptyTree256 in
+// a SHA-256 one: the base of a branch with no commit yet.
+const (
+	EmptyTree    = team.EmptyTree
+	EmptyTree256 = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
+)
+
+// EmptyTreeOf is the empty tree of a repository of object format format,
+// as git rev-parse --show-object-format names it (ObjectFormatArgs).
+func EmptyTreeOf(format string) (string, error) {
+	switch format {
+	case "sha1":
+		return EmptyTree, nil
+	case "sha256":
+		return EmptyTree256, nil
+	}
+	return "", fmt.Errorf("git named the object format %q", team.Clip(format, 40))
+}
+
+// MinGit is the oldest git a read runs: 2.45 takes --no-lazy-fetch, so a
+// read of a partial clone never fetches what it lacks into the checkout.
+const MinGit = "2.45"
+
+// VersionArgs name git's version, with no option an older git refuses.
+func VersionArgs() []string { return append(slices.Clone(team.ReviewGitOptions), "version") }
+
+// GitVersionOK says whether version, as git version prints it ("git
+// version 2.47.3"), is MinGit or later.
+func GitVersionOK(version string) bool {
+	m := gitVersion.FindStringSubmatch(strings.TrimSpace(version))
+	if m == nil {
+		return false
+	}
+	major, err1 := strconv.Atoi(m[1])
+	minor, err2 := strconv.Atoi(m[2])
+	return err1 == nil && err2 == nil && (major > 2 || major == 2 && minor >= 45)
+}
+
+var gitVersion = regexp.MustCompile(`^git version ([0-9]+)\.([0-9]+)`)
 
 // Args are the git arguments of a read of a session's checkout: a
 // cross-review's options (team.ReviewGitOptions: no replacement object,
 // hook, fsmonitor, pager, external diff or attribute the checkout sets),
-// no optional lock, so a read never writes the index, literal pathspecs
-// and no pager, then args.
+// no optional lock, so a read never writes the index, no lazy fetch, so a
+// partial clone fetches nothing into it, and no pager, then args. Each
+// pathspec a read names is literal by its own magic (Literal).
 func Args(args ...string) []string {
-	out := append(slices.Clone(team.ReviewGitOptions), "--no-optional-locks", "--literal-pathspecs", "--no-pager")
+	out := append(slices.Clone(team.ReviewGitOptions), "--no-optional-locks", "--no-lazy-fetch", "--no-pager")
 	return append(out, args...)
 }
+
+// Literal is path as a pathspec that names it alone, from the top, with
+// no glob: the path and, if it is a folder, what it holds.
+func Literal(path string) string { return ":(top,literal)" + path }
+
+// Below is a pathspec that leaves out what a folder at path holds: a file
+// that became a folder, or the other way, names its own change alone.
+func Below(path string) string { return ":(exclude,top,literal)" + path + "/" }
 
 // diffOptions are the options of every git diff a read runs: no external
 // diff or text conversion, no color, paths from the top whatever
 // diff.relative says, renames found, and a submodule shown by its commit
-// alone, so no git runs in it.
-var diffOptions = []string{"--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "-M", "--ignore-submodules=dirty"}
+// alone, so no git runs in it and its patch is its commits, whatever
+// diff.submodule says.
+var diffOptions = []string{"--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "-M", "--ignore-submodules=dirty", "--submodule=short"}
 
-// TopArgs name the top folder of the checkout a session works in; git
-// that answers on its own that it cannot (its exit status) says there is
-// no checkout.
-func TopArgs() []string { return Args("rev-parse", "--show-toplevel") }
+// TopArgs name the top folder of the checkout a session works in. It runs
+// before the version is checked, so it takes no option an older git
+// refuses: a folder in no checkout says so whatever the git, and
+// rev-parse fetches nothing.
+func TopArgs() []string {
+	return append(slices.Clone(team.ReviewGitOptions), "--no-optional-locks", "--no-pager", "rev-parse", "--show-toplevel")
+}
+
+// ObjectFormatArgs name the repository's object format, sha1 or sha256.
+func ObjectFormatArgs() []string { return Args("rev-parse", "--show-object-format") }
 
 // HeadArgs name HEAD's commit; git's status 1 says there is none yet.
 func HeadArgs() []string { return Args("rev-parse", "--verify", "--quiet", "HEAD^{commit}") }
@@ -156,67 +211,63 @@ func MergeBaseArgs(base, head string) []string {
 	return Args("merge-base", "--end-of-options", base, head)
 }
 
-// NumstatArgs list each tracked file changed from the merge base to the
-// folder, with its lines added and removed (Numstat).
-func NumstatArgs(mergeBase string) []string {
-	return Args(append(append([]string{"diff", "--numstat", "-z"}, diffOptions...), mergeBase, "--")...)
+// NumstatArgs list each tracked file changed from from to the folder, with
+// its lines added and removed (Numstat): from the merge base, every
+// change; from HEAD, what is not committed.
+func NumstatArgs(from string) []string {
+	return Args(append(append([]string{"diff", "--numstat", "-z"}, diffOptions...), from, "--")...)
 }
 
-// CommittedArgs name the files commits changed from the merge base to
-// head, NUL apart.
+// CommittedArgs list each file commits changed from the merge base to
+// head, as NumstatArgs does.
 func CommittedArgs(mergeBase, head string) []string {
-	return Args(append(append([]string{"diff", "--name-only", "-z"}, diffOptions...), mergeBase, head, "--")...)
+	return Args(append(append([]string{"diff", "--numstat", "-z"}, diffOptions...), mergeBase, head, "--")...)
 }
 
-// UncommittedArgs name the tracked files the folder changes since head,
-// staged or not, NUL apart.
-func UncommittedArgs(head string) []string {
-	return Args(append(append([]string{"diff", "--name-only", "-z"}, diffOptions...), head, "--")...)
-}
-
-// NewArgs name the files git does not track and ignores not, NUL apart,
+// NewArgs name the files git does not track and ignores not, NUL apart:
 // each of paths when there are paths, else every one.
 func NewArgs(paths ...string) []string {
 	args := []string{"ls-files", "--others", "--exclude-standard", "-z"}
 	if len(paths) > 0 {
-		args = append(append(args, "--"), paths...)
+		args = append(args, "--")
+		for _, p := range paths {
+			args = append(args, Literal(p))
+		}
 	}
 	return Args(args...)
 }
 
-// NewNumstatArgs count the lines of a new file, as git diff counts them
-// against nothing. git ends such a diff with status 1 when it printed one
-// (Differs).
-func NewNumstatArgs(path string) []string {
-	return Args("diff", "--no-index", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--no-color", "--", "/dev/null", path)
-}
-
 // PatchArgs are the unified diff of the tracked file at path from the
-// merge base to the folder, from oldPath for a renamed one ("" for none).
-func PatchArgs(mergeBase, oldPath, path string) []string {
+// merge base to the folder, from oldPath for a renamed one ("" for none):
+// that file's change alone. A pathspec of a path names what a folder of
+// that name holds too, so each of folders, the ends of the change where
+// another change lies below (Below), leaves that out; a submodule, which a
+// folder's pathspec names too, is never one.
+func PatchArgs(mergeBase, oldPath, path string, folders ...string) []string {
 	args := append(append([]string{"diff", "--src-prefix=a/", "--dst-prefix=b/"}, diffOptions...), mergeBase, "--")
 	if oldPath != "" && oldPath != path {
-		args = append(args, oldPath)
+		args = append(args, Literal(oldPath))
 	}
-	return Args(append(args, path)...)
+	args = append(args, Literal(path))
+	for _, f := range folders {
+		args = append(args, Below(f))
+	}
+	return Args(args...)
 }
 
-// NewPatchArgs are the unified diff of a new file against nothing; git
-// ends it with status 1 when it printed one (Differs).
-func NewPatchArgs(path string) []string {
-	return Args("diff", "--no-index", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "--no-textconv", "--no-color", "--", "/dev/null", path)
-}
-
-// Differs is what a git diff --no-index answered: its status 1 says it
-// printed a difference, so out is its answer then. Status 1 with nothing
-// printed is git that could not read a file, and stays an error, as does
-// any other.
-func Differs(out string, err error) (string, error) {
-	var exit *worktree.GitExit
-	if errors.As(err, &exit) && exit.Status == 1 && out != "" {
-		return out, nil
+// Under are those of paths another change f lies below, as in a folder of
+// its name: f's path, or its old one, is under each.
+func Under(f File, paths ...string) []string {
+	var out []string
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(f.Path, p+"/") || (f.OldPath != "" && strings.HasPrefix(f.OldPath, p+"/")) {
+			out = append(out, p)
+		}
 	}
-	return out, err
+	return out
 }
 
 // File is a file of git's numstat: its lines added and removed, none for
@@ -225,6 +276,11 @@ type File struct {
 	Path, OldPath  string
 	Added, Removed int
 	Binary         bool
+}
+
+// Names says whether f is a change of path, at either of its ends.
+func (f File) Names(path string) bool {
+	return f.Path == path || (f.OldPath != "" && f.OldPath == path)
 }
 
 // Numstat reads git diff --numstat -z, record by record (records split at
@@ -285,51 +341,142 @@ func (n *Numstat) Done() error {
 	return nil
 }
 
-// NewCount is a new file's lines from NewNumstatArgs' output: git names it
-// a rename from /dev/null, which a parse reads as any other file.
-func NewCount(out string) (File, error) {
-	var n Numstat
-	for _, record := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
-		f, ok, err := n.Next(record)
-		if err != nil {
-			return File{}, err
-		}
-		if ok {
-			return f, nil
-		}
+// The kinds of entry a read of a new file finds (Engine.ReadIn).
+const (
+	KindFile = "file"
+	KindLink = "link"
+	KindNone = "none"
+)
+
+// MaxCountBytes is the most bytes of a new file whose lines pocketd counts.
+const MaxCountBytes = 1 << 20
+
+// binaryProbe is how far into a file git looks for a NUL, which makes it
+// binary.
+const binaryProbe = 8000
+
+// binary says data is binary as git says it: a NUL in its first bytes.
+func binary(data []byte) bool { return bytes.IndexByte(data[:min(len(data), binaryProbe)], 0) >= 0 }
+
+// CountNew is a new file's lines as git counts them against nothing, from
+// what a read found (kind and data, at most MaxCountBytes+1 bytes): a link
+// is one line, its target; a binary file none; counted is false for a file
+// past MaxCountBytes and for nothing found.
+func CountNew(kind string, data []byte) (added int, isBinary, counted bool) {
+	switch {
+	case kind == KindLink:
+		return 1, false, true
+	case kind != KindFile || len(data) > MaxCountBytes:
+		return 0, false, false
+	case binary(data):
+		return 0, true, true
 	}
-	return File{}, errors.New("git counted no lines of the new file")
+	return lines(data), false, true
+}
+
+// lines is how many lines data holds, a last one with no newline included.
+func lines(data []byte) int {
+	n := bytes.Count(data, []byte{'\n'})
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		n++
+	}
+	return n
+}
+
+// NewFileDiff is the unified diff of the new file at path against nothing,
+// as git writes one, from what a read found (kind and data, at most
+// limit+1 bytes), at most limit bytes: the whole lines that fit, cut when
+// some did not. pocketd writes it from the file's bytes, which no filter
+// or attribute of the checkout changes.
+func NewFileDiff(path, kind string, data []byte, limit int) (diff string, cut bool) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "diff --git a/%s b/%s\n", path, path)
+	switch {
+	case kind == KindLink:
+		fmt.Fprintf(&b, "new file mode 120000\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1 @@\n+%s\n\\ No newline at end of file\n", path, data)
+		return Fit(b.String(), false, limit)
+	case kind != KindFile:
+		return "", false
+	case binary(data):
+		fmt.Fprintf(&b, "new file mode 100644\nBinary files /dev/null and b/%s differ\n", path)
+		return Fit(b.String(), false, limit)
+	}
+	b.WriteString("new file mode 100644\n")
+	if len(data) == 0 {
+		return Fit(b.String(), false, limit)
+	}
+	head := b.String() + fmt.Sprintf("--- /dev/null\n+++ b/%s\n", path)
+	whole := len(data) <= limit
+	if !whole {
+		data = data[:limit]
+	}
+	text := strings.ToValidUTF8(string(data), "�")
+	all := strings.SplitAfter(text, "\n")
+	if all[len(all)-1] == "" {
+		all = all[:len(all)-1]
+	}
+	// Room for the hunk's header, which counts the lines that fit.
+	room := limit - len(head) - len(fmt.Sprintf("@@ -0,0 +1,%d @@\n", len(all)))
+	var body strings.Builder
+	shown := 0
+	for i, line := range all {
+		last := i == len(all)-1
+		ends := strings.HasSuffix(line, "\n")
+		if !ends && (!last || !whole) {
+			// A line the bound cut halfway is not shown.
+			cut = true
+			break
+		}
+		add := "+" + line
+		if !ends {
+			add += "\n\\ No newline at end of file\n"
+		}
+		if body.Len()+len(add) > room {
+			cut = true
+			break
+		}
+		body.WriteString(add)
+		shown++
+	}
+	if shown == 0 {
+		// No whole line fits: the file's header alone, cut.
+		return Fit(b.String(), true, limit)
+	}
+	hunk := "@@ -0,0 +1 @@\n"
+	if shown != 1 {
+		hunk = fmt.Sprintf("@@ -0,0 +1,%d @@\n", shown)
+	}
+	return Fit(head+hunk+body.String(), cut || !whole, limit)
+}
+
+// Fit is a diff page as an answer carries it: valid UTF-8, each byte git
+// printed that is not replaced by U+FFFD, at most limit bytes, and, cut
+// when git printed more (more) or the replacements took it past limit,
+// ending after its last whole line: a line cut halfway would read as
+// another change. A page of no whole line keeps what fits.
+func Fit(page string, more bool, limit int) (string, bool) {
+	text := strings.ToValidUTF8(page, "�")
+	cut := more
+	if len(text) > limit {
+		end := limit
+		for end > 0 && !utf8.RuneStart(text[end]) {
+			end--
+		}
+		text, cut = text[:end], true
+	}
+	if cut {
+		text = CutAtLine(text)
+	}
+	return text, cut
 }
 
 // CutAtLine is a diff page that holds less than the whole diff, cut after
-// its last whole line: a line cut halfway would read as another change.
-// A page of no whole line stays as it is.
+// its last whole line. A page of no whole line stays as it is.
 func CutAtLine(page string) string {
 	if i := strings.LastIndexByte(page, '\n'); i >= 0 {
 		return page[:i+1]
 	}
 	return page
-}
-
-// MaxPath is the most bytes of a path a file's diff is asked for by.
-const MaxPath = 4096
-
-// CheckPath refuses a path no listed change can have: empty, too long, not
-// UTF-8, holding a NUL, absolute, or with a part that leaves the
-// checkout. Only a path git lists as changed is then read (rule 64).
-func CheckPath(path string) error {
-	switch {
-	case path == "" || len(path) > MaxPath || !utf8.ValidString(path) || strings.ContainsRune(path, 0):
-		return fmt.Errorf("path must be 1 to %d bytes of UTF-8 without a NUL", MaxPath)
-	case strings.HasPrefix(path, "/"):
-		return errors.New("path names a file in the checkout, from its top, not an absolute path")
-	}
-	for _, part := range strings.Split(path, "/") {
-		if part == ".." || part == "." || part == "" {
-			return fmt.Errorf("path %q is not a file's path from the checkout's top", team.Clip(path, 60))
-		}
-	}
-	return nil
 }
 
 // ValidBranch says whether name is a branch git could hold, as a base

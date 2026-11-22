@@ -1,0 +1,58 @@
+//go:build unix
+
+package api
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/changes"
+	"golang.org/x/sys/unix"
+)
+
+// ReadIn reads outside any sandbox, as only a test does, by the rule of
+// pig's ReadBeneathHelper: each folder of rel opened from the one above it,
+// none through a link, the file without waiting for a writer.
+func (f *fakeEngine) ReadIn(_ context.Context, root, rel string, max int) (string, []byte, error) {
+	if err := proto.CheckChangedPath(rel); err != nil {
+		return "", nil, err
+	}
+	dir, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return changes.KindNone, nil, nil
+	}
+	parts := strings.Split(rel, "/")
+	for _, part := range parts[:len(parts)-1] {
+		next, err := unix.Openat(dir, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		_ = unix.Close(dir)
+		if err != nil {
+			return changes.KindNone, nil, nil
+		}
+		dir = next
+	}
+	defer func() { _ = unix.Close(dir) }()
+	name := parts[len(parts)-1]
+	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ELOOP) {
+		buf := make([]byte, 4096)
+		n, err := unix.Readlinkat(dir, name, buf)
+		if err != nil {
+			return changes.KindNone, nil, nil
+		}
+		return changes.KindLink, buf[:n], nil
+	}
+	if err != nil {
+		return changes.KindNone, nil, nil
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer func() { _ = file.Close() }()
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+		return changes.KindNone, nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, int64(max)+1))
+	return changes.KindFile, data, err
+}

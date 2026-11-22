@@ -355,3 +355,58 @@ func TestADiffWhoseFileLeftTheChangesGoes(t *testing.T) {
 		t.Fatalf("the diff of a file no longer changed shows: %+v", got)
 	}
 }
+
+// A read that failed shows, as not read, whatever an earlier one said: the
+// header offers the Changes, which say why, never a count or "No changes"
+// that may be stale; a card says nothing (Codex review of #109, round 1).
+func TestAFailedChangesReadShowsAsNotRead(t *testing.T) {
+	var d Data
+	first := d.BeginChanges(1)
+	d.SetChangesError(first, 1, "git cannot read this checkout isolated")
+	c, ok := d.Changes(1)
+	if got := ChangesSummary(c, ok); got != NotRead || CardChanges(c, ok) != "" {
+		t.Fatalf("a first read that failed: %q, card %q", got, CardChanges(c, ok))
+	}
+	empty := proto.Changes{SessionID: 1, Repository: true, Files: []proto.ChangedFile{}}
+	d.SetChanges(d.BeginChanges(1), 1, empty)
+	if c, ok := d.Changes(1); ChangesSummary(c, ok) != "No changes" {
+		t.Fatalf("no change: %q", ChangesSummary(c, ok))
+	}
+	d.SetChangesError(d.BeginChanges(1), 1, "pocketd is away")
+	if c, ok := d.Changes(1); ChangesSummary(c, ok) != NotRead || c.Err != "pocketd is away" {
+		t.Fatalf("a failure after no change: %q, %q", ChangesSummary(c, ok), c.Err)
+	}
+}
+
+// A changes read that failed, or the diff shown whose read failed, is read
+// again as the stream comes back (Codex review of #109, round 1).
+func TestAReconnectRetriesAFailedChangesRead(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "Fix CI", 0))
+	h.srv.SetChanges(changesOf(1))
+	h.srv.SetFileDiff(proto.FileDiff{SessionID: 1, Path: "ci/arm64.yml", Diff: "+a\n"})
+	h.connect(t)
+	path := "/v1/sessions/1/changes"
+	h.srv.FailOnce("GET", path, 500)
+	h.srv.FailOnce("GET", path+"/file", 500)
+	h.store.Open(1)
+	h.store.ShowDiff(1, "ci/arm64.yml")
+	h.settle(t)
+	if c, ok := h.store.Data.Changes(1); ChangesSummary(c, ok) != NotRead {
+		t.Fatalf("a failed read: %+v", c)
+	}
+	if d, _ := h.store.Data.Diff(); d.Status != ListFailed {
+		t.Fatalf("a failed diff: %+v", d)
+	}
+	h.srv.DropStreams()
+	h.loop.RunUntil(t, func() bool { return len(h.clock.Waiting()) == 1 })
+	h.clock.Fire()
+	h.loop.RunUntil(t, func() bool { c, ok := h.store.Data.Changes(1); return ok && c.Status == ListLoaded })
+	h.settle(t)
+	if c, ok := h.store.Data.Changes(1); ChangesSummary(c, ok) != "4 files +120 −8" {
+		t.Fatalf("after the reconnect: %+v", c)
+	}
+	if d, _ := h.store.Data.Diff(); d.Status != ListLoaded || d.Diff.Diff != "+a\n" {
+		t.Fatalf("the diff after the reconnect: %+v", d)
+	}
+}

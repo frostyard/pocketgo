@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "git pocketd runs to read a checkout takes --no-lazy-fetch, and pocketd refuses the read on a git older than 2.45, which lacks it: a partial clone must not fetch into the checkout on a read.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 1 (codex-cli 0.169.0) of head 45dad51: [P2] Prevent read-only diffs from fetching missing objects",
+  "promoted_to": "service/internal/api/changes_round1_test.go"
+}

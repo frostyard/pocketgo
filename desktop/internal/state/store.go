@@ -703,7 +703,8 @@ func (s *Store) forgetAnswer(id int64) {
 }
 
 // retryFailed fetches again what failed to load or has not loaded yet: a
-// list or the open session's detail whose fetch failed or is still in
+// list, the open session's detail, or a tracked session's changes or the
+// diff shown (retryChanges, ADR-0053), whose fetch failed or is still in
 // flight, also over what loaded before, as the refetch a resync started.
 // A fetch in flight may fail after the stream came back, and the client is
 // past the events that would bring what it missed; the answer of the fetch
@@ -747,6 +748,7 @@ func (s *Store) retryFailed() {
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
+	s.retryChanges()
 	if s.hello == nil {
 		s.loadHello()
 	}

@@ -41,6 +41,9 @@ func (a *App) changesButton(c *ui.Context, id int64) {
 		return
 	}
 	tip := "Show what this session changed"
+	if label == state.NotRead {
+		tip = "Show why the changes were not read"
+	}
 	if a.changes.open {
 		tip = "Hide the changes"
 	}
@@ -116,12 +119,19 @@ func (a *App) changesFiles(c *ui.Context, id int64, maxHeight float32) {
 	}
 	scroll.Children(func() {
 		ui.Column(c).Gap(2).Padding(frostui.SpaceS, 0).AlignItems(ui.Stretch).Children(func() {
-			ui.Column(c).Padding(0, frostui.SpaceL, frostui.SpaceXS, frostui.SpaceL).Children(func() {
-				frostui.Caption(c, state.BaseNote(ch)).Wrap()
-				if sc.Err != "" {
+			ui.Column(c).Gap(frostui.SpaceXS).Padding(0, frostui.SpaceL, frostui.SpaceXS, frostui.SpaceL).Children(func() {
+				// A failed read says why first; what an earlier one listed
+				// shows under it, if any did (state.ChangesSummary).
+				if sc.Status == state.ListFailed {
 					frostui.Problem(c, "Reading the changes failed: "+sc.Err).Wrap()
 				}
+				if ch.Repository {
+					frostui.Caption(c, state.BaseNote(ch)).Wrap()
+				}
 			})
+			if !ch.Repository {
+				return
+			}
 			if len(ch.Files) == 0 {
 				frostui.Muted(c, "Nothing changed since then.").Padding(frostui.SpaceXS, frostui.SpaceL)
 			}

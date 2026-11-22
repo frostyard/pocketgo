@@ -22,37 +22,41 @@
 ## Decision
 
 1. **Two read-only endpoints** ([protocol rules 63 and 64](../specs/protocol.md)):
-   - `GET /v1/sessions/{id}/changes` answers `proto.Changes`: whether the session's folder is in a git checkout, its top, its branch and `HEAD`, the base, the merge base, and the files changed, each with its lines added and removed and whether its change is committed, not yet, or both, or new to git. An answer of a folder in no checkout says so (`repository` false), and is no error.
+   - `GET /v1/sessions/{id}/changes` answers `proto.Changes`: whether the session's folder is in a git checkout, its top, its branch and `HEAD`, the base, the merge base, and the files changed, each with its lines added and removed and whether its change is committed, not yet, or both, or new to git. An answer of a folder in no checkout says so (`repository` false), and is no error: no folder at or above it holds a `.git`. A folder with a checkout git cannot read is `conflict`, with git's words.
    - `GET /v1/sessions/{id}/changes/file?path=` answers `proto.FileDiff`: one file's unified diff, from the merge base to the folder.
    - Both write nothing, take no `requestId`, and send no event. Protocol version 27 carries them.
 2. **The base is chosen in code** (`changes.ChooseBase`, from the refs `changes.Candidates` names):
    - the base branch of the newest open pull request of the session's thread, else of its newest (`changes.PullBase`), as `origin/<base>`, else as the local branch; the session is the thread's specialist, its worker, or a review of one of its pull requests;
    - else the checkout's default branch: the branch `origin/HEAD` names, else `origin/main`, `origin/master`, `main`, `master`;
    - else none: only what is not committed is counted, from `HEAD`.
-   - The changes count from the merge base of that branch and `HEAD`; a branch with no commit yet counts from git's empty tree; a branch that shares no commit with its base counts from `HEAD`.
+   - The changes count from the merge base of that branch and `HEAD`; a branch with no commit yet counts from the empty tree of its repository's object format (`changes.EmptyTreeOf`: SHA-1 or SHA-256); a branch that shares no commit with its base counts from `HEAD`.
 3. **git runs as a review's does, and writes nothing:**
-   - every command through `Engine.Git`, `Engine.GitEach` or `Engine.GitPage`, in the sandbox, with the trusted git;
-   - with `team.ReviewGitOptions`, `--no-optional-locks` (so no read writes the index), `--literal-pathspecs` and `--no-pager` (`changes.Args`); a diff with `--no-ext-diff`, `--no-textconv`, `--no-color`, `--no-relative`, `-M` and `--ignore-submodules=dirty`, so no git runs in a submodule;
-   - after `worktree.AttributesIsolated`, before any file of the checkout is read: a checkout it refuses is `conflict`, with its reason.
-4. **What is read is bounded, and a cut says so:**
+   - every command through `Engine.Git`, `Engine.GitEach` or `Engine.GitPage`, in the sandbox, with the trusted git, 2.45 or later (`changes.MinGit`), else the read is `conflict`;
+   - with `team.ReviewGitOptions`, `--no-optional-locks` (so no read writes the index), `--no-lazy-fetch` (so a partial clone fetches nothing it lacks into the checkout) and `--no-pager` (`changes.Args`); each path a read names is a pathspec of its own literal magic (`changes.Literal`); a diff with `--no-ext-diff`, `--no-textconv`, `--no-color`, `--no-relative`, `-M`, `--ignore-submodules=dirty`, so no git runs in a submodule, and `--submodule=short`, so a submodule's patch is its commits whatever `diff.submodule` says;
+   - after `worktree.AttributesIsolated`, before any file of the checkout is read, and again once the read is done: a checkout it refuses either time is `conflict`, with its reason, so an attributes file that came while git read refuses the answer.
+4. **A new file is read by pocketd's own read in the sandbox, through no link** (`Engine.ReadIn`, `pig.ReadBeneathHelper`): from the checkout's top, each folder opened from the one above it by its descriptor, none through a symbolic link, the file without waiting for a writer. A folder swapped for a link since git listed the file leads nowhere, and the file's bytes are what the answer shows: pocketd counts its lines and writes its diff against nothing (`changes.CountNew`, `changes.NewFileDiff`) as git would, with no filter or attribute of the checkout. A link shows its target, as git shows one.
+5. **What is read is bounded, and a cut says so:**
    - at most `proto.MaxChangedFiles` (300) files listed, tracked ones in git's order then new ones, and `more` counts the rest; git's output is read record by record (`Engine.GitEach`, `changes.Numstat`), so a change of any size takes bounded memory;
-   - the lines of at most `proto.MaxCountedNew` (30) new files counted, each with `git diff --no-index` against nothing; the rest are `uncounted`;
-   - a file's diff is at most `proto.MaxFileDiff` (64 KB), cut after its last whole line (`changes.CutAtLine`), with `cut` set; the desktop says so (`state.CutNote`);
+   - the lines of the first `proto.MaxCountedNew` (30) new files counted, listed or not, each at most 1 MiB (`changes.MaxCountBytes`); the rest are `uncounted`;
+   - a file's diff is at most `proto.MaxFileDiff` (64 KB) as the client decodes it: each byte that is no UTF-8 a U+FFFD, then cut after its last whole line (`changes.Fit`), with `cut` set; the desktop says so (`state.CutNote`);
    - one read runs git for 30 seconds at most, and 4 reads run at once; another waits for a place, as long as its request lasts.
-5. **Only a listed change is read:** a file's path is checked in code (`changes.CheckPath`: relative, no `.` or `..` part, no NUL, at most 4,096 bytes of UTF-8), then must be a file git's numstat names (a rename's diff names its old path too) or a new file git lists, else `not_found`. No path from a client reaches `git diff --no-index` unlisted.
-6. **`Engine.GitPage` gives back what git printed before an error:** a diff of a new file against nothing ends with git's status 1 once it printed one, its answer (`changes.Differs`); status 1 with nothing printed stays an error.
-7. **The desktop** (rules in `desktop/internal/state`, drawn in `desktop/internal/app`):
-   - It keeps the changes of the open session and of the sessions of the board's threads that work on a repository and are not closed (`Data.ChangesTracked`), fetched through `Data.BeginChanges` and `Data.SetChanges`, so an older answer never undoes a newer one. It fetches them again when a run ends (`RunEnded`), at a resync, and with Refresh; a fetch asked for while one is in flight follows it once.
-   - The session's header shows the count, "4 files +120 −8" (`ChangesSummary`), which opens the Changes pane beside the session: the base (`BaseNote`), the files with where each change is (`FileState`) and their lines, and a file's diff drawn by frostui's `DiffView`, its lines numbered and colored. On a compact window the count is under the top bar and opens a sheet, a file's diff in its place with a way back.
+6. **Each change is one row, marked by both its ends:**
+   - a file a commit changed, or the folder changes since `HEAD`, is marked by either end of each part's change, a rename's old path too: a file a commit edited and the folder then renamed is both;
+   - a file removed from the index and kept in the folder is the change a commit would make, its removal: git's listing of it as new does not add a row.
+7. **Only a listed change is read:** a file's path is checked in code (`proto.CheckChangedPath`, which the desktop's fake shares: relative, no empty, `.` or `..` part, no NUL, at most 4,096 bytes of UTF-8), then must be a file git's numstat names or a new file git lists, else `not_found`. A tracked file's patch names its own change alone: where another change lies below one of its ends, as in a folder that took its name, that folder's contents are left out (`changes.Below`).
+8. **The desktop** (rules in `desktop/internal/state`, drawn in `desktop/internal/app`):
+   - It keeps the changes of the open session and of the sessions of the board's threads that work on a repository and are not closed (`Data.ChangesTracked`), fetched through `Data.BeginChanges` and `Data.SetChanges`, so an older answer never undoes a newer one. It fetches them again when a run ends (`RunEnded`), at a resync, as the stream comes back when a read failed or was in flight (`Store.retryChanges`), and with Refresh; a fetch asked for while one is in flight follows it once, while the session is still tracked.
+   - The session's header shows the count, "4 files +120 −8" (`ChangesSummary`), which opens the Changes pane beside the session: the base (`BaseNote`), the files with where each change is (`FileState`) and their lines, and a file's diff drawn by frostui's `DiffView`, its lines numbered and colored. A read that failed shows as "Changes not read", whatever an earlier one said, and the pane says why. On a compact window the count is under the top bar and opens a sheet, a file's diff in its place with a way back.
    - A thread's card shows the count of its session's changes (`CardChanges`), which opens the session with its Changes.
 
 ## Consequences
 
 - The owner sees what a thread's specialist, or their own worktree session, changed, committed or not, before any pull request, and reads each file's diff in the app.
-- A checkout git cannot read isolated shows no changes: the owner sees why, and removes the attributes file, or updates git, as a review needs too.
-- A read runs about ten sandboxed git commands, and one more for each new file counted: a board of many threads asks for each one's at each run's end. The concurrency bound keeps that from crowding the host.
+- A checkout git cannot read isolated, or a git older than 2.45, shows no changes: the owner sees why, and removes the attributes file, or updates git.
+- A known limit: an attributes file an agent makes and removes again between the two checks of one read is not seen, and a filter it names may shape what git showed of a tracked file's change. The checkout is the agent's own, and a filter applies as the agent's `git add` would apply it; the pull request on GitHub, and its cross-review, read GitHub's commits. A new file's bytes are read with no filter.
+- A read runs about fifteen sandboxed commands, and one more for each new file counted: a board of many threads asks for each one's at each run's end. The concurrency bound keeps that from crowding the host.
 - The base of a thread before its pull request is the checkout's default branch, not the branch the worktree started from, which pocketd does not record: a worktree made from another branch counts that branch's commits too.
-- A path that is not valid UTF-8 cannot be asked for: its diff is not shown.
+- A path that is not valid UTF-8 cannot be asked for: its diff is not shown. Past the 300 listed, a removed file git also lists as new may count twice in `more`.
 - A diff past 64 KB shows its start alone; the rest is in the checkout or, once opened, the pull request.
 - Changes are not pushed as events: a count is as fresh as its last fetch.
 
@@ -60,7 +64,8 @@
 
 - **Run git with pocketd's own rights, outside the sandbox:** a hook, filter or fsmonitor of the checkout would run as pocketd (AGENTS.md).
 - **List the files with `git status` alone:** it counts no lines, and writes the index opportunistically.
-- **Count new files' lines by reading them with `Engine.ReadUpTo`:** it follows a link at the path, where git shows the link itself, and a diff of a new file is git's to make.
+- **Count and show a new file with `git diff --no-index` against `/dev/null`:** it reads through a folder an agent swapped for a link since git listed the file, takes a file named `-` for standard input, and applies the checkout's filters (Codex review of #109, round 1). `Engine.ReadUpTo` follows a link at the path, where git shows the link itself.
+- **Hide `info/attributes` from a read's git in the sandbox:** a change of the sandbox every command runs in, for a file whose coming and going in one read the two checks leave a narrow window to; the agent owns the checkout either way.
 - **Push the changes as events after each run:** every run of every session would pay for git; a fetch when shown costs only what the owner looks at.
 - **Record each thread's base branch when its worktree is made:** a migration and a change of the thread's start for a guess the pull request corrects; the default branch is right for the team's worktrees, which start from the checkout's default.
 

@@ -179,11 +179,22 @@ func RunEnded(was, now proto.SessionState) bool {
 	return was != proto.SessionIdle && was != "" && now == proto.SessionIdle
 }
 
-// ChangesSummary is the count a session's header and its thread's card
-// show ("4 files +120 −8"), "" when there is none to show: changes not
-// loaded, or a folder in no checkout. A checkout with no change says so.
+// NotRead is the count of a session whose last read of its changes
+// failed: the header still offers the Changes, which say why and retry.
+const NotRead = "Changes not read"
+
+// ChangesSummary is the count a session's header shows ("4 files +120
+// −8"), "" when there is none to show: changes not loaded yet, or a folder
+// in no checkout. A checkout with no change says so, and a read that
+// failed says it was not read (NotRead), whatever an earlier one said: the
+// owner sees why, never a count or "No changes" that may be stale.
 func ChangesSummary(c SessionChanges, ok bool) string {
-	if !ok || c.Status == ListLoading || !c.Changes.Repository {
+	switch {
+	case !ok || c.Status == ListLoading:
+		return ""
+	case c.Status == ListFailed:
+		return NotRead
+	case !c.Changes.Repository:
 		return ""
 	}
 	n := len(c.Changes.Files) + c.Changes.More
@@ -193,10 +204,10 @@ func ChangesSummary(c SessionChanges, ok bool) string {
 	return fmt.Sprintf("%s +%d −%d", plural(n, "file", "files"), c.Changes.Added, c.Changes.Removed)
 }
 
-// CardChanges is the count a thread's card shows: ChangesSummary, but
-// none for no change.
+// CardChanges is the count a thread's card shows: ChangesSummary of a read
+// that succeeded with a change, and none else.
 func CardChanges(c SessionChanges, ok bool) string {
-	if s := ChangesSummary(c, ok); s != "No changes" {
+	if s := ChangesSummary(c, ok); s != "No changes" && s != NotRead {
 		return s
 	}
 	return ""
@@ -401,6 +412,21 @@ func (s *Store) syncChanges() {
 	// The Changes view shows the open session's files alone.
 	if d, ok := s.Data.Diff(); ok && d.Session != s.Data.OpenID() {
 		s.Data.CloseDiff()
+	}
+}
+
+// retryChanges fetches again, as the stream comes back, each tracked
+// session's changes whose read failed or was in flight, and the diff shown
+// when its read did: one in flight may have missed a run's end while the
+// stream was down.
+func (s *Store) retryChanges() {
+	for id := range s.Data.ChangesTracked() {
+		if c, ok := s.Data.Changes(id); !ok || c.Status != ListLoaded || s.changesLoading[id] {
+			s.LoadChanges(id)
+		}
+	}
+	if d, ok := s.Data.Diff(); ok && (d.Status != ListLoaded || s.fetching[changesKey(d.Session)+":file"] > 0) {
+		s.ShowDiff(d.Session, d.Path)
 	}
 }
 

@@ -51,6 +51,12 @@ func (s *Server) changesRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+proto.PathChangesFile, func(w http.ResponseWriter, r *http.Request) {
 		id := pathID(r)
 		path := r.URL.Query().Get("path")
+		// A path no change can have is refused first, as pocketd does
+		// (rule 64).
+		if err := proto.CheckChangedPath(path); err != nil {
+			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
+			return
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		d, ok := s.diffs[fmt.Sprint(id, ":", path)]

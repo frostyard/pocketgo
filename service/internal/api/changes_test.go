@@ -59,11 +59,47 @@ func (g *gitCalls) all() [][]string {
 	return slices.Clone(g.calls)
 }
 
+// needsChangesGit skips a test of a read that succeeds where the host's git
+// cannot read isolated, or is older than changes.MinGit: pocketd refuses
+// the read there, as other tests check.
+func needsChangesGit(t *testing.T) {
+	t.Helper()
+	needsReviewGit(t)
+	cmd := exec.Command("git", "version")
+	cmd.Env = gitEnv()
+	out, err := cmd.Output()
+	if err != nil || !changes.GitVersionOK(string(out)) {
+		t.Skipf("%s: a read of a session's changes needs git %s or later", strings.TrimSpace(string(out)), changes.MinGit)
+	}
+}
+
+// engineWith is the harness's engine with one of its methods replaced.
+type engineWith struct {
+	*fakeEngine
+	git    func(ctx context.Context, dir string, args ...string) (string, error)
+	readIn func(ctx context.Context, root, rel string, max int) (string, []byte, error)
+}
+
+func (e engineWith) Git(ctx context.Context, dir string, args ...string) (string, error) {
+	if e.git != nil {
+		return e.git(ctx, dir, args...)
+	}
+	return e.fakeEngine.Git(ctx, dir, args...)
+}
+
+func (e engineWith) ReadIn(ctx context.Context, root, rel string, max int) (string, []byte, error) {
+	if e.readIn != nil {
+		return e.readIn(ctx, root, rel, max)
+	}
+	return e.fakeEngine.ReadIn(ctx, root, rel, max)
+}
+
 // A thread's session lists what it changed in its worktree since it left
 // its base branch, committed and not yet, new files included, and the
 // owner reads each file's diff (ADR-0053, rules 63 and 64): the issue's
 // Done when, through the protocol.
 func TestAThreadsChangesListWhatItChangedAndEachFilesDiff(t *testing.T) {
+	needsChangesGit(t)
 	h := newTeamHarness(t)
 	ctx := context.Background()
 	thread := veraThread(t, h)
@@ -112,8 +148,8 @@ func TestAThreadsChangesListWhatItChangedAndEachFilesDiff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// git ends a path with a space by a tab, as GNU diff does.
-	if !strings.Contains(fresh.Diff, "new file mode") || !strings.Contains(fresh.Diff, "+++ b/new file.md\t\n@@ -0,0 +1,4 @@\n+# New\n+\n+not\n+tracked\n") {
+	// pocketd writes a new file's diff from its bytes (changes.NewFileDiff).
+	if fresh.Diff != "diff --git a/new file.md b/new file.md\nnew file mode 100644\n--- /dev/null\n+++ b/new file.md\n@@ -0,0 +1,4 @@\n+# New\n+\n+not\n+tracked\n" {
 		t.Fatalf("the new file's diff %+v", fresh)
 	}
 	if bin, err := h.client.ChangesFile(ctx, thread.Session, "logo.png"); err != nil || !strings.Contains(bin.Diff, "Binary files") {
@@ -136,6 +172,7 @@ func TestAThreadsChangesListWhatItChangedAndEachFilesDiff(t *testing.T) {
 // The base of a thread with a pull request is the pull request's base
 // branch, at its merge base with the session's HEAD (ADR-0053).
 func TestAThreadsPullRequestGivesItsBase(t *testing.T) {
+	needsChangesGit(t)
 	h := newTeamHarness(t)
 	ctx := context.Background()
 	thread := veraThread(t, h)
@@ -185,6 +222,7 @@ func TestASessionOutsideACheckoutHasNoRepository(t *testing.T) {
 // A repository with no commit yet counts what the folder holds from
 // nothing: no base, staged and new files uncommitted.
 func TestARepositoryWithNoCommitCountsFromNothing(t *testing.T) {
+	needsChangesGit(t)
 	h := newHarness(t)
 	ctx := context.Background()
 	dir := filepath.Join(h.work, "fresh")
@@ -212,6 +250,7 @@ func TestARepositoryWithNoCommitCountsFromNothing(t *testing.T) {
 // A repository inside the checkout, which git lists as its folder, is a
 // new entry pocketd does not count, and the read goes on.
 func TestARepositoryInsideTheCheckoutIsListedUncounted(t *testing.T) {
+	needsChangesGit(t)
 	h := newHarness(t)
 	ctx := context.Background()
 	dir := filepath.Join(h.work, "repo")
@@ -237,6 +276,7 @@ func TestARepositoryInsideTheCheckoutIsListedUncounted(t *testing.T) {
 // A diff longer than proto.MaxFileDiff comes cut after its last whole
 // line, and says so (ADR-0053).
 func TestALongDiffIsCutAtAWholeLineAndSaysSo(t *testing.T) {
+	needsChangesGit(t)
 	h := newHarness(t)
 	ctx := context.Background()
 	dir := filepath.Join(h.work, "repo")
@@ -267,6 +307,7 @@ func TestALongDiffIsCutAtAWholeLineAndSaysSo(t *testing.T) {
 // The list holds at most proto.MaxChangedFiles files and counts the rest,
 // and counts the lines of at most proto.MaxCountedNew new files.
 func TestTheChangesListIsBounded(t *testing.T) {
+	needsChangesGit(t)
 	h := newHarness(t)
 	ctx := context.Background()
 	dir := filepath.Join(h.work, "repo")
@@ -297,6 +338,7 @@ func TestTheChangesListIsBounded(t *testing.T) {
 // attributes no option turns off is refused before any read, and no
 // command of the read writes the checkout (ADR-0053).
 func TestChangesRunGitIsolatedAndRefuseWhatItCannotIsolate(t *testing.T) {
+	needsChangesGit(t)
 	h := newTeamHarness(t)
 	ctx := context.Background()
 	thread := veraThread(t, h)
