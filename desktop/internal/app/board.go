@@ -8,18 +8,33 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// boardPane is the work board: first the night shift's Proposals and
-// Schedules sections (ADR-0034, nightshift.go), then the threads grouped
-// by who moves them next (state.Data.Board), each group most recently
-// changed first, the closed ones folded last.
+// boardPane is the work board: the night shift's Proposals and Schedules
+// sections (ADR-0034, nightshift.go) and the threads grouped by who moves
+// them next (state.Data.Board), each group most recently changed first,
+// the closed ones folded last, in the order state.BoardOrder gives: the
+// night shift first on a desktop's window, and on a compact one a section
+// that holds nothing after the threads.
 func (a *App) boardPane(c *ui.Context) {
 	t := c.Theme()
+	d := &a.st.Data
+	proposals, _ := d.ProposalsStatus()
+	schedules, _ := d.SchedulesStatus()
+	order := state.BoardOrder(a.compact,
+		state.NightShiftHolds(len(d.BoardProposals()), proposals, a.st.LaunchUncertain()),
+		state.NightShiftHolds(len(d.Schedules().Schedules), schedules, d.Schedules().Problem != ""))
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, a.gutter()).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
-				a.proposalsSection(c)
-				a.schedulesSection(c)
-				a.boardThreads(c)
+				for _, part := range order {
+					switch part {
+					case state.BoardProposals:
+						a.proposalsSection(c)
+					case state.BoardSchedules:
+						a.schedulesSection(c)
+					case state.BoardThreads:
+						a.boardThreads(c)
+					}
+				}
 			})
 		})
 	})

@@ -105,3 +105,50 @@ func InboxBadge(kinds []InboxKind) string {
 	}
 	return ""
 }
+
+// BoardPart is a part of the work board, as BoardOrder orders them.
+type BoardPart int
+
+const (
+	// BoardProposals and BoardSchedules are the night shift's sections
+	// (ADR-0034).
+	BoardProposals BoardPart = iota
+	BoardSchedules
+	// BoardThreads are the threads, grouped by who moves them next.
+	BoardThreads
+)
+
+// NightShiftHolds reports whether a night shift's section of the work
+// board holds anything beyond its note that it is empty: an entry, the
+// failure of its list's last fetch, or more, which the section says (a
+// launch whose answer was lost, for the proposals; the problem of the
+// owner's schedules file, for the schedules). While its list loads, it
+// holds nothing yet.
+func NightShiftHolds(entries int, status ListStatus, more bool) bool {
+	return entries > 0 || status == ListFailed || more
+}
+
+// BoardOrder is the order the work board draws its parts in, given
+// whether its Proposals and Schedules sections hold anything
+// (NightShiftHolds). A desktop's window draws the night shift first, then
+// the threads, whatever they hold. A compact window, a phone's, keeps a
+// section that holds something above the threads, and puts one that holds
+// nothing after them, where it takes none of the screen the threads need
+// (the owner's choice of 2026-11-21, within ADR-0044).
+func BoardOrder(compact, proposals, schedules bool) []BoardPart {
+	if !compact {
+		return []BoardPart{BoardProposals, BoardSchedules, BoardThreads}
+	}
+	var above, below []BoardPart
+	for _, s := range []struct {
+		part  BoardPart
+		holds bool
+	}{{BoardProposals, proposals}, {BoardSchedules, schedules}} {
+		if s.holds {
+			above = append(above, s.part)
+		} else {
+			below = append(below, s.part)
+		}
+	}
+	return append(append(above, BoardThreads), below...)
+}

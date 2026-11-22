@@ -1,6 +1,55 @@
 package state
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+// A night shift's section holds something with an entry, a failed fetch
+// or more it says; empty or still loading, it holds nothing.
+func TestANightShiftSectionHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		entries int
+		status  ListStatus
+		more    bool
+		want    bool
+	}{
+		{"empty", 0, ListLoaded, false, false},
+		{"loading", 0, ListLoading, false, false},
+		{"an entry", 1, ListLoaded, false, true},
+		{"a failed fetch", 0, ListFailed, false, true},
+		{"more it says", 0, ListLoaded, true, true},
+	} {
+		if got := NightShiftHolds(tc.entries, tc.status, tc.more); got != tc.want {
+			t.Errorf("%s: NightShiftHolds = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A desktop's board draws the night shift, then the threads, whatever it
+// holds; a compact window's puts a section that holds nothing after the
+// threads, and keeps one that holds something above them (the owner's
+// choice of 2026-11-21).
+func TestTheBoardsOrder(t *testing.T) {
+	p, s, th := BoardProposals, BoardSchedules, BoardThreads
+	for _, tc := range []struct {
+		compact, proposals, schedules bool
+		want                          []BoardPart
+	}{
+		{false, false, false, []BoardPart{p, s, th}},
+		{false, true, false, []BoardPart{p, s, th}},
+		{false, true, true, []BoardPart{p, s, th}},
+		{true, false, false, []BoardPart{th, p, s}},
+		{true, true, false, []BoardPart{p, th, s}},
+		{true, false, true, []BoardPart{s, th, p}},
+		{true, true, true, []BoardPart{p, s, th}},
+	} {
+		if got := BoardOrder(tc.compact, tc.proposals, tc.schedules); !slices.Equal(got, tc.want) {
+			t.Errorf("BoardOrder(%v, %v, %v) = %v, want %v", tc.compact, tc.proposals, tc.schedules, got, tc.want)
+		}
+	}
+}
 
 // The compact window's tabs are the Inbox, the work board, the sessions
 // and More, in that order, each with its own place; every other place
