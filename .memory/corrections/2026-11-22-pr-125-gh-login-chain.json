@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's gh login is one && chain that stops at the first failure and prints signed in at its end, so gh never runs with an empty GH_CONFIG_DIR.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 15 (codex-cli 0.169.0) of head c7edb48: [P2] Stop the GitHub login if its temporary directory cannot be made",
+  "promoted_to": "docs/design/setup.md"
+}

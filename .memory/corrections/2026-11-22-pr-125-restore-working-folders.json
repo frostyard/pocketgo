@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's restore puts saved working folders back at their paths before pocketd starts, since a restored task resumes in the folder it had.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 15 (codex-cli 0.169.0) of head c7edb48: [P1] Restore in-flight worktrees before resuming an older backup",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide resets the desktop's settings after a restore as after a wipe, since restored databases may give ids the desktop saw for other things since.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 15 (codex-cli 0.169.0) of head c7edb48: [P2] Cover stale desktop state after a rollback as well as a wipe",
+  "promoted_to": "docs/design/setup.md"
+}
