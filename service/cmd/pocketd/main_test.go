@@ -88,15 +88,15 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 	t.Cleanup(func() { newSandbox = saved })
 	errNoBwrap := errors.New("bwrap is not installed")
 	for name, tc := range map[string]struct {
-		build func(string, string, ...*string) (*pig.Sandbox, error)
+		build func(string, string, []*string, ...*string) (*pig.Sandbox, error)
 		want  func(error) bool
 	}{
 		"no bwrap": {
-			build: func(string, string, ...*string) (*pig.Sandbox, error) { return nil, errNoBwrap },
+			build: func(string, string, []*string, ...*string) (*pig.Sandbox, error) { return nil, errNoBwrap },
 			want:  func(err error) bool { return errors.Is(err, errNoBwrap) },
 		},
 		"a failing check": {
-			build: func(string, string, ...*string) (*pig.Sandbox, error) {
+			build: func(string, string, []*string, ...*string) (*pig.Sandbox, error) {
 				return &pig.Sandbox{Bwrap: filepath.Join(t.TempDir(), "missing-bwrap"), Shell: "sh"}, nil
 			},
 			want: func(err error) bool { return err != nil && strings.Contains(err.Error(), "sandbox check failed") },
@@ -124,7 +124,7 @@ func TestServeShowsTheSkillsAndUploadsReadOnly(t *testing.T) {
 	t.Setenv("HOME", home)
 	errStop := errors.New("stop here")
 	var shown []string
-	newSandbox = func(_, _ string, folders ...*string) (*pig.Sandbox, error) {
+	newSandbox = func(_, _ string, _ []*string, folders ...*string) (*pig.Sandbox, error) {
 		for _, f := range folders {
 			shown = append(shown, *f)
 		}
@@ -547,4 +547,41 @@ func (f *failFirst) Write(p []byte) (int, error) {
 		return 0, errors.New("the disk is full")
 	}
 	return len(p), nil
+}
+
+// pocketd serve names the owner's global instructions file as the file its
+// sandbox keeps read-only, one absolute path whatever the working
+// directory, and names none when it is told of none (ADR-0045).
+func TestServeKeepsTheInstructionsFileReadOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pocketd serve runs on Unix hosts only")
+	}
+	saved := newSandbox
+	t.Cleanup(func() { newSandbox = saved })
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	errStop := errors.New("stop here")
+	var files []string
+	newSandbox = func(_, _ string, kept []*string, _ ...*string) (*pig.Sandbox, error) {
+		for _, f := range kept {
+			files = append(files, *f)
+		}
+		return nil, errStop
+	}
+	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", "rules.md", 12, 0); !errors.Is(err, errStop) {
+		t.Fatalf("serve = %v", err)
+	}
+	if want := []string{filepath.Join(dir, "rules.md")}; !reflect.DeepEqual(files, want) {
+		t.Fatalf("the sandbox keeps %q read-only, want %q", files, want)
+	}
+	files = nil
+	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", "", 12, 0); !errors.Is(err, errStop) {
+		t.Fatalf("serve = %v", err)
+	}
+	if want := []string{""}; !reflect.DeepEqual(files, want) {
+		t.Fatalf("the sandbox keeps %q read-only, want %q", files, want)
+	}
 }

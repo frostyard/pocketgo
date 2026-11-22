@@ -20,13 +20,24 @@ import (
 // link put on the way fails it and never leads it elsewhere (Codex review
 // of #63, round 10).
 func mkdirNoFollow(path string) error {
+	fd, err := walkMakeDirs(path)
+	if err != nil {
+		return err
+	}
+	return unix.Close(fd)
+}
+
+// walkMakeDirs makes every folder on the way to path, as mkdirNoFollow
+// does, and gives the last of them, the folder path names, open as an
+// O_PATH descriptor the caller closes.
+func walkMakeDirs(path string) (fd int, err error) {
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {
-		return fmt.Errorf("%s is not an absolute path", path)
+		return -1, fmt.Errorf("%s is not an absolute path", path)
 	}
-	fd, err := unix.Open("/", walkDirFlags, 0)
+	fd, err = unix.Open("/", walkDirFlags, 0)
 	if err != nil {
-		return &os.PathError{Op: "open", Path: "/", Err: err}
+		return -1, &os.PathError{Op: "open", Path: "/", Err: err}
 	}
 	at := "/"
 	for _, name := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
@@ -42,11 +53,44 @@ func mkdirNoFollow(path string) error {
 		}
 		_ = unix.Close(fd)
 		if err != nil {
-			return &os.PathError{Op: "make", Path: at, Err: err}
+			return -1, &os.PathError{Op: "make", Path: at, Err: err}
 		}
 		fd = next
 	}
-	return unix.Close(fd)
+	return fd, nil
+}
+
+// makeFileNoFollow makes path an empty regular file with mode 0600,
+// and each folder above it that is missing with mode 0700, unless a
+// regular file is there already, which it leaves as it is, never
+// truncated. It walks from the root as mkdirNoFollow does, never
+// following a link, and opens the file without following a link and
+// without waiting on a named pipe: a link, a folder or any other kind
+// of file at path fails it (ADR-0045).
+func makeFileNoFollow(path string) error {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%s is not an absolute path", path)
+	}
+	dir, base := filepath.Dir(path), filepath.Base(path)
+	fd, err := walkMakeDirs(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	made, err := unix.Openat(fd, base, unix.O_RDONLY|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return &os.PathError{Op: "make", Path: path, Err: err}
+	}
+	defer func() { _ = unix.Close(made) }()
+	var st unix.Stat_t
+	if err := unix.Fstat(made, &st); err != nil {
+		return &os.PathError{Op: "make", Path: path, Err: err}
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return &os.PathError{Op: "make", Path: path, Err: errors.New("no regular file")}
+	}
+	return nil
 }
 
 // writable reports whether this process may change dir's entries: create,

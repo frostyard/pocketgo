@@ -40,6 +40,24 @@ var errProtected = errors.New("this path belongs to pocketd and is not available
 // (ADR-0035).
 var errReadOnly = errors.New("this folder is the owner's and read-only to agents: read it, but change nothing in it")
 
+// errReadOnlyFile is the error of a change to the owner's global
+// instructions file, which every session's instructions hold
+// (ADR-0043) and agents may only read (ADR-0045).
+var errReadOnlyFile = errors.New("this file holds the owner's rules for every session and is read-only to agents: read it, but change nothing in it")
+
+// readOnlyErr is the error for a change to the read-only path info
+// describes: the owner's global instructions file's, or another's.
+func (g *guardedEnv) readOnlyErr(info fs.FileInfo) error {
+	if info != nil {
+		for _, file := range g.files {
+			if kept, err := os.Lstat(file); err == nil && os.SameFile(info, kept) {
+				return errReadOnlyFile
+			}
+		}
+	}
+	return errReadOnly
+}
+
 // guardedEnv is an execution environment whose file access refuses the
 // protected folders, whose changes refuse the read-only folders too, and
 // whose commands get only allowedEnv and run in the sandbox. It checks the
@@ -49,11 +67,15 @@ var errReadOnly = errors.New("this folder is the owner's and read-only to agents
 type guardedEnv struct {
 	env.ExecutionEnv
 	protected []string
-	// readOnly are folders whose files agents read but never change: the
-	// sandbox's Shown folders, the skills and the uploads (ADR-0035). The
-	// file tools run in pocketd, outside the sandbox, so they refuse a
-	// change there themselves.
+	// readOnly are paths whose files agents read but never change: the
+	// sandbox's Shown paths, the skills and the uploads folders (ADR-0035)
+	// and the global instructions file (ADR-0045). The file tools run in
+	// pocketd, outside the sandbox, so they refuse a change there
+	// themselves.
 	readOnly []string
+	// files are the sandbox's files among readOnly, the global instructions
+	// file (ADR-0045): a change refused there gets errReadOnlyFile.
+	files    []string
 	commands map[string]string
 	// sandbox runs every command (ADR-0012); nil only in tests that asked
 	// for Options.Unsandboxed.
@@ -97,7 +119,8 @@ func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
 	}
 	for _, dir := range g.readOnly {
 		if within(resolved, dir) {
-			return errReadOnly
+			info, _ := os.Lstat(dir)
+			return g.readOnlyErr(info)
 		}
 	}
 	// A path is in a read-only folder when the folder is the path, or a
@@ -105,8 +128,8 @@ func (g *guardedEnv) checkChange(ctx context.Context, path string) error {
 	// up without regard to case, another spelling names the same folder,
 	// which no comparison of the names finds (Codex review of #63, round
 	// 9).
-	if g.sameAsOne(chain(resolved), g.readOnlyIDs(false)) {
-		return errReadOnly
+	if id, ok := g.matchOne(chain(resolved), g.readOnlyIDs(false)); ok {
+		return g.readOnlyErr(id)
 	}
 	return nil
 }
@@ -147,16 +170,16 @@ func (g *guardedEnv) readOnlyIDs(above bool) []fs.FileInfo {
 	return out
 }
 
-// sameAsOne says whether any of infos is the same file as any of ids.
-func (g *guardedEnv) sameAsOne(infos, ids []fs.FileInfo) bool {
+// matchOne is the first of ids that is the same file as one of infos.
+func (g *guardedEnv) matchOne(infos, ids []fs.FileInfo) (fs.FileInfo, bool) {
 	for _, info := range infos {
 		for _, id := range ids {
 			if os.SameFile(info, id) {
-				return true
+				return id, true
 			}
 		}
 	}
-	return false
+	return nil, false
 }
 
 // chain is path and each folder above it, as they are now, those that
@@ -217,17 +240,20 @@ func (g *guardedEnv) checkTree(ctx context.Context, path string) error {
 	}
 	for _, dir := range g.readOnly {
 		if within(dir, entry) || within(entry, dir) {
-			return errReadOnly
+			info, _ := os.Lstat(dir)
+			return g.readOnlyErr(info)
 		}
 	}
 	// By identity too, for another spelling of a name (checkChange): the
 	// entry may not be a read-only folder or a folder above one, nor lie
 	// in one.
-	if entryInfo, err := os.Lstat(entry); err == nil && g.sameAsOne([]fs.FileInfo{entryInfo}, g.readOnlyIDs(true)) {
-		return errReadOnly
+	if entryInfo, err := os.Lstat(entry); err == nil {
+		if id, ok := g.matchOne([]fs.FileInfo{entryInfo}, g.readOnlyIDs(true)); ok {
+			return g.readOnlyErr(id)
+		}
 	}
-	if g.sameAsOne(chain(parent), g.readOnlyIDs(false)) {
-		return errReadOnly
+	if id, ok := g.matchOne(chain(parent), g.readOnlyIDs(false)); ok {
+		return g.readOnlyErr(id)
 	}
 	return nil
 }

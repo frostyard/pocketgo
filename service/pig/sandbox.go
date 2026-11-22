@@ -42,9 +42,10 @@ type Sandbox struct {
 	// Shown are the owner's folders that agents read but never change,
 	// under every path a mount exposes them at: the skills folder a gather
 	// reads (ADR-0033) and the uploads folder (ADR-0029), read-only since
-	// ADR-0035. A command finds them read-only; the file tools read them
-	// and refuse to change them. pocketd itself, outside the sandbox,
-	// writes them as before.
+	// ADR-0035. Since ADR-0045 they include the owner's global instructions
+	// file, a single file. A command finds them read-only; the file tools
+	// read them and refuse to change them. pocketd itself, outside the
+	// sandbox, writes them as before.
 	Shown []string
 	// Hide are folders replaced by an empty tmpfs, under every path a mount
 	// exposes them at: the data folder, which holds the sign-ins and
@@ -60,6 +61,10 @@ type Sandbox struct {
 	// single file of one. nil takes every Shown path for a root, as a
 	// test's literal does.
 	roots []string
+	// files are the roots that are a single file, not a folder: the
+	// owner's global instructions file (ADR-0045). A missing one is made
+	// again as an empty file, and one kept must be a regular file.
+	files []string
 	// mounts reads the host's mount table now, for keepShown to find
 	// where a mount shows a replaced folder; nil reads none, as a test's
 	// sandbox with no table does.
@@ -90,6 +95,22 @@ func randomMark() string {
 // mount shows one.
 func (s *Sandbox) root(path string) bool {
 	return s.roots == nil || slices.Contains(s.roots, path)
+}
+
+// file says whether path is a Shown root that is a single file.
+func (s *Sandbox) file(path string) bool { return slices.Contains(s.files, path) }
+
+// shapeOf is what a kept path must be: a single file for one that is a
+// shown file, a folder for a root or a Shown path, and either for where a
+// mount shows a shown folder.
+func (s *Sandbox) shapeOf(path string) shape {
+	switch {
+	case s.file(path):
+		return fileShape
+	case s.root(path) || !slices.Contains(s.Shown, path):
+		return folderShape
+	}
+	return anyShape
 }
 
 // watched are the paths keepShown keeps: the Shown paths, and the pinned
@@ -163,12 +184,22 @@ func (k *keptFolders) take(ctx context.Context) error {
 
 func (k *keptFolders) release() { <-k.turn }
 
+// shape is what a kept path must be.
+type shape int
+
+const (
+	// anyShape is an alias: a folder, or a single regular file a mount shows.
+	anyShape shape = iota
+	folderShape
+	fileShape
+)
+
 // hold keeps what is at path from now on, held open, and lets what was
-// kept before go: a folder, or, where root is false, a single file a mount
-// shows (Codex review of #63, round 3). It opens without following a link
-// and without waiting on a named pipe, so nothing at path holds the
+// kept before go: what want says may be there, a folder or a single file
+// a mount shows (Codex review of #63, round 3). It opens without following
+// a link and without waiting on a named pipe, so nothing at path holds the
 // watch.
-func (k *keptFolders) hold(path string, root bool) error {
+func (k *keptFolders) hold(path string, want shape) error {
 	f, err := openHeld(path)
 	if err != nil {
 		return err
@@ -181,7 +212,11 @@ func (k *keptFolders) hold(path string, root bool) error {
 		case err != nil:
 		case !os.SameFile(opened, named):
 			err = fmt.Errorf("%s changed as it was opened", path)
-		case root && !opened.IsDir(), !opened.IsDir() && !opened.Mode().IsRegular():
+		case want == folderShape && !opened.IsDir():
+			err = fmt.Errorf("%s is no folder", path)
+		case want == fileShape && !opened.Mode().IsRegular():
+			err = fmt.Errorf("%s is no regular file", path)
+		case want == anyShape && !opened.IsDir() && !opened.Mode().IsRegular():
 			err = fmt.Errorf("%s is no folder", path)
 		}
 	}
@@ -409,6 +444,12 @@ func (s *Sandbox) keep(ctx context.Context) ([]string, error) {
 		if !s.root(dir) {
 			continue
 		}
+		if s.file(dir) {
+			if err := makeShownFile(dir); err != nil {
+				return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0045), and it is missing and cannot be made again: %w", dir, err)
+			}
+			continue
+		}
 		if err := makeShown(dir); err != nil {
 			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), and it is missing and cannot be made again: %w", dir, err)
 		}
@@ -420,7 +461,7 @@ func (s *Sandbox) keep(ctx context.Context) ([]string, error) {
 	}
 	changed := slices.Concat(l.fresh, l.missing)
 	for _, dir := range changed {
-		if err := kept.hold(dir, s.root(dir) || !slices.Contains(s.Shown, dir)); err != nil {
+		if err := kept.hold(dir, s.shapeOf(dir)); err != nil {
 			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0035), which cannot be held: %w", dir, err)
 		}
 	}
@@ -508,6 +549,10 @@ func (l shownLook) changedSince(prev shownLook) bool {
 // a mount's path again too, as the kernel does for a bind mount of the
 // folder above.
 var makeShown = mkdirNoFollow
+
+// makeShownFile makes a missing shown file again, empty
+// (makeFileNoFollow); tests replace it.
+var makeShownFile = makeFileNoFollow
 
 // errNoMount is a mount table that shows no mount a shown folder is on,
 // as one read in a chroot that is no mount point of its own can: its
@@ -667,6 +712,11 @@ type sandboxPaths struct {
 	// resolved, so pocketd reads and writes exactly the folder kept, never
 	// one a link retargeted since leads to (Codex review of #63, round 5).
 	Shown []*string
+	// Files are the owner's files agents read but never change: the global
+	// instructions file (ADR-0045). An empty one is none. newSandbox
+	// rewrites each to the path it keeps read-only, links resolved, as it
+	// does Shown.
+	Files []*string
 	// Runtime are the folders that hold runtime folders: /run/user, and an
 	// XDG_RUNTIME_DIR outside it.
 	Runtime []string
@@ -700,8 +750,10 @@ func readMountinfo() ([]mount, error) {
 // told and may do. The shown folders, the skills folder and the uploads
 // folder, are read-only to agents too, but readable (ADR-0035); an empty
 // one is none. Each is rewritten to the path the sandbox keeps read-only,
-// which pocketd then uses (sandboxPaths.Shown).
-func NewSandbox(data, profiles string, shown ...*string) (*Sandbox, error) {
+// which pocketd then uses (sandboxPaths.Shown). The files, the owner's
+// global instructions file (ADR-0045), are kept read-only as the shown
+// folders are, made empty when missing.
+func NewSandbox(data, profiles string, files []*string, shown ...*string) (*Sandbox, error) {
 	bwrap, err := trustedBwrap()
 	if err != nil {
 		return nil, err
@@ -718,7 +770,7 @@ func NewSandbox(data, profiles string, shown ...*string) (*Sandbox, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program, Profiles: profiles, Shown: shown,
+	p := sandboxPaths{Bwrap: bwrap, Shell: shell(), Data: data, Home: home, Program: program, Profiles: profiles, Shown: shown, Files: files,
 		Launch: filepath.Join(home, ".local", "bin", "pocketd"), Runtime: []string{"/run/user"},
 		ConfigHomes: []string{filepath.Join(home, ".config")}, DataHomes: []string{filepath.Join(home, ".local", "share")},
 		Mounts: mounts, ReadMounts: readMountinfo, Writable: writable, Self: program}
@@ -779,6 +831,25 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			shown = append(shown, dir)
 		}
 	}
+	// The files are shown paths too, but a single file each: the owner's
+	// global instructions file, made empty when it is missing, read-only to
+	// agents (ADR-0045). A path named as both would be bound as a folder.
+	var files []string
+	for _, named := range p.Files {
+		if named == nil || *named == "" {
+			continue
+		}
+		file, err := filepath.Abs(*named)
+		if err != nil {
+			return nil, err
+		}
+		if slices.Contains(shown, file) {
+			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012), and %s is named both as a folder and as a file to keep read-only", file)
+		}
+		if !slices.Contains(files, file) {
+			files = append(files, file)
+		}
+	}
 	envFile := filepath.Join(p.Home, ".config", "pocketd.env")
 	var launch []string
 	if p.Launch != "" {
@@ -815,6 +886,16 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			return nil, err
 		}
 		checked[dir] = real
+	}
+	for _, file := range files {
+		real, err := checkedPath(file, p.Writable)
+		if err != nil {
+			return nil, err
+		}
+		if err := makeShownFile(real); err != nil {
+			return nil, err
+		}
+		checked[file] = real
 	}
 	f, err := os.OpenFile(envFile, os.O_CREATE|os.O_RDONLY, 0o600)
 	if err != nil {
@@ -919,6 +1000,23 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 			resolvedShown = append(resolvedShown, real)
 		}
 	}
+	for _, file := range files {
+		real, f, err := kernelSpelled(checked[file])
+		if err != nil {
+			return nil, err
+		}
+		if f == nil {
+			return nil, fmt.Errorf("commands run in a sandbox (ADR-0012) that keeps %s read-only (ADR-0045), which went as pocketd started: start pocketd again", checked[file])
+		}
+		spelling = append(spelling, f)
+		kept[file] = real
+		if !slices.Contains(s.files, real) {
+			s.files = append(s.files, real)
+		}
+		if !slices.Contains(resolvedShown, real) {
+			resolvedShown = append(resolvedShown, real)
+		}
+	}
 	// A mount table that shows no mount a protected path is on, as one
 	// read in a chroot that is no mount point of its own can, tells none of
 	// its aliases: no start, rather than mask the path alone (Codex review
@@ -966,6 +1064,14 @@ func newSandbox(p sandboxPaths) (*Sandbox, error) {
 		}
 		if dir, err := filepath.Abs(*named); err == nil {
 			*named = kept[dir]
+		}
+	}
+	for _, named := range p.Files {
+		if named == nil || *named == "" {
+			continue
+		}
+		if file, err := filepath.Abs(*named); err == nil {
+			*named = kept[file]
 		}
 	}
 	return s, nil
