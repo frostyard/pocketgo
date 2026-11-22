@@ -229,6 +229,7 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.dialogs.View(c, true)
 	a.newSessionDialog(c)
 	a.settingsDialog(c)
+	a.signInOverlays(c)
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
 	a.changesSheet(c)

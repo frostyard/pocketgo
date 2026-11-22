@@ -280,6 +280,13 @@ type Store struct {
 	changesScans   int
 	// notes is the record of what the store notified (ADR-0049).
 	notes noticeBook
+	// sheet is the sign-in sheet while it shows, signOuts the owner's
+	// sign-outs of pocketd from providers, by provider, and signInsWanted
+	// says the Sign-ins page asked for the sign-ins, which a resync and a
+	// reconnect then fetch again (signins.go, ADR-0062).
+	sheet         *signInSheet
+	signOuts      map[string]*Pending
+	signInsWanted bool
 }
 
 // New returns a store with no sign-in.
@@ -336,6 +343,7 @@ func (s *Store) resetActions() {
 	s.launchKept = nil
 	s.launched = nil
 	s.drops = map[int64]*Pending{}
+	s.sheet, s.signOuts, s.signInsWanted = nil, map[string]*Pending{}, false
 	for _, files := range s.attachments {
 		for _, a := range files {
 			if a.cancel != nil {
@@ -651,6 +659,10 @@ func (s *Store) apply(ev proto.Event) {
 		s.refetchSchedules()
 	case RefetchUsage:
 		s.refetchUsage()
+	case RefetchModels:
+		// A provider signed in or out: New Session and the composer offer
+		// the models pocketd runs now, with no restart (ADR-0062).
+		s.LoadModels()
 	}
 	if s.Data.takeUsageMoved() && refetch != RefetchUsage && refetch != RefetchAll {
 		s.refetchUsage()
@@ -862,6 +874,10 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.PromptsStatus(); status != ListLoaded || s.fetching["prompts"] > 0 {
 		s.LoadPrompts()
 	}
+	// The sign-ins, once the Sign-ins page asked for them (ADR-0062).
+	if status, _ := s.Data.SignInsStatus(); s.signInsWanted && (status != ListLoaded || s.fetching["signins"] > 0) {
+		s.LoadSignIns()
+	}
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -899,6 +915,11 @@ func (s *Store) Refresh() {
 	// The composer's / picker has them at once, and asks again as it
 	// opens (ADR-0051).
 	s.LoadPrompts()
+	// The sign-ins, once the Sign-ins page asked for them: a resync may
+	// have missed a flow's end (ADR-0062).
+	if s.signInsWanted {
+		s.LoadSignIns()
+	}
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}
