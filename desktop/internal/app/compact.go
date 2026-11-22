@@ -373,7 +373,9 @@ func (a *App) compactTitle() string {
 func (a *App) compactNote(c *ui.Context) {
 	o := a.shownSession()
 	// The field of the session's title, while the owner renames it, in
-	// the note's place: the top bar's title takes no field (ADR-0058).
+	// the note's place: the top bar's title takes no field (ADR-0058). An
+	// edit pocketd no longer takes ends, sending nothing.
+	a.titleEdit.Check(&a.st.Data)
 	if o != nil && a.titleEdit.Editing(o.ID) {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Padding(0, a.gutter(), frostui.SpaceS, a.gutter()).Shrink(0).Children(func() {
 			a.titleField(c)

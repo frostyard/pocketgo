@@ -64,6 +64,25 @@ func (e *TitleEdit) Editing(id int64) bool { return id != 0 && e.Session == id }
 // Cancel ends the edit and sends nothing, as Escape does.
 func (e *TitleEdit) Cancel() { *e = TitleEdit{} }
 
+// Check cancels the edit, sending nothing, once d says its session may no
+// longer be renamed: a session event withdrew it, or the session is gone.
+// The window checks it before it draws the field and before an edit ends
+// (Codex review of #118, round 1).
+func (e *TitleEdit) Check(d *Data) {
+	if e.Session != 0 && !d.Renamable(e.Session) {
+		e.Cancel()
+	}
+}
+
+// MayRename says whether an edit of session id's title may start now: the
+// session may be renamed, and no rename of it is on its way, whose end
+// would drop a second title (Rename). Every way to start one asks it: the
+// header's button and double click, the sidebar's Rename… and F2 (Codex
+// review of #118, round 1).
+func (s *Store) MayRename(id int64) bool {
+	return s.Data.Renamable(id) && !s.Renaming(id).Busy
+}
+
 // Finish ends the edit, as Enter or the focus leaving the field does: the
 // session and the title to send, trimmed, "" for pocketd's default. send
 // is false when the title would be the one the edit started from, the

@@ -75,6 +75,8 @@ func (a *App) sessionBar(c *ui.Context) {
 	o := a.st.Data.Open()
 	s, _ := a.st.Data.Session(o.ID)
 	title := sessionTitle(s, o.ID)
+	// An edit pocketd no longer takes ends, sending nothing.
+	a.titleEdit.Check(&a.st.Data)
 	ui.Column(c).Grow(1).Children(func() {
 		switch {
 		case a.titleEdit.Editing(o.ID):
@@ -174,12 +176,12 @@ func (a *App) titleField(c *ui.Context) {
 	}
 }
 
-// startRename turns session id's title into a field, when the owner may
-// rename it (state.Data.Renamable); an edit of another session's title
+// startRename turns session id's title into a field, when an edit of it
+// may start (state.Store.MayRename); an edit of another session's title
 // ends first, as its field leaving would end it.
 func (a *App) startRename(id int64) {
 	s, ok := a.st.Data.Session(id)
-	if !ok || !a.st.Data.Renamable(id) {
+	if !ok || !a.st.MayRename(id) {
 		return
 	}
 	if !a.titleEdit.Editing(id) {
@@ -189,8 +191,10 @@ func (a *App) startRename(id int64) {
 }
 
 // finishRename ends the edit of a session's title, and renames the
-// session when its title changed (state.TitleEdit.Finish).
+// session when its title changed (state.TitleEdit.Finish), unless pocketd
+// no longer takes it (state.TitleEdit.Check).
 func (a *App) finishRename() {
+	a.titleEdit.Check(&a.st.Data)
 	if id, title, send := a.titleEdit.Finish(); send {
 		a.st.Rename(id, title)
 	}
@@ -201,7 +205,7 @@ func (a *App) finishRename() {
 // session's Start Over.
 func (a *App) sessionActions(c *ui.Context, o *state.OpenSession, s proto.Session) {
 	if a.st.Data.Renamable(o.ID) && !a.titleEdit.Editing(o.ID) {
-		if frostui.IconButton(c, "document-edit", "Rename this session").Disabled(a.st.Renaming(o.ID).Busy).Clicked() {
+		if frostui.IconButton(c, "document-edit", "Rename this session").Disabled(!a.st.MayRename(o.ID)).Clicked() {
 			a.startRename(o.ID)
 		}
 	}

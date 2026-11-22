@@ -28,10 +28,21 @@ func (s *Server) renameSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var request proto.RenameSession
-	if !decode(w, r, &request) || !validRequestID(w, request.RequestID) {
+	// The title is a string the body names, "" for the default: a body
+	// without one, or with null, renames nothing, and keeps its requestId
+	// free (Codex review of #118, round 1).
+	var body struct {
+		RequestID string  `json:"requestId"`
+		Title     *string `json:"title"`
+	}
+	if !decode(w, r, &body) || !validRequestID(w, body.RequestID) {
 		return
 	}
+	if body.Title == nil {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, `title is required: a string, "" for the default title`)
+		return
+	}
+	request := proto.RenameSession{RequestID: body.RequestID, Title: *body.Title}
 	if len(request.Title) > proto.MaxTitle {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("title must be at most %d bytes", proto.MaxTitle))
 		return

@@ -959,7 +959,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// A profile gives the folder and the model when the request names
 	// none, as pocketd's router does (ADR-0013).
 	route := "owner"
-	standing := false
+	standing, renamable := false, false
 	if request.Profile != "" {
 		// A standing profile's request names the profile alone, and opens
 		// its standing session once it has one, whatever the profile's
@@ -985,6 +985,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		if standing = s.profiles[j].Standing; standing {
 			request.Title = s.profiles[j].Name
 		}
+		// A private agent's session may be renamed, as pocketd's
+		// team.CheckRename says of one the owner starts (ADR-0058; Codex
+		// review of #118, round 1).
+		renamable = s.profiles[j].Private && s.profiles[j].Role != proto.RoleSupervisor
 		if request.Cwd == "" && request.Repository == "" {
 			if request.Cwd = s.profiles[j].Cwd; request.Cwd == "" {
 				request.Cwd = s.profiles[j].Home
@@ -1046,7 +1050,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		title = fmt.Sprintf("Session %d", id)
 	}
 	sess := proto.Session{ID: id, Title: title, Cwd: path.Clean(request.Cwd), Model: request.Model, Thinking: request.Thinking,
-		Profile: request.Profile, Route: route, Standing: standing, State: proto.SessionIdle, CreatedAt: Now, UpdatedAt: Now}
+		Profile: request.Profile, Route: route, Standing: standing, Renamable: renamable, State: proto.SessionIdle, CreatedAt: Now, UpdatedAt: Now}
 	s.emitLocked(proto.Event{Type: proto.EventSession, Session: &sess})
 	s.rememberLocked(r, request.RequestID, sess)
 	writeJSON(w, http.StatusCreated, sess)
@@ -1235,13 +1239,18 @@ func (s *Server) changeModel(w http.ResponseWriter, r *http.Request) {
 // stays. The session's event goes out before the answer. A request id
 // seen before answers the session as it is now, and renames nothing
 // again, for the same session and title; another title or session with it
-// is conflict.
+// is conflict, and publishes the session again, as pocketd does. A body
+// with no title, or a null one, is refused.
 func (s *Server) renameSession(w http.ResponseWriter, r *http.Request) {
-	var request proto.RenameSession
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
+	var body struct {
+		RequestID string  `json:"requestId"`
+		Title     *string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RequestID == "" || body.Title == nil {
+		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: title is required")
 		return
 	}
+	request := proto.RenameSession{RequestID: body.RequestID, Title: *body.Title}
 	if len(request.Title) > proto.MaxTitle {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "title must be at most 200 bytes")
 		return
@@ -1257,7 +1266,11 @@ func (s *Server) renameSession(w http.ResponseWriter, r *http.Request) {
 		case sess == nil:
 			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such session")
 		default:
-			writeJSON(w, http.StatusOK, sess.detail.Session)
+			// The session as it is now goes out again, for a client that
+			// missed the first event (Codex review of #118, round 1).
+			current := sess.detail.Session
+			s.emitLocked(proto.Event{Type: proto.EventSession, Session: &current})
+			writeJSON(w, http.StatusOK, current)
 		}
 		return
 	}

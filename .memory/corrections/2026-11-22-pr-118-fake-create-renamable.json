@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The fake pocketd sets renamable on a session it creates from a private profile that is no supervisor’s, as pocketd’s rule does, so desktop tests can create a private agent’s session and rename it.",
+  "evidence": "frostyard/pocketgo#118, Codex CLI review round 1 (codex-cli 0.169.0) of head 11dc5e6: [P3] Model rename eligibility for sessions created by the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/rename_test.go"
+}

@@ -108,3 +108,26 @@ func TestTheSpecSaysWhatAVersion23ClientDoesWithAWithdrawnAsk(t *testing.T) {
 		t.Error("the spec does not say what a version 23 client does with a withdrawn ask")
 	}
 }
+
+// The rename rule is worded as team.CheckRename codes it: a private
+// profile's session, but the owner's own and one pocketd started for the
+// team's work; its standing session counts whoever opened it, a schedule
+// included, never only one the owner started (Codex review of #118, round
+// 1).
+func TestTheRenameRuleIsWordedAsItIsCoded(t *testing.T) {
+	for _, path := range []string{"../AGENTS.md", "../docs/design/architecture.md", "../docs/specs/protocol.md",
+		"../docs/adr/0058-rename-a-private-agents-session-from-the-desktop-checked-in-code.md"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		if strings.Contains(text, "session the owner started from a private profile") || strings.Contains(text, "renames a session the owner started") ||
+			strings.Contains(text, "private agent's session the owner started") {
+			t.Errorf("%s says only a session the owner started is renamed: one a schedule opened is too", path)
+		}
+		if !strings.Contains(text, "standing session") || !strings.Contains(text, "whoever opened it") {
+			t.Errorf("%s does not say a private profile's standing session is renamed whoever opened it", path)
+		}
+	}
+}
