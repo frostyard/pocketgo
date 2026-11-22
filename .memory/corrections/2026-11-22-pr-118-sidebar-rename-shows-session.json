@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "Rename… on a sidebar row shows that row’s session first, as choosing the row would, so the row the rename leaves chosen stands for the session the main pane shows.",
+  "evidence": "frostyard/pocketgo#118, Codex CLI review round 1 (codex-cli 0.169.0) of head 11dc5e6: [P2] Keep the open session aligned with the row selected for rename",
+  "promoted_to": "desktop/internal/app/rename_round1_test.go"
+}

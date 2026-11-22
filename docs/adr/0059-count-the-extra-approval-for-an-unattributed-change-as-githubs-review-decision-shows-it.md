@@ -61,7 +61,7 @@
 - **The bypass query asks one more field.** `reviewDecision` joins `testdata/bypass-query.graphql`, which the recorder sends. The recorded bypass answers predate it, so the tests' fake answers it from the pull request as it is then.
 - **GitHub's answer drives the count.** No change here is needed if GitHub changes the preview feature, for example by widening it to other agents or turning it off.
 - **Known limit:** GitHub's `APPROVED` can rest on an approval at an older commit where stale reviews are not dismissed. Only the extra approval can rest on such an approval, since the rule's own count needs approvals at the head. The frostyard org ruleset dismisses stale reviews.
-- **Not seen yet:** a Dependabot pull request merged from the desktop under this rule ([roadmap item 31](../plans/roadmap.md)).
+- **Not seen yet:** a Dependabot pull request merged from the desktop under this rule ([roadmap item 32](../plans/roadmap.md)).
 - frostyard/pocket's gate still asks 2 of a bot's pull request, until pocket takes this rule.
 
 ## Alternatives considered
@@ -76,6 +76,6 @@
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#desktop-client)
-- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 31, the extra approval counted as GitHub counts it)
+- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 32, the extra approval counted as GitHub counts it)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0018](0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md), [ADR-0031](0031-count-pocketds-ready-cross-review-as-an-approval-and-merge-all-ready-at-once.md), [ADR-0038](0038-check-bot-pull-requests-again-in-the-run-once-a-merge-moves-their-base.md)
 - Issue: [frostyard/pocketgo#52](https://github.com/frostyard/pocketgo/issues/52)

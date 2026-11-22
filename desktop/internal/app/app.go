@@ -145,9 +145,12 @@ type App struct {
 	tr       transcriptView
 	composer composer
 	// changes is the Changes view (changes.go, ADR-0053).
-	changes  changesView
-	reasons  map[string]*string // deny reasons being written, by approval
-	argsOpen map[string]bool    // approval cards showing their arguments
+	changes changesView
+	// titleEdit is the owner's edit of a session's title in its header
+	// (ADR-0058).
+	titleEdit state.TitleEdit
+	reasons   map[string]*string // deny reasons being written, by approval
+	argsOpen  map[string]bool    // approval cards showing their arguments
 	// inForceOpen unfolds the Inbox's list of lessons in force.
 	inForceOpen bool
 	// closedOpen unfolds the board's closed threads; reportOpen the
@@ -365,6 +368,7 @@ func (a *App) resetViews() {
 	a.search = searchView{}
 	a.composer = composer{drafts: map[int64]*string{}}
 	a.changes = changesView{}
+	a.titleEdit = state.TitleEdit{}
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
 	a.reportOpen = map[string]bool{}
 	a.launchEnd, a.launchClock = 0, ""

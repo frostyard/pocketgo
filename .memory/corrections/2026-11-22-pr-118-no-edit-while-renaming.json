@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "No edit of a session’s title starts while a rename of it is on its way: every way to start one asks state.Store.MayRename, since the first rename’s end would drop a second title.",
+  "evidence": "frostyard/pocketgo#118, Codex CLI review round 1 (codex-cli 0.169.0) of head 11dc5e6: [P2] Prevent a second rename edit while the first request is pending",
+  "promoted_to": "desktop/internal/state/rename_round1_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The fake pocketd publishes the session again on a rename’s retry, as pocketd does, so a client that missed the first event gets one.",
+  "evidence": "frostyard/pocketgo#118, Codex CLI review round 1 (codex-cli 0.169.0) of head 11dc5e6: [P3] Republish the session on a replay in the desktop fake",
+  "promoted_to": "desktop/internal/pocketdtest/rename_test.go"
+}

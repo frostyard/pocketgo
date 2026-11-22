@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A rename’s body must name its title as a string: one without it, or with null, is bad_request and keeps its requestId free, so a malformed request never resets a title to the default.",
+  "evidence": "frostyard/pocketgo#118, Codex CLI review round 1 (codex-cli 0.169.0) of head 11dc5e6: [P2] Require a string title before resetting an existing title",
+  "promoted_to": "service/internal/api/rename_round1_test.go"
+}
