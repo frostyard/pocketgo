@@ -67,9 +67,10 @@ package proto
 // Version 29 adds the owner's saved prompts (ADR-0051): GET /v1/prompts.
 // Version 30 adds a session's changes (ADR-0053): GET
 // /v1/sessions/{id}/changes and GET /v1/sessions/{id}/changes/file.
+// Version 31 renames a private agent's session (ADR-0058): POST
+// /v1/sessions/{id}/title and a session's renamable.
 // Version 32 reopens a closed thread when a message reaches its
 // specialist (ADR-0061): a thread's follows, successor and reopenedAt.
-// Version 31 is frostyard/pocketgo#118's.
 const Version = 32
 
 // HeaderProtocol carries Version on every request.
@@ -92,8 +93,10 @@ const (
 	PathAbort     = "/v1/sessions/{id}/abort"
 	PathStartOver = "/v1/sessions/{id}/start-over"
 	PathModel     = "/v1/sessions/{id}/model"
-	PathUploads   = "/v1/sessions/{id}/uploads"
-	PathQuestion  = "/v1/sessions/{id}/question/{qid}"
+	// PathTitle renames a private agent's session (ADR-0058).
+	PathTitle    = "/v1/sessions/{id}/title"
+	PathUploads  = "/v1/sessions/{id}/uploads"
+	PathQuestion = "/v1/sessions/{id}/question/{qid}"
 	// PathChanges is what a session changed in its git checkout, and
 	// PathChangesFile one file's diff of it (ADR-0053).
 	PathChanges     = "/v1/sessions/{id}/changes"
@@ -137,7 +140,10 @@ const (
 	PathTerminalInput  = "/v1/terminals/{id}/input"
 	PathTerminalResize = "/v1/terminals/{id}/resize"
 	MaxRequestIDSize   = 128
-	MaxMessageSize     = 256 * 1024
+	// MaxTitle is the most bytes of a session's title as a request sends
+	// it, before it is trimmed (rules 9 and 68).
+	MaxTitle       = 200
+	MaxMessageSize = 256 * 1024
 	// MaxUpload is the most bytes an uploaded file has (rule 10a).
 	MaxUpload = 50 << 20
 	// MaxComposedMessage is the most bytes of a message with its attached

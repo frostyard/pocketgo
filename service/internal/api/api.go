@@ -1031,7 +1031,7 @@ func (s *Server) session(ctx context.Context, id int64) (proto.Session, error) {
 	if err != nil {
 		return proto.Session{}, err
 	}
-	return s.wireSession(ctx, row, waiting, question)
+	return s.wireSession(ctx, row, waiting, question, s.renamable(row, s.findProfile()))
 }
 
 // waitsOn says whether session id waits for the owner (rule 11): an
@@ -1053,17 +1053,17 @@ func (s *Server) waitsOn(ctx context.Context, id int64) (bool, *proto.Question, 
 }
 
 // wireSession is a session's summary: waiting says it waits for the
-// owner, and question is its waiting question, nil for none. A usage that
-// cannot be read fails it: a summary with no usage would undo the one a
-// client has.
-func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting bool, question *proto.Question) (proto.Session, error) {
+// owner, question is its waiting question, nil for none, and renamable
+// says the owner may rename it now (ADR-0058). A usage that cannot be
+// read fails it: a summary with no usage would undo the one a client has.
+func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting bool, question *proto.Question, renamable bool) (proto.Session, error) {
 	usage, err := s.engine.Usage(ctx, row.ID)
 	if err != nil {
 		return proto.Session{}, fmt.Errorf("usage of session %d: %w", row.ID, err)
 	}
 	return proto.Session{
 		ID: row.ID, Title: row.Title, Cwd: row.Cwd, Model: proto.ModelRef{Provider: row.Provider, ID: row.Model},
-		Thinking: row.Thinking, Profile: row.Profile, Route: row.Route, Standing: row.Standing, StartedBy: row.StartedBy,
+		Thinking: row.Thinking, Profile: row.Profile, Route: row.Route, Standing: row.Standing, StartedBy: row.StartedBy, Renamable: renamable,
 		State: s.state(waiting, row.ID), Question: question, Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
 }
@@ -1106,6 +1106,7 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathAbort, s.abort},
 		{"POST", proto.PathStartOver, s.startOver},
 		{"POST", proto.PathModel, s.changeModel},
+		{"POST", proto.PathTitle, s.renameSession},
 		{"POST", proto.PathUploads, s.upload},
 		{"POST", proto.PathQuestion, s.answerQuestion},
 		{"GET", proto.PathChanges, s.sessionChanges},
@@ -1421,13 +1422,15 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]proto.Session, 0, len(rows))
+	// The profile folder is read once for every session's renamable.
+	find := s.loadedProfiles()
 	for _, row := range rows {
 		var question *proto.Question
 		if q, ok := questions[row.ID]; ok {
 			wired := approvals.WireQuestion(q)
 			question = &wired
 		}
-		session, err := s.wireSession(r.Context(), row, waiting[row.ID] || question != nil, question)
+		session, err := s.wireSession(r.Context(), row, waiting[row.ID] || question != nil, question, s.renamable(row, find))
 		if err != nil {
 			s.internal(w, "read session", err)
 			return
@@ -1541,8 +1544,8 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 	if profile != nil && profile.Private && cwd != profile.Home {
 		return bad("profile " + profile.ID + " is private: it works only in its home, " + profile.Home)
 	}
-	if len(request.Title) > 200 {
-		return bad("title must be at most 200 bytes")
+	if len(request.Title) > proto.MaxTitle {
+		return bad(fmt.Sprintf("title must be at most %d bytes", proto.MaxTitle))
 	}
 	models, err := s.engine.Models(r.Context())
 	if err != nil {
@@ -1648,8 +1651,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	if exists && made.Model != (proto.ModelRef{}) {
 		title := made.Title
 		if made.Legacy {
-			if len(request.Title) > 200 {
-				writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "title must be at most 200 bytes")
+			if len(request.Title) > proto.MaxTitle {
+				writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, fmt.Sprintf("title must be at most %d bytes", proto.MaxTitle))
 				return
 			}
 			title = strings.TrimSpace(request.Title)
@@ -1755,7 +1758,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, key string
 func (s *Server) recordSession(ctx context.Context, key string, id int64, spec SessionSpec, profile, createdBy string, standing bool) error {
 	title := spec.Title
 	if title == "" {
-		title = "Session " + strconv.FormatInt(id, 10)
+		title = proto.DefaultTitle(id)
 	}
 	row := store.SessionRow{
 		ID: id, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider, Model: spec.Model.ID,

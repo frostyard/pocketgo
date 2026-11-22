@@ -621,3 +621,23 @@ func TestChangesFileSendsItsPathWhole(t *testing.T) {
 		t.Fatalf("diff %+v %v", got, err)
 	}
 }
+
+// A rename posts its body to the session's title path, and reads the
+// session back with its renamable (ADR-0058).
+func TestRenameSessionPostsToTheTitlePath(t *testing.T) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body RenameSession
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/title" ||
+			body != (RenameSession{RequestID: "r1", Title: "Garden plan"}) {
+			t.Errorf("request %s %s %+v %v", r.Method, r.URL.Path, body, err)
+		}
+		_ = json.NewEncoder(w).Encode(Session{ID: 7, Title: "Garden plan", Renamable: true})
+	}))
+	got, err := client.RenameSession(context.Background(), 7, RenameSession{RequestID: "r1", Title: "Garden plan"})
+	if err != nil || got.Title != "Garden plan" || !got.Renamable {
+		t.Fatalf("rename %+v %v", got, err)
+	}
+	if DefaultTitle(7) != "Session 7" {
+		t.Fatalf("the default title is %q", DefaultTitle(7))
+	}
+}

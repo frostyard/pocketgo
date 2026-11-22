@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The fake pocketd's close sets updatedAt to the clock (Now), as pocketd's store.CloseThreadAs writes it, never a time made later than the thread's: pocketd gives no such guarantee, and the client must handle a close as old as or older than the copy it holds.",
+  "evidence": "frostyard/pocketgo#117, Codex CLI review round 1 of head 1b53165: [P2] Match pocketd's close timestamp in the test server",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

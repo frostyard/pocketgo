@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -146,7 +147,11 @@ type Session struct {
 	// StartedBy is the session that started this one, 0 for none: for a
 	// thread's worker, the specialist's session that called team_worker
 	// (rule 23a). No other session names one.
-	StartedBy int64        `json:"startedBy,omitempty"`
+	StartedBy int64 `json:"startedBy,omitempty"`
+	// Renamable says the owner may rename the session now (ADR-0058, rule
+	// 68): it is a private agent's, as its profile was loaded when this
+	// copy was read. pocketd checks again at the rename.
+	Renamable bool         `json:"renamable,omitempty"`
 	State     SessionState `json:"state"`
 	// Question is the question that waits for the owner in this session,
 	// nil while none does (ADR-0048, rule 60): its run waits for the
@@ -946,6 +951,18 @@ type ChangeModel struct {
 	Model     *ModelRef `json:"model,omitempty"`
 	Thinking  string    `json:"thinking,omitempty"`
 }
+
+// RenameSession is the body of POST /v1/sessions/{id}/title: the
+// session's new title, at most MaxTitle bytes, trimmed by the service; an
+// empty one gives the default, DefaultTitle (ADR-0058, rule 68).
+type RenameSession struct {
+	RequestID string `json:"requestId"`
+	Title     string `json:"title"`
+}
+
+// DefaultTitle is the title of session id when it was given none, or an
+// empty one (rules 9 and 68).
+func DefaultTitle(id int64) string { return "Session " + strconv.FormatInt(id, 10) }
 
 // Decide is the body of POST /v1/approvals/{id}.
 type Decide struct {

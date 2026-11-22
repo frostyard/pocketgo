@@ -907,6 +907,43 @@ func (s *Store) TouchSession(ctx context.Context, id int64, at time.Time) error 
 	return err
 }
 
+// RenameSession sets session id's title for the request key, of kind, in
+// one transaction with the request's record (ADR-0058): a key recorded
+// already for kind renames nothing again (replayed), one of another kind
+// is ErrRequestReused, and a session that is not there is ErrNotFound,
+// with no record. The session's updated_at stays: a rename is not
+// activity, and moves the session nowhere in the list.
+func (s *Store) RenameSession(ctx context.Context, key, kind string, id int64, title string) (replayed bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, existed, err := claimRequest(ctx, tx, key, kind, s.millis())
+	if err != nil {
+		return false, err
+	}
+	if existed {
+		return true, nil
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE sessions SET title = ? WHERE id = ?`, title, id)
+	if err != nil {
+		return false, err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return false, err
+	} else if n == 0 {
+		return false, ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET result = ? WHERE key = ?`, sessionRenamed, key); err != nil {
+		return false, err
+	}
+	return false, tx.Commit()
+}
+
+// sessionRenamed is the result of a rename's request.
+const sessionRenamed = "renamed"
+
 // A request record binds a device-scoped request key to one operation on
 // one target (its kind, for example "abort:12") and keeps its result, so a
 // retry replays the first outcome and a reused key for another operation is
