@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -67,7 +68,9 @@ func (d *Data) BeginChanges(id int64) Fetch {
 
 // SetChanges records fetch f's answer for session id, unless a fetch of
 // them begun later answered already: a run's end fetches again, and the
-// older answer would put back what the run changed since.
+// older answer would put back what the run changed since. The diff shown
+// of a file of the session that the whole list no longer names goes: the
+// file is as at the base again, and pocketd shows no diff of it.
 func (d *Data) SetChanges(f Fetch, id int64, c proto.Changes) {
 	sc := d.changes[id]
 	if sc == nil || !sc.list.answer(f) {
@@ -78,6 +81,10 @@ func (d *Data) SetChanges(f Fetch, id int64, c proto.Changes) {
 		c.Files = []proto.ChangedFile{}
 	}
 	sc.Status, sc.Err, sc.Changes = ListLoaded, "", c
+	if shown := d.diff; shown != nil && shown.Session == id && c.More == 0 &&
+		!slices.ContainsFunc(c.Files, func(f proto.ChangedFile) bool { return f.Path == shown.Path }) {
+		d.diff = nil
+	}
 }
 
 // SetChangesError records that fetch f of session id's changes failed,
@@ -320,9 +327,14 @@ func (s *Store) LoadChanges(id int64) {
 		} else {
 			s.Data.SetChanges(f, id, out)
 		}
+		// The fetch that follows goes only while the session is still
+		// tracked: one the client stopped showing is fetched afresh when
+		// it shows it again.
 		if s.changesAgain[id] {
 			delete(s.changesAgain, id)
-			s.LoadChanges(id)
+			if s.Data.ChangesTracked()[id] {
+				s.LoadChanges(id)
+			}
 		}
 	}))
 }

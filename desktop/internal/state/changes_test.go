@@ -279,22 +279,79 @@ func TestAChangesFetchAskedForInFlightFollowsIt(t *testing.T) {
 	h := newHarness(t)
 	h.srv.AddSession(session(1, "Fix CI", 0))
 	h.connect(t)
+	h.store.Open(1)
+	h.settle(t)
 	path := "/v1/sessions/1/changes"
+	if n := len(h.srv.RequestsTo("GET", path)); n != 1 {
+		t.Fatalf("%d fetches as it opened", n)
+	}
 	release := h.srv.HoldAnswerOnce("GET", path)
 	h.store.LoadChanges(1)
 	h.loop.RunUntil(t, func() bool { return h.srv.Holding("GET", path) })
 	h.store.LoadChanges(1)
 	h.store.LoadChanges(1)
-	if n := len(h.srv.RequestsTo("GET", path)); n != 1 {
+	if n := len(h.srv.RequestsTo("GET", path)); n != 2 {
 		t.Fatalf("%d fetches in flight", n)
 	}
 	h.srv.SetChanges(changesOf(1))
 	release()
 	h.settle(t)
-	if n := len(h.srv.RequestsTo("GET", path)); n != 2 {
+	if n := len(h.srv.RequestsTo("GET", path)); n != 3 {
 		t.Fatalf("%d fetches", n)
 	}
 	if got, ok := h.store.Data.Changes(1); ChangesSummary(got, ok) != "4 files +120 −8" {
 		t.Fatalf("changes %+v", got)
+	}
+}
+
+// A session the client stopped tracking while its fetch was in flight gets
+// no fetch after it: it is fetched afresh when it shows again.
+func TestAFetchAfterOneInFlightGoesOnlyWhileTracked(t *testing.T) {
+	h := newHarness(t)
+	h.srv.AddSession(session(1, "Fix CI", 0))
+	h.srv.AddSession(session(2, "Other", 0))
+	h.connect(t)
+	h.store.Open(1)
+	h.settle(t)
+	path := "/v1/sessions/1/changes"
+	release := h.srv.HoldAnswerOnce("GET", path)
+	h.store.LoadChanges(1)
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding("GET", path) })
+	h.store.LoadChanges(1)
+	h.store.Open(2)
+	release()
+	h.settle(t)
+	if n := len(h.srv.RequestsTo("GET", path)); n != 2 {
+		t.Fatalf("%d fetches of a session no longer tracked", n)
+	}
+	if _, ok := h.store.Data.Changes(1); ok {
+		t.Fatal("a session no longer tracked keeps its changes")
+	}
+}
+
+// The diff shown of a file the session's changes no longer name goes, as
+// pocketd shows no diff of it; while the list is cut, the file may be among
+// those left out, and it stays.
+func TestADiffWhoseFileLeftTheChangesGoes(t *testing.T) {
+	var d Data
+	f := d.BeginChanges(1)
+	d.SetChanges(f, 1, changesOf(1))
+	d.BeginDiff(1, "internal/run/retry.go")
+	cut := changesOf(1)
+	cut.Files, cut.More = cut.Files[:1], 3
+	d.SetChanges(d.BeginChanges(1), 1, cut)
+	if _, ok := d.Diff(); !ok {
+		t.Fatal("a cut list closed the diff of a file it may leave out")
+	}
+	other := changesOf(2)
+	d.SetChanges(d.BeginChanges(2), 2, other)
+	if _, ok := d.Diff(); !ok {
+		t.Fatal("another session's list closed the diff")
+	}
+	gone := changesOf(1)
+	gone.Files = gone.Files[:1]
+	d.SetChanges(d.BeginChanges(1), 1, gone)
+	if got, ok := d.Diff(); ok {
+		t.Fatalf("the diff of a file no longer changed shows: %+v", got)
 	}
 }
