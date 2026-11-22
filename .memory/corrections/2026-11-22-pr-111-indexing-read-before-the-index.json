@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A search reads whether the index is behind before it reads the index, so a pass that ends during the search never makes an answer that missed a hit say nothing is missing.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P2] Sample indexing status before reading search hits",
+  "promoted_to": "service/internal/api/search_test.go"
+}

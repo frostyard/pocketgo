@@ -97,8 +97,12 @@ type Row struct {
 	// Key is the row's identity, stable as rows come and go: "e<id>" for
 	// an entry's words, "c<call id>" for a tool call, "live" and
 	// "working" for the run at work.
-	Key      string
-	Kind     RowKind
+	Key  string
+	Kind RowKind
+	// Entry is the transcript entry the row was built from: its words, or
+	// one of its tool calls; 0 for the run at work and a queued message.
+	// A search's hit opens at it (TargetRow).
+	Entry    int64
 	Text     string
 	Thinking string
 	Tool     *ToolRow
@@ -232,6 +236,8 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 	}
 	for i, e := range entries {
 		key := fmt.Sprintf("e%d", e.ID)
+		// The rows this entry builds stand for it (Row.Entry).
+		first := len(b.rows)
 		switch e.Kind {
 		case proto.EntryUser:
 			b.add(userRow(key, e.Text, e.Images, e.Files, false, e.Sender))
@@ -274,6 +280,9 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 				name = string(e.Kind)
 			}
 			b.add(Row{Key: key, Kind: RowNote, Text: "An entry this client does not show (" + name + ")"})
+		}
+		for j := first; j < len(b.rows); j++ {
+			b.rows[j].Entry = e.ID
 		}
 	}
 	if pe := live.Partial; pe != nil {

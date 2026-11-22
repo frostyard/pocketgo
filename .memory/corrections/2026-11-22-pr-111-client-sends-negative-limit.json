@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "proto",
+  "correction": "proto.Client.Search sends every limit but 0, the service's default, so the service refuses a negative one rather than the client turning it into the default.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P3] Do not turn a negative client limit into the default",
+  "promoted_to": "proto/search_test.go"
+}

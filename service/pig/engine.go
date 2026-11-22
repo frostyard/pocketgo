@@ -1111,6 +1111,36 @@ func entriesBetween(ctx context.Context, conversation harness.Conversation, afte
 	}
 }
 
+// EntriesAfter is at most most of session id's entries after entry after,
+// oldest first, as the search index reads them (ADR-0050): read a few
+// records at a time (recordsAtOnce), and not placed, since a search names
+// no submission or sender.
+func (e *Engine) EntriesAfter(ctx context.Context, id, after int64, most int) ([]proto.Entry, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	minID, order := durable.EntryId(after+1), durable.ScanAscending
+	var out []proto.Entry
+	var cursor durable.Cursor
+	for len(out) < most {
+		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, Order: &order}, min(recordsAtOnce, most-len(out)), cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range page.Items {
+			if len(out) < most {
+				out = append(out, wireEntry(record))
+			}
+		}
+		if page.Next == nil {
+			break
+		}
+		cursor = *page.Next
+	}
+	return out, nil
+}
+
 // RunIdentity names the session's current run by its first entry; busy is
 // false when no run is in progress.
 func (e *Engine) RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error) {

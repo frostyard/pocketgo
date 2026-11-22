@@ -773,6 +773,11 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	// standing session, and a start a stop interrupted finishes, after
 	// Resume, as the schedules do; serving does not wait for it.
 	server.StartLaunches()
+	// The search index reads every session's entries after its cursor,
+	// then each one an entry's event notes (ADR-0050): it reads PiG and
+	// submits nothing, and serving does not wait for it, as the first
+	// start with search reads every transcript.
+	server.StartIndex()
 
 	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	served := make(chan error, 1)
