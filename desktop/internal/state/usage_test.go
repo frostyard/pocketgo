@@ -338,7 +338,7 @@ func TestTheTotalsAreFetchedAgainWhenASessionsUsageChanges(t *testing.T) {
 	}
 	before := len(h.srv.RequestsTo(http.MethodGet, proto.PathUsage))
 	s.Title = "Renamed"
-	ev := h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s})
+	ev := emitSession(h, s)
 	h.loop.RunUntil(t, func() bool { return h.store.lastSeq == ev.Seq })
 	h.settle(t)
 	if got := len(h.srv.RequestsTo(http.MethodGet, proto.PathUsage)); got != before {
@@ -346,12 +346,18 @@ func TestTheTotalsAreFetchedAgainWhenASessionsUsageChanges(t *testing.T) {
 	}
 	h.srv.SetUsage(proto.UsageReport{Days: []proto.UsageDay{usageDay("2026-11-18", modelUsage("deepseek", 1_200, 0.42))}})
 	s.Usage = proto.Usage{Total: 1_200, Cost: 0.42}
-	h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s})
+	emitSession(h, s)
 	h.loop.RunUntil(t, func() bool { today, _, shown := h.store.UsageTotals(); return shown && today.Usage.Total == 1_200 })
 	h.settle(t)
 	if got := len(h.srv.RequestsTo(http.MethodGet, proto.PathUsage)); got != before+1 {
 		t.Errorf("%d fetches after a usage change, want %d", got, before+1)
 	}
+}
+
+// emitSession emits a session event of a copy of s: the fake writes the
+// event out on the stream's goroutine, after the test changed s again.
+func emitSession(h *harness, s proto.Session) proto.Event {
+	return h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s})
 }
 
 // Changes of usage that come while the totals' fetch runs share one more
@@ -364,12 +370,12 @@ func TestUsageChangesShareOneFetch(t *testing.T) {
 	before := len(h.srv.RequestsTo(http.MethodGet, proto.PathUsage))
 	release := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathUsage)
 	s.Usage.Total = 1
-	h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s})
+	emitSession(h, s)
 	h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodGet, proto.PathUsage) })
 	var last proto.Event
 	for i := range 5 {
 		s.Usage.Total = int64(i + 2)
-		last = h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s})
+		last = emitSession(h, s)
 	}
 	h.loop.RunUntil(t, func() bool { return h.store.lastSeq == last.Seq })
 	release()

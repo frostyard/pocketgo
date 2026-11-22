@@ -61,7 +61,7 @@
 - The first report after a start reads the last week's answers of every session updated in it. Later reports read only what is new, but the sums stay in memory, a map of days and models for each session read.
 - The days count answers only. A compaction's summarizing request, which PiG puts in the session's ledger, is in no day, so a standing session's day can read lower than its `usage` grew.
 - A clock that moves back can put an answer before an older one. The newest-first read then stops early, and a few answers count nowhere.
-- A report the client keeps across a midnight moves its week on by 24-hour days, so on a daylight-saving day it can be an hour off until the next fetch.
+- A report the client keeps across a midnight moves its week on by 24-hour days, so on a daylight-saving day it can be an hour off until the next fetch. A client clock ahead of the service's shows today empty for the minutes between the two midnights.
 - The week is the last 7 days, not the calendar week: on a Monday, a calendar week would read nearly as today does.
 - Every client must be rebuilt for protocol version 27.
 
