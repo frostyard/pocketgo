@@ -65,8 +65,8 @@ func TestAPrivateProfilesSessionHasNoTeam(t *testing.T) {
 	if got := sessionInstructionsOf(t, e, private); got != want {
 		t.Fatalf("a private agent's instructions:\n%s", got)
 	}
-	if got := agentTools(t, e, private); !slices.Equal(got, []string{"read", "bash", toolQuestion}) {
-		t.Fatalf("a private agent's tools %q, want its profile's and question (ADR-0048)", got)
+	if got := agentTools(t, e, private); !slices.Equal(got, []string{"read", "bash", toolQuestion, toolOwnSchedule}) {
+		t.Fatalf("a private agent's tools %q, want its profile's, question (ADR-0048) and schedule (ADR-0060)", got)
 	}
 	teamID, err := e.CreateSession(ctx, "vera", api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: vera, Lessons: section})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestAPrivateProfilesSessionHasNoTeam(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := agentTools(t, e, id); !slices.Equal(got, []string{"read", "write", "edit", "bash", toolQuestion}) {
+		if got := agentTools(t, e, id); !slices.Equal(got, []string{"read", "write", "edit", "bash", toolQuestion, toolOwnSchedule}) {
 			t.Errorf("%s: tools %q", name, got)
 		}
 		if got := sessionInstructionsOf(t, e, id); strings.Contains(got, "Delegate to vera.") || strings.Contains(got, "the team's") {
@@ -132,7 +132,7 @@ func TestAStandingSessionMadePrivateLeavesTheTeam(t *testing.T) {
 		if got := sessionInstructionsOf(t, e, id); got != want {
 			t.Fatalf("%s: instructions\n%s", way, got)
 		}
-		if got := agentTools(t, e, id); !slices.Equal(got, []string{"read", "write", "edit", "bash", toolQuestion}) {
+		if got := agentTools(t, e, id); !slices.Equal(got, []string{"read", "write", "edit", "bash", toolQuestion, toolOwnSchedule}) {
 			t.Fatalf("%s: tools %q", way, got)
 		}
 		// The same private profile again changes nothing: no lessons
@@ -173,7 +173,7 @@ func TestAStandingSessionMadePrivateWithoutAFilterGetsEveryTool(t *testing.T) {
 		if err != nil || did != api.ReconfigureApplied {
 			t.Fatalf("%s: %v, %v", way, did, err)
 		}
-		if got := agentTools(t, e, id); !slices.Equal(got, []string{"read", "write", "edit", "bash", toolQuestion}) {
+		if got := agentTools(t, e, id); !slices.Equal(got, []string{"read", "write", "edit", "bash", toolQuestion, toolOwnSchedule}) {
 			t.Fatalf("%s: tools %q, want every coding tool and no team tool", way, got)
 		}
 	}

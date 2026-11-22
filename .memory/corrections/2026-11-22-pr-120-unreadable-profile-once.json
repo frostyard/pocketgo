@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "An upgrade pass over every session (upgradePrivateSchedules, upgradeSupervisorTools) reads a profile it cannot read once a pass and skips that profile's other sessions until the next pass: serving waits for the start's pass, and a failed pass runs again every minute.",
+  "evidence": "frostyard/pocketgo#120, Codex CLI review round 1 of head b96fecd: [P2] Cache unreadable profiles for the rest of the upgrade pass",
+  "promoted_to": "service/internal/api/schedule_private_round1_test.go"
+}
