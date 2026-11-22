@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The fake pocketd validates and normalizes a body exactly as the service's rule does (team.CheckAnswer for a question's answer), so desktop tests tell a refused body from a valid one sent in another order.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 2 (codex-cli 0.169.0) of head e060399: [P3] Match pocketd's validation of question answer bodies",
+  "promoted_to": "desktop/internal/pocketdtest/question_test.go"
+}

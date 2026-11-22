@@ -95,13 +95,16 @@ type Engine struct {
 	notes    []string
 	coding   *durable.Extension
 	approval *durable.Extension
-	// teamExt holds the team tools, which call team (ADR-0014).
-	teamExt   *durable.Extension
-	team      Team
-	mu        sync.Mutex
-	watches   map[int64]*watcher
-	closeOnce sync.Once
-	protected []string
+	// teamExt holds the team tools, which call team (ADR-0014), and
+	// questionExt the question tool, which a private agent's session
+	// gets with no team tool (ADR-0048).
+	teamExt     *durable.Extension
+	questionExt *durable.Extension
+	team        Team
+	mu          sync.Mutex
+	watches     map[int64]*watcher
+	closeOnce   sync.Once
+	protected   []string
 	// readOnly are the folders the file tools read but never change
 	// (guardedEnv.readOnly, ADR-0035); the sandbox's shown paths, which
 	// since ADR-0045 include the owner's global instructions file.
@@ -273,6 +276,10 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 	}
 	e.teamExt = e.teamExtension()
 	if err := registry.Install(e.teamExt); err != nil {
+		return nil, err
+	}
+	e.questionExt = e.questionExtension()
+	if err := registry.Install(e.questionExt); err != nil {
 		return nil, err
 	}
 	store, err := sqlitenode.OpenNodeSqliteStorage(filepath.Join(opts.DataDir, DurableFile), sqlitenode.NodeSqliteStorageOptions{})
@@ -793,7 +800,11 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 	}
 	readOnly := spec.Review || spec.Consult != 0 || spec.Plan != 0 || spec.Gather != 0
 	private := spec.Profile != nil && spec.Profile.Private
-	if role := roleTools(spec); len(role) > 0 || private {
+	// A supervisor's and a private agent's session, working as no thread,
+	// review, worker, consult or gather, puts questions to the owner
+	// (ADR-0048).
+	asks := team.MayQuestion(spec.Profile, questionRole(spec))
+	if role := roleTools(spec); len(role) > 0 || private || asks {
 		// The profile's tools, or every coding tool, and the team tools of
 		// the session's role (ADR-0014), exactly: the team extension holds
 		// all three, and only these are offered. A private agent's list is
@@ -815,10 +826,15 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 		if err != nil {
 			return nil, nil, err
 		}
-		if len(role) == 0 {
-			return extensions, list, nil
+		if len(role) > 0 {
+			extensions, list = append(extensions, e.teamExt), append(list, e.teamTools(role)...)
 		}
-		return append(extensions, e.teamExt), append(list, e.teamTools(role)...), nil
+		// The question tool comes after the team tools, in its own
+		// extension: a private agent gets it with none of them.
+		if asks {
+			extensions, list = append(extensions, e.questionExt), append(list, e.questionExt.Tools...)
+		}
+		return extensions, list, nil
 	}
 	if spec.Profile != nil && spec.Profile.Tools != nil {
 		// Exactly the profile's tools (ADR-0013).

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A wait for something the owner was shown never ends on a transient read failure: it tries the read again with a cancellable backoff, and ends only on its context or a row that is gone, so no published question is left without the call that takes its answer.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 2 (codex-cli 0.169.0) of head e060399: [P2] Retry transient reads after a question has been published",
+  "promoted_to": "service/internal/approvals/questions_test.go"
+}

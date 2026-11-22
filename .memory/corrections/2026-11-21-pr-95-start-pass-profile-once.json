@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A start pass that serving waits for reads each profile once per pass and does per-session queries only for sessions of profiles it can change: its cost must not grow with the whole session history.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 2 (codex-cli 0.169.0) of head e060399: [P2] Avoid rereading each historical session's profile at startup",
+  "promoted_to": "service/internal/api/questions_test.go"
+}

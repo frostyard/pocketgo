@@ -139,6 +139,11 @@ type Engine interface {
 	Usage(ctx context.Context, id int64) (proto.Usage, error)
 	// RunIdentity names the session's current run by its first entry.
 	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
+	// RunStarter is the request key of the submission that started the
+	// session's current run, the one that placed its first entry: "" for
+	// a run that no submission's entry starts, busy false for no run
+	// (ADR-0048).
+	RunStarter(ctx context.Context, id int64) (key string, busy bool, err error)
 	WaitIdle(ctx context.Context, id int64) error
 	TaskEnded(ctx context.Context, taskID int64) (bool, error)
 	// SetVerdictTool gives team_verdict to a review thread's session, or
@@ -154,6 +159,10 @@ type Engine interface {
 	// session was made before it existed, and says whether it did
 	// (ADR-0036).
 	SetGitHubTool(ctx context.Context, id int64) (bool, error)
+	// SetQuestionTool gives the question tool to a session made before
+	// it, and says whether it did (ADR-0048): the caller decides which
+	// sessions get it (team.MayQuestion).
+	SetQuestionTool(ctx context.Context, id int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
@@ -671,6 +680,11 @@ type Server struct {
 	// freeTerminalStart frees the request of a start whose shell did not
 	// start (store.DeleteRequest); tests make it fail.
 	freeTerminalStart func(ctx context.Context, key string) error
+	// questions hold the question tool's calls for the owner's answer
+	// (ADR-0048), on the server's clock; questionTimer skips a question
+	// at its deadline, and tests fire it themselves.
+	questions     *approvals.Questions
+	questionTimer func(d time.Duration, f func()) (cancel func())
 }
 
 // New returns a server.
@@ -703,6 +717,11 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 	server.launchStanding = server.openStandingFor
 	server.markLaunchFailed = s.MarkLaunchStartFailed
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
+	server.questionTimer = func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } }
+	// The clock and the timer are read at each use, so a test that
+	// replaces them replaces them here too.
+	server.questions = approvals.NewQuestions(s, server.publishQuestion, func() time.Time { return server.now() },
+		func(d time.Duration, f func()) func() { return server.questionTimer(d, f) })
 	return server
 }
 
@@ -837,7 +856,8 @@ func (s *Server) PublishApproval(approval proto.Approval) {
 }
 
 // state is a session's state (rule 11): waiting while an approval of it is
-// pending, running while its run is busy, idle otherwise.
+// pending or its question waits (waitsOn), running while its run is busy,
+// idle otherwise.
 func (s *Server) state(waiting bool, id int64) proto.SessionState {
 	if waiting {
 		return proto.SessionWaiting
@@ -881,7 +901,7 @@ func (s *Server) publishSessionLocked(id int64, always bool) {
 		delete(s.untouched, id)
 	}
 	if !always {
-		waiting, err := s.store.HasPendingApproval(ctx, id)
+		waiting, _, err := s.waitsOn(ctx, id)
 		if err != nil {
 			s.log.Warn("pending approvals", "session", id, "err", err)
 			s.retryLocked(id)
@@ -938,16 +958,36 @@ func (s *Server) session(ctx context.Context, id int64) (proto.Session, error) {
 	if err != nil {
 		return proto.Session{}, err
 	}
-	waiting, err := s.store.HasPendingApproval(ctx, id)
+	waiting, question, err := s.waitsOn(ctx, id)
 	if err != nil {
 		return proto.Session{}, err
 	}
-	return s.wireSession(ctx, row, waiting)
+	return s.wireSession(ctx, row, waiting, question)
 }
 
-// wireSession is a session's summary. A usage that cannot be read fails it:
-// a summary with no usage would undo the one a client has.
-func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting bool) (proto.Session, error) {
+// waitsOn says whether session id waits for the owner (rule 11): an
+// approval of it pending, or its question waiting, which it gives
+// (ADR-0048).
+func (s *Server) waitsOn(ctx context.Context, id int64) (bool, *proto.Question, error) {
+	pending, err := s.store.HasPendingApproval(ctx, id)
+	if err != nil {
+		return false, nil, err
+	}
+	row, err := s.store.WaitingQuestion(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return pending, nil, nil
+	} else if err != nil {
+		return false, nil, err
+	}
+	question := approvals.WireQuestion(row)
+	return true, &question, nil
+}
+
+// wireSession is a session's summary: waiting says it waits for the
+// owner, and question is its waiting question, nil for none. A usage that
+// cannot be read fails it: a summary with no usage would undo the one a
+// client has.
+func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting bool, question *proto.Question) (proto.Session, error) {
 	usage, err := s.engine.Usage(ctx, row.ID)
 	if err != nil {
 		return proto.Session{}, fmt.Errorf("usage of session %d: %w", row.ID, err)
@@ -955,7 +995,7 @@ func (s *Server) wireSession(ctx context.Context, row store.SessionRow, waiting 
 	return proto.Session{
 		ID: row.ID, Title: row.Title, Cwd: row.Cwd, Model: proto.ModelRef{Provider: row.Provider, ID: row.Model},
 		Thinking: row.Thinking, Profile: row.Profile, Route: row.Route, Standing: row.Standing, StartedBy: row.StartedBy,
-		State: s.state(waiting, row.ID), Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		State: s.state(waiting, row.ID), Question: question, Usage: usage, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}, nil
 }
 
@@ -998,6 +1038,7 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathStartOver, s.startOver},
 		{"POST", proto.PathModel, s.changeModel},
 		{"POST", proto.PathUploads, s.upload},
+		{"POST", proto.PathQuestion, s.answerQuestion},
 		{"GET", proto.PathApprovals, s.pending},
 		{"POST", proto.PathApproval, s.decide},
 		{"GET", proto.PathThreads, s.threads},
@@ -1238,7 +1279,7 @@ func (s *Server) profileList(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range valid {
 		wire := proto.Profile{ID: p.ID, Name: p.Name, Role: proto.Role(p.Role), Model: p.Model, Home: p.Home, Cwd: p.Start(),
-			Private: p.Private, Tools: p.Tools, Standing: p.Standing, CompactAt: p.CompactAt}
+			Private: p.Private, Tools: p.Tools, Standing: p.Standing, CompactAt: p.CompactAt, QuestionMinutes: p.QuestionMinutes}
 		// Each with its checkout: New Session works there (ADR-0027).
 		for name, folder := range p.Repositories {
 			wire.Repositories = append(wire.Repositories, proto.Repository{Name: name, Folder: folder})
@@ -1300,9 +1341,19 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "list approvals", err)
 		return
 	}
+	questions, err := s.store.WaitingQuestions(r.Context())
+	if err != nil {
+		s.internal(w, "list questions", err)
+		return
+	}
 	out := make([]proto.Session, 0, len(rows))
 	for _, row := range rows {
-		session, err := s.wireSession(r.Context(), row, waiting[row.ID])
+		var question *proto.Question
+		if q, ok := questions[row.ID]; ok {
+			wired := approvals.WireQuestion(q)
+			question = &wired
+		}
+		session, err := s.wireSession(r.Context(), row, waiting[row.ID] || question != nil, question)
 		if err != nil {
 			s.internal(w, "read session", err)
 			return
@@ -1997,6 +2048,12 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	// Only ended tasks count, so a run started meanwhile keeps its own.
 	if err := s.approvals.RetireEnded(ctx, id, s.engine.TaskEnded); err != nil {
 		s.internal(w, "retire approvals", err)
+		return
+	}
+	// Its question is skipped the same way, with the reason aborted
+	// (ADR-0048).
+	if err := s.questions.RetireEnded(ctx, id, s.engine.TaskEnded); err != nil {
+		s.internal(w, "skip the aborted run's question", err)
 		return
 	}
 	if err := s.store.CompleteRequest(ctx, key, abortDone); err != nil {

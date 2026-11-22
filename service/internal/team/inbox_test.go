@@ -315,7 +315,34 @@ func TestInboxTextNamesAsksAsAsks(t *testing.T) {
 			t.Errorf("the answer lacks %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(strings.ToLower(text), "question") {
+	// The questions' own list alone names questions (ADR-0048).
+	asks := strings.Replace(text, "Questions waiting in sessions: none.\n", "", 1)
+	if strings.Contains(strings.ToLower(asks), "question") {
 		t.Errorf("the answer names something a question:\n%s", text)
+	}
+}
+
+// The answer lists each session whose question waits for the owner, as
+// the desktop's Inbox counts it, apart from the asks, by its session and
+// agent and never by the question's words, which may be a private agent's
+// (ADR-0048; Codex review of #95, round 1). A settled question is not
+// listed.
+func TestInboxTextListsTheSessionsWhoseQuestionWaits(t *testing.T) {
+	in := inboxFixture()
+	in.Questions = []InboxQuestion{
+		{Question: proto.Question{ID: "q1", SessionID: 3, Question: "Tea or coffee?", State: proto.QuestionWaiting, CreatedAt: in.Now.Add(-4 * time.Minute),
+			Deadline: in.Now.Add(26 * time.Minute)}, Profile: "chani"},
+		{Question: proto.Question{ID: "q2", SessionID: 9, Question: "Which database?", State: proto.QuestionAnswered}, Profile: "odrade"},
+	}
+	text := InboxText(in)
+	want := "Questions waiting in sessions (1):\n- session 3 · chani · waits for the owner's answer since 4m ago (Sat 21 Nov 14:56 UTC); skipped at Sat 21 Nov 15:26 UTC if none comes\n"
+	if !strings.Contains(text, want) {
+		t.Fatalf("the answer lacks %q:\n%s", want, text)
+	}
+	if strings.Contains(text, "Tea or coffee") || strings.Contains(text, "session 9") {
+		t.Fatalf("the answer shows a question's words or a settled one:\n%s", text)
+	}
+	if !strings.Contains(text, "\nAsks (1):\n") {
+		t.Fatalf("the asks moved:\n%s", text)
 	}
 }

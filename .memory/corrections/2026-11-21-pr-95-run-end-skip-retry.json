@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A cleanup that may be the only path left (a question whose abort a restart finished) is tried again after a failure, as a pass Stop waits for, rechecking its condition each time, never only logged until some later event.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 2 (codex-cli 0.169.0) of head e060399: [P2] Retry retirement when an ended run has no waiter",
+  "promoted_to": "service/internal/api/questions_test.go"
+}

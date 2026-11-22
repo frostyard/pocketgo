@@ -49,6 +49,11 @@ type Team interface {
 	TeamPropose(ctx context.Context, call api.TeamCall, c team.ProposeCall) (string, error)
 	TeamGitHub(ctx context.Context, call api.TeamCall, r team.GitHubRead) (string, error)
 	TeamLaunch(ctx context.Context, call api.TeamCall, c team.LaunchCall) (string, error)
+	// Question puts a question to the owner and waits for the answer
+	// (ADR-0048). It is no team tool: TeamAllows does not run before it,
+	// and it checks its caller itself. ctx ending ends the wait with
+	// ctx's error.
+	Question(ctx context.Context, call api.TeamCall, q team.Question) (string, error)
 	TeamInbox(ctx context.Context, call api.TeamCall) (string, error)
 }
 
@@ -1297,15 +1302,7 @@ func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	var own []*durable.ToolRegistration
-	var team []string
-	for _, tool := range agent.Tools {
-		if e.isTeamTool(tool.Name) {
-			team = append(team, tool.Name)
-		} else {
-			own = append(own, tool)
-		}
-	}
+	own, team, tail := e.splitTools(agent.Tools)
 	if !slices.Contains(team, toolDelegate) {
 		return false, nil
 	}
@@ -1318,7 +1315,7 @@ func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	if !missing {
 		return false, nil
 	}
-	list := append(own, e.teamTools(team)...)
+	list := append(append(own, e.teamTools(team)...), tail...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
@@ -1338,20 +1335,30 @@ func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var own []*durable.ToolRegistration
-	var team []string
-	for _, tool := range agent.Tools {
-		if e.isTeamTool(tool.Name) {
-			team = append(team, tool.Name)
-		} else {
-			own = append(own, tool)
-		}
-	}
+	own, team, tail := e.splitTools(agent.Tools)
 	if !slices.Contains(team, toolPlan) && !slices.Contains(team, toolFinding) || slices.Contains(team, toolGitHub) {
 		return false, nil
 	}
-	list := append(own, e.teamTools(append(team, toolGitHub))...)
+	list := append(append(own, e.teamTools(append(team, toolGitHub))...), tail...)
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
+}
+
+// splitTools splits a session's tools into its own (the coding tools),
+// the names of its team tools and its tail, the question tool, which
+// comes after the team tools (toolsOf, ADR-0048): a team tool given later
+// goes among the team tools, before the tail.
+func (e *Engine) splitTools(tools []*durable.ToolRegistration) (own []*durable.ToolRegistration, team []string, tail []*durable.ToolRegistration) {
+	for _, tool := range tools {
+		switch {
+		case e.isTeamTool(tool.Name):
+			team = append(team, tool.Name)
+		case tool.Name == toolQuestion:
+			tail = append(tail, tool)
+		default:
+			own = append(own, tool)
+		}
+	}
+	return own, team, tail
 }
 
 // isTeamTool says name is one of the team extension's tools.

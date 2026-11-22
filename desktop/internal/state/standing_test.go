@@ -49,7 +49,7 @@ func TestBuildRowsShowsCompactionsAndResets(t *testing.T) {
 		{ID: 2, Kind: proto.EntryCompaction, Text: "## Goal\nPlan the week."},
 		{ID: 3, Kind: proto.EntryReset},
 	}
-	rows := BuildRows(entries, proto.Live{SessionID: 1, Compacting: true}, nil)
+	rows := BuildRows(entries, proto.Live{SessionID: 1, Compacting: true}, nil, nil)
 	if len(rows) != 4 {
 		t.Fatalf("rows %+v", rows)
 	}
@@ -62,7 +62,7 @@ func TestBuildRowsShowsCompactionsAndResets(t *testing.T) {
 	if r := rows[3]; r.Kind != RowWorking || r.Text != CompactingNote || !r.Live {
 		t.Errorf("the compaction at work %+v", r)
 	}
-	if rows := BuildRows(entries, proto.Live{SessionID: 1}, nil); len(rows) != 3 {
+	if rows := BuildRows(entries, proto.Live{SessionID: 1}, nil, nil); len(rows) != 3 {
 		t.Errorf("no compaction at work: %+v", rows)
 	}
 }

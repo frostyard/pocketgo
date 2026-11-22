@@ -312,6 +312,10 @@ func (s *Server) runEnded(id int64) {
 	// A standing session follows its profile, and compacts early
 	// (ADR-0026).
 	s.standingRunEnded(id)
+	// A question whose task ended with its run is skipped, as an abort
+	// skips it: one whose abort a restart finished never waits again
+	// (ADR-0048; Codex review of #95, round 1).
+	s.questionsRunEnded(id)
 	if s.afterRunEnded != nil {
 		s.afterRunEnded(id)
 	}

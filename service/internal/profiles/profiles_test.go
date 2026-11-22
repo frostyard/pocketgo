@@ -458,6 +458,40 @@ func TestAProfileKeepsAStandingSession(t *testing.T) {
 	}
 }
 
+// A supervisor's or a private profile may name how long a question of
+// its sessions waits for the owner (ADR-0048): a whole number of minutes,
+// 1 to a day; a profile whose sessions get no question tool names none.
+func TestAProfileNamesHowLongItsQuestionsWait(t *testing.T) {
+	with := strings.Replace(standing, "compactAt: 300000\n", "compactAt: 300000\nquestionMinutes: 45\n", 1)
+	p, err := Parse("odrade", []byte(with), home)
+	if err != nil || p.QuestionMinutes != 45 {
+		t.Fatalf("questionMinutes %d, %v", p.QuestionMinutes, err)
+	}
+	if p, err := Parse("odrade", []byte(standing), home); err != nil || p.QuestionMinutes != 0 {
+		t.Errorf("no questionMinutes: %d, %v", p.QuestionMinutes, err)
+	}
+	private := "---\nmodel: anthropic/claude-opus-5-5\nhome: ~/chani\nprivate: true\nquestionMinutes: 1440\n---\n# Chani\n"
+	if p, err := Parse("chani", []byte(private), home); err != nil || p.QuestionMinutes != 1440 {
+		t.Errorf("a private profile's questionMinutes: %+v, %v", p, err)
+	}
+	for name, change := range map[string][2]string{
+		"as text":       {"questionMinutes: 45", `questionMinutes: "45"`},
+		"a fraction":    {"questionMinutes: 45", "questionMinutes: 4.5"},
+		"zero":          {"questionMinutes: 45", "questionMinutes: 0"},
+		"negative":      {"questionMinutes: 45", "questionMinutes: -5"},
+		"over a day":    {"questionMinutes: 45", "questionMinutes: 1441"},
+		"an agent's":    {"role: supervisor\n", ""},
+		"a clerk's":     {"role: supervisor", "role: clerk"},
+		"named twice":   {"questionMinutes: 45", "questionMinutes: 45\nquestionMinutes: 45"},
+		"a list":        {"questionMinutes: 45", "questionMinutes: [45]"},
+		"spelt in caps": {"questionMinutes: 45", "QuestionMinutes: 45"},
+	} {
+		if _, err := Parse("odrade", []byte(strings.Replace(with, change[0], change[1], 1)), home); err == nil {
+			t.Errorf("%s: parsed", name)
+		}
+	}
+}
+
 // A standing profile's folder must be an existing directory; any other
 // profile's need not.
 func TestCheckStandingFolder(t *testing.T) {

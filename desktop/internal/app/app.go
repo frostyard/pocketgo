@@ -516,7 +516,7 @@ func (a *App) status() []frostui.StatusItem {
 			Tone: frostui.Warning, Progress: -1, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
 	}
 	if asks := len(a.st.Data.Asks()); asks > 0 {
-		items = append(items, frostui.StatusItem{Icon: "help-browser", Text: plural(asks, "question waits", "questions wait"),
+		items = append(items, frostui.StatusItem{Icon: "help-browser", Text: plural(asks, "ask waits", "asks wait"),
 			Tone: frostui.Warning, OnClick: a.goInbox, Tooltip: "Open the Inbox"})
 	}
 	if lessons := len(a.st.Data.Lessons()); lessons > 0 {

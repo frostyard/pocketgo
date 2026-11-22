@@ -824,7 +824,7 @@ func TestAQuestionInTheInboxSnapshot(t *testing.T) {
 		State: proto.AskOpen, CreatedAt: at(-time.Minute)})
 	x.connect(t)
 	x.hasAll(t, "A1 asks you", "A2 asks you", "T1 · Fix the flaky arm64 job", "Squash", "Keep the commits",
-		"PR #31 is ready. Squash the 4 commits when it merges?", "2 questions wait for you", "2 questions wait")
+		"PR #31 is ready. Squash the 4 commits when it merges?", "2 asks wait for you", "2 asks wait")
 	x.snapshot(t, "inbox-questions")
 
 	x.click(t, "Squash")
@@ -834,7 +834,7 @@ func TestAQuestionInTheInboxSnapshot(t *testing.T) {
 	if len(reqs) != 1 || json.Unmarshal(reqs[0].Body, &body) != nil || body.Answer != "Squash" || body.RequestID == "" {
 		t.Fatalf("the answer sent %+v", reqs)
 	}
-	x.hasAll(t, "1 question waits for you")
+	x.hasAll(t, "1 ask waits for you")
 
 	// A question without options takes a typed answer.
 	if b, ok := x.tt.AccessByRole(ui.RoleButton, "Answer"); !ok || !b.Disabled {
@@ -891,13 +891,13 @@ func TestAnInboxWhoseQuestionsFailedToLoadSaysSo(t *testing.T) {
 	x.srv.AddAsk(proto.Ask{ID: 1, Thread: 1, SessionID: 7, Question: "Squash?", State: proto.AskOpen, CreatedAt: at(-time.Minute)})
 	x.srv.FailOnce(http.MethodGet, proto.PathAsks, http.StatusBadGateway)
 	x.connect(t)
-	x.hasAll(t, "Try Again", "The questions are not loaded")
+	x.hasAll(t, "Try Again", "The asks are not loaded")
 	if x.tt.HasText("Nothing waits for you") {
 		t.Fatal("the Inbox says nothing waits though its questions did not load")
 	}
 	x.click(t, "Try Again")
 	x.until(t, func() bool { return len(x.a.st.Data.Asks()) == 1 && x.a.st.InFlight() == 0 })
-	x.hasAll(t, "A1 asks you", "1 question waits for you")
+	x.hasAll(t, "A1 asks you", "1 ask waits for you")
 }
 
 // An ask whose options repeat draws each as its own button.
@@ -964,6 +964,10 @@ func TestAWithdrawnQuestionKeepsItsDraftSnapshot(t *testing.T) {
 		"Take 0089, and say so in the PR.", "Dismiss")
 	if x.tt.HasText("A3 asks you") || x.tt.HasText("A5") || x.tt.HasText("show here.") {
 		t.Fatal("the Inbox shows a withdrawn question as one that waits, the one with no draft, or its empty state")
+	}
+	// An ask is an ask, never a question (ADR-0048).
+	if _, ok := x.tt.AccessByRole(ui.RoleGroup, "Ask A3 withdrawn"); !ok {
+		t.Errorf("no group labelled Ask A3 withdrawn in %q", x.tt.Texts())
 	}
 	x.snapshot(t, "inbox-draft-withdrawn")
 	x.click(t, "Dismiss")

@@ -66,6 +66,11 @@ type Profile struct {
 	// CompactAt tokens, 0 for PiG's own threshold alone.
 	Standing  bool
 	CompactAt int
+	// QuestionMinutes is how long a question its session puts to the
+	// owner waits for the answer (ADR-0048), 0 for the default
+	// (team.DefaultQuestionTimeout). Only a supervisor's or a private
+	// profile, whose sessions get the question tool, names one.
+	QuestionMinutes int
 	// Identity is the body: the agent's identity prompt.
 	Identity string
 }
@@ -255,6 +260,10 @@ const maxProfileSize = 1 << 20
 // own providers may name (maxContextWindow).
 const maxCompactAt = maxContextWindow
 
+// MaxQuestionMinutes bounds questionMinutes: a question waits a day at
+// most, so a run never hangs on one for longer.
+const MaxQuestionMinutes = 24 * 60
+
 // Startable reports why no session can start from p, nil when one can: a
 // tool pocketd does not have (have), or a private profile whose home is not
 // a folder, since a private agent works only there. The model is the
@@ -362,6 +371,9 @@ func Parse(id string, data []byte, home string) (Profile, error) {
 	}
 	if p.Standing && p.Start() == "" {
 		return Profile{}, errors.New("session: a standing session starts in its profile's home or workspace, and this profile has neither")
+	}
+	if p.QuestionMinutes != 0 && p.Role != RoleSupervisor && !p.Private {
+		return Profile{}, errors.New("questionMinutes: only a supervisor's or a private profile's sessions put questions to the owner (the question tool)")
 	}
 	return p, nil
 }
@@ -525,8 +537,22 @@ func (p *Profile) set(key string, node *yaml.Node, home string) error {
 			return fmt.Errorf("%d is not 1 to %d tokens", tokens, maxCompactAt)
 		}
 		p.CompactAt = int(tokens)
+	case "questionMinutes":
+		// A whole number of minutes, as YAML writes one: never text or a
+		// fraction.
+		if node.Kind != yaml.ScalarNode || node.Tag != "!!int" {
+			return errors.New("not a whole number of minutes")
+		}
+		var minutes int64
+		if err := node.Decode(&minutes); err != nil {
+			return errors.New("not a whole number of minutes")
+		}
+		if minutes < 1 || minutes > MaxQuestionMinutes {
+			return fmt.Errorf("%d is not 1 to %d minutes", minutes, MaxQuestionMinutes)
+		}
+		p.QuestionMinutes = int(minutes)
 	default:
-		return errors.New("not a profile field: role, model, worker, repositories, workspace, home, mcp, private, tools, session or compactAt")
+		return errors.New("not a profile field: role, model, worker, repositories, workspace, home, mcp, private, tools, session, compactAt or questionMinutes")
 	}
 	return nil
 }

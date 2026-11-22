@@ -56,13 +56,17 @@ package proto
 // an answer to a withdrawn ask.
 // Version 25 adds a proposal's ci (ADR-0047): its shift's done also
 // needs CI green on the thread's pull requests.
-const Version = 25
+// Version 26 adds the question tool (ADR-0048): a session's question, POST
+// /v1/sessions/{id}/question/{qid}, and a session that waits for its
+// question's answer.
+const Version = 26
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 24. A path with {id} takes a session,
-// approval, thread, ask, lesson, plan or terminal id in that segment.
+// The request paths of protocol version 26. A path with {id} takes a session,
+// approval, thread, ask, lesson, plan or terminal id in that segment;
+// PathQuestion takes its session's id there, and the question's in {qid}.
 // PathUploads takes a file the owner attaches to a message to the session
 // (ADR-0029): its bytes are the body, its name and the request id are in
 // the query string.
@@ -77,6 +81,7 @@ const (
 	PathStartOver   = "/v1/sessions/{id}/start-over"
 	PathModel       = "/v1/sessions/{id}/model"
 	PathUploads     = "/v1/sessions/{id}/uploads"
+	PathQuestion    = "/v1/sessions/{id}/question/{qid}"
 	PathApprovals   = "/v1/approvals"
 	PathApproval    = "/v1/approvals/{id}"
 	PathThreads     = "/v1/threads"
@@ -119,7 +124,8 @@ const (
 	// live event stays far below what a client reads in one event.
 	MaxQueuedListed = 100
 	MaxQueuedText   = 4 * 1024
-	// MaxAnswer is the most characters an answer to an ask has.
+	// MaxAnswer is the most characters an answer to an ask or a question
+	// has, once trimmed.
 	MaxAnswer = 2000
 	// MaxLesson is the most characters a lesson's text has.
 	MaxLesson = 300

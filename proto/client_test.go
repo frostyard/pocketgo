@@ -32,7 +32,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "25" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "26" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -252,6 +252,34 @@ func TestClientAnswersAsksAndClosesThreads(t *testing.T) {
 	}
 	if threads, err := client.Threads(ctx); err != nil || len(threads) != 1 {
 		t.Fatalf("Threads = %+v, %v", threads, err)
+	}
+}
+
+// A question's answer goes to its session's path, the question's id in
+// its own segment, and a session carries its waiting question (ADR-0048).
+func TestClientAnswersAQuestion(t *testing.T) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.EscapedPath() {
+		case "POST /v1/sessions/7/question/q%2F1":
+			var body AnswerQuestion
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Answer != "Postgres" || body.RequestID != "r1" || len(body.Option) != 1 || body.Option[0] != 0 {
+				t.Errorf("answer body %+v, %v", body, err)
+			}
+			_ = json.NewEncoder(w).Encode(Question{ID: "q/1", SessionID: 7, State: QuestionAnswered, Answer: "Postgres", Option: []int{0}})
+		case "GET /v1/sessions":
+			_ = json.NewEncoder(w).Encode([]Session{{ID: 7, State: SessionWaiting, Question: &Question{ID: "q2", State: QuestionWaiting, Options: []string{"a", "b"}}}})
+		default:
+			t.Errorf("request %s %s", r.Method, r.URL.EscapedPath())
+		}
+	}))
+	ctx := context.Background()
+	q, err := client.AnswerQuestion(ctx, 7, "q/1", AnswerQuestion{RequestID: "r1", Answer: "Postgres", Option: []int{0}})
+	if err != nil || q.State != QuestionAnswered || q.Answer != "Postgres" {
+		t.Fatalf("AnswerQuestion = %+v, %v", q, err)
+	}
+	sessions, err := client.Sessions(ctx)
+	if err != nil || len(sessions) != 1 || sessions[0].Question == nil || sessions[0].Question.ID != "q2" || len(sessions[0].Question.Options) != 2 {
+		t.Fatalf("Sessions = %+v, %v", sessions, err)
 	}
 }
 

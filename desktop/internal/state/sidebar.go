@@ -123,7 +123,8 @@ const (
 	MarkNew
 	// MarkRunning: a run works in it.
 	MarkRunning
-	// MarkWaiting: a tool call of it waits for the owner's approval.
+	// MarkWaiting: a tool call of it waits for the owner's approval, or
+	// its question for the owner's answer (ADR-0048).
 	MarkWaiting
 )
 
@@ -149,14 +150,17 @@ type SessionRow struct {
 	Mark SessionMark
 	// Waiting counts its approvals that wait for the owner, as the
 	// client's list holds them; Waits is the oldest one's tool and what it
-	// works on.
+	// works on, else what its question asks (QuestionWaits).
 	Waiting int
 	Waits   string
+	// Question says its question waits for the owner's answer (ADR-0048).
+	Question bool
 	// Badge is what the badge at the row's end says: how many approvals
-	// wait, when the client's list holds them; "new" for NEW; else "". A
-	// session its summary says waits, before the approvals load or after
-	// their fetch failed, shows no count: the client does not know it
-	// (Codex review of #40, round 1).
+	// wait, when the client's list holds them; QuestionBadge when none
+	// does and its question waits; "new" for NEW; else "". A session its
+	// summary says waits, before the approvals load or after their fetch
+	// failed, shows no count: the client does not know it (Codex review of
+	// #40, round 1).
 	Badge string
 	// Dim: the owner saw it idle, and it was last updated more than
 	// OldAfter ago.
@@ -403,7 +407,8 @@ func (d *Data) Sidebar(o SidebarOptions) *Sidebar {
 				sb.children[k] = append(sb.children[k], NestedKey(s.ID, p))
 			}
 		}
-		st := d.stateOf(s.ID, s.State, len(waits[s.ID]) > 0)
+		_, asked := WaitingQuestion(s)
+		st := d.stateOf(s.ID, s.State, len(waits[s.ID]) > 0 || asked)
 		sb.sessions[s.ID] = d.sessionRow(s, agent, under[s.ID], st, waits[s.ID], o)
 		g, ok := sb.groups[agent]
 		if !ok {
@@ -537,9 +542,17 @@ func (d *Data) sessionRow(s proto.Session, agent string, under int64, st proto.S
 		a := waits[0]
 		r.Waits = strings.TrimSpace(a.Tool + " " + ToolSummary(a.Tool, a.Arguments))
 	}
+	if q, ok := WaitingQuestion(s); ok {
+		r.Question = true
+		if r.Waits == "" {
+			r.Waits = QuestionWaits(q)
+		}
+	}
 	switch {
 	case r.Mark == MarkWaiting && r.Waiting > 0:
 		r.Badge = strconv.Itoa(r.Waiting)
+	case r.Mark == MarkWaiting && r.Question:
+		r.Badge = QuestionBadge
 	case r.Mark == MarkNew:
 		r.Badge = "new"
 	}

@@ -200,6 +200,18 @@ func (c *Client) StartOver(ctx context.Context, id int64, request StartOver) (Se
 	return out, c.do(ctx, http.MethodPost, Path(PathStartOver, id), request, &out)
 }
 
+// AnswerQuestion answers, or skips, question qid of session id
+// (ADR-0048, rule 62).
+func (c *Client) AnswerQuestion(ctx context.Context, id int64, qid string, request AnswerQuestion) (Question, error) {
+	var out Question
+	return out, c.do(ctx, http.MethodPost, QuestionPath(id, qid), request, &out)
+}
+
+// QuestionPath is PathQuestion for question qid of session id.
+func QuestionPath(id int64, qid string) string {
+	return strings.Replace(Path(PathQuestion, id), "{qid}", url.PathEscape(qid), 1)
+}
+
 func (c *Client) Approvals(ctx context.Context) ([]Approval, error) {
 	var out []Approval
 	return out, c.do(ctx, http.MethodGet, PathApprovals, nil, &out)

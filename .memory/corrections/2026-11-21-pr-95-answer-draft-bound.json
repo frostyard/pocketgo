@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Text the owner types for a target that can change while they type (a waiting question) is a draft of that target, keyed by its id, apart from the message draft; when the target goes, the text is kept for the owner, never sent to whatever the field addresses at send time.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P2] Keep answer drafts bound to their question",
+  "promoted_to": "desktop/internal/state/question_test.go"
+}

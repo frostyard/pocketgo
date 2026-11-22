@@ -99,6 +99,15 @@ type fakeEngine struct {
 	// githubLate those that had been sent a message when it was called.
 	githubTool map[int64]bool
 	githubLate map[int64]bool
+	// starters are the request keys of the submissions that started each
+	// session's run, as RunStarter reads them (ADR-0048); starterErr
+	// fails it.
+	starters   map[int64]string
+	starterErr error
+	// questionTool are the sessions SetQuestionTool gave the question
+	// tool; taskEndedFails fails that many TaskEnded calls.
+	questionTool   map[int64]bool
+	taskEndedFails int
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
 	// before it reads.
@@ -374,6 +383,18 @@ func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
 	return f.runFirst, f.runFirst != 0, nil
 }
 
+// RunStarter answers starters' key for a session at work: a session with
+// a key there has a run, which that key started.
+func (f *fakeEngine) RunStarter(_ context.Context, id int64) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.starterErr != nil {
+		return "", false, f.starterErr
+	}
+	key, busy := f.starters[id]
+	return key, busy, nil
+}
+
 func (f *fakeEngine) WaitIdle(context.Context, int64) error { return nil }
 
 // SetVerdictTool records the sessions given team_verdict, and those it
@@ -426,9 +447,27 @@ func (f *fakeEngine) SetGitHubTool(_ context.Context, id int64) (bool, error) {
 	return true, nil
 }
 
+// SetQuestionTool records the sessions given the question tool, each once.
+func (f *fakeEngine) SetQuestionTool(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.questionTool == nil {
+		f.questionTool = map[int64]bool{}
+	}
+	if f.questionTool[id] {
+		return false, nil
+	}
+	f.questionTool[id] = true
+	return true, nil
+}
+
 func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.taskEndedFails > 0 {
+		f.taskEndedFails--
+		return false, errors.New("the durable store is busy")
+	}
 	return f.ended[task], nil
 }
 

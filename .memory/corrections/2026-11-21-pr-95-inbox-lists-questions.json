@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A new kind of thing the desktop's Inbox counts as waiting is added to team_inbox's read and answer in the same change, read in the same snapshot, so the supervisor's view and the owner's agree.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P2] Keep the supervisor's Inbox view consistent with the desktop",
+  "promoted_to": "service/internal/team/inbox_test.go"
+}

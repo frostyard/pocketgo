@@ -179,6 +179,8 @@ func TestPullsToReviewAreOpenAndNoDraft(t *testing.T) {
 	d.SetLessons(d.BeginLessons(), nil)
 	d.SetApprovals(d.Begin(), nil)
 	d.SetPlans(d.BeginPlans(), nil)
+	// A session's question waits in the sessions' list (ADR-0048).
+	d.SetSessions(d.Begin(), nil)
 	if note := InboxNote(d.Inbox()); note != "2 pull requests wait for you" {
 		t.Errorf("the Inbox says %q", note)
 	}
@@ -260,11 +262,11 @@ func TestTheBoardNoteClaimsCountsOnlyFromLoadedLists(t *testing.T) {
 	d.SetThreads(d.BeginThreads(), []proto.Thread{thread(1, proto.ThreadOpen, 0), thread(2, proto.ThreadDone, 0)})
 	d.SetAsks(d.BeginAsks(), []proto.Ask{{ID: 1, Thread: 1, State: proto.AskOpen}})
 	// The pull requests are still loading: T2 may wait for a review.
-	if got := d.BoardNote(); got != "2 threads on the desk; the questions or pull requests are not loaded" {
+	if got := d.BoardNote(); got != "2 threads on the desk; the asks or pull requests are not loaded" {
 		t.Errorf("with the pull requests loading: %q", got)
 	}
 	d.SetPullsError(d.BeginPulls(), "timeout")
-	if got := d.BoardNote(); got != "2 threads on the desk; the questions or pull requests are not loaded" {
+	if got := d.BoardNote(); got != "2 threads on the desk; the asks or pull requests are not loaded" {
 		t.Errorf("with the pull requests failed: %q", got)
 	}
 	d.SetPulls(d.BeginPulls(), []proto.PullRequest{pull(1, 2, 32, proto.PullOpen)})

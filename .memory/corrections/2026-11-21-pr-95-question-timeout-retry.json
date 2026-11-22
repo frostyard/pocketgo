@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A wait that settles something at a deadline does the settling in its own loop, woken by the timer, and tries a failed write again with a bounded backoff until it holds or the wait's context ends; a timer callback that writes and drops the error leaves the wait hanging for good.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P1] Retry a failed question timeout",
+  "promoted_to": "service/internal/approvals/questions_test.go"
+}

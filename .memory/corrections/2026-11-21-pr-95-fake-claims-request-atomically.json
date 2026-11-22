@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The desktop's fake pocketd looks up a request id's receipt, changes the state and keeps the reply under one lock, as pocketd's transaction does: two retries of one id both get the first reply.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 2 (codex-cli 0.169.0) of head e060399: [P2] Check the fake's answer receipt under the settlement lock",
+  "promoted_to": "desktop/internal/pocketdtest/question_test.go"
+}

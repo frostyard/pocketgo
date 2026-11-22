@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A list the Inbox newly counts from (the sessions, for their waiting questions) gets the same failed-load line and in-place Try Again as every other Inbox source, not only a suppressed empty state.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P3] Offer a retry when the Inbox cannot load sessions",
+  "promoted_to": "desktop/internal/app/question_test.go"
+}

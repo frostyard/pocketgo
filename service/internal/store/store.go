@@ -555,6 +555,31 @@ var migrations = []string{
 	// on the thread's pull requests (ADR-0047). A proposal filed before
 	// reads false.
 	`ALTER TABLE proposals ADD COLUMN ci INTEGER NOT NULL DEFAULT 0;`,
+	// Version 22: the questions a supervisor's or a private agent's
+	// session puts to the owner with its question tool (ADR-0048). A
+	// question's id is its task's and tool call's, as an approval's is;
+	// a session has at most one waiting. options and chosen are JSON
+	// lists; deadline is when one still waiting is skipped.
+	`CREATE TABLE questions (
+		id TEXT PRIMARY KEY,
+		session_id INTEGER NOT NULL,
+		task_id INTEGER NOT NULL,
+		call_id TEXT NOT NULL,
+		question TEXT NOT NULL,
+		options TEXT NOT NULL DEFAULT '[]',
+		multiple INTEGER NOT NULL DEFAULT 0,
+		placeholder TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL CHECK (state IN ('waiting', 'answered', 'skipped')),
+		created_at INTEGER NOT NULL,
+		deadline INTEGER NOT NULL,
+		answer TEXT NOT NULL DEFAULT '',
+		chosen TEXT NOT NULL DEFAULT '[]',
+		reason TEXT NOT NULL DEFAULT '',
+		settled_by TEXT NOT NULL DEFAULT '',
+		settled_at INTEGER,
+		UNIQUE (task_id, call_id)
+	);
+	CREATE UNIQUE INDEX questions_waiting ON questions (session_id) WHERE state = 'waiting';`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

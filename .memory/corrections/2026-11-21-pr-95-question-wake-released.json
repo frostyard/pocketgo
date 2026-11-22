@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A wait that registers a wake before it reads releases the registration on every exit that no wake closed, so a settled or cancelled wait leaves no map entry behind for the life of the service.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P3] Release waiters after reading a settled question",
+  "promoted_to": "service/internal/approvals/questions_test.go"
+}

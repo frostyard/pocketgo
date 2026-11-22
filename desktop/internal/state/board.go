@@ -564,7 +564,7 @@ func (d *Data) BoardNote() string {
 	pulls, _ := d.PullsStatus()
 	switch {
 	case n > 0 && (asks != ListLoaded || pulls != ListLoaded):
-		note += "; the questions or pull requests are not loaded"
+		note += "; the asks or pull requests are not loaded"
 	case waiting == 1:
 		note += ", 1 waits for you"
 	case waiting > 1:

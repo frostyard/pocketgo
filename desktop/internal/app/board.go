@@ -55,7 +55,7 @@ func (a *App) boardThreads(c *ui.Context) {
 		a.listProblem(c, "Loading the threads failed: "+problem+". Threads may be missing or out of date.")
 	}
 	if asksStatus == state.ListFailed {
-		a.listProblem(c, "Loading the questions failed: "+asksProblem+". A thread may wait for your answer and show in another group.")
+		a.listProblem(c, "Loading the asks failed: "+asksProblem+". A thread may wait for your answer and show in another group.")
 	}
 	if pullsStatus == state.ListFailed {
 		a.listProblem(c, "Loading the pull requests failed: "+pullsProblem+". A thread may wait for your review and show in another group.")
@@ -534,7 +534,7 @@ func (a *App) confirmClose(th proto.Thread, agent string) {
 		a.dialogs.Ask(frostui.Confirm{
 			Title: "Close " + name + " and drop " + plan + "?",
 			Body: name + " is where " + agent + " plans " + plan + ". Closing it drops the plan for good: a task of it not delivered yet can no longer be, " +
-				"and its consults stop. The threads of its delivered tasks, its sessions and its questions stay.",
+				"and its consults stop. The threads of its delivered tasks, its sessions and its asks stay.",
 			Action: "Close " + name + " and Drop the Plan", Destructive: true, OnConfirm: func() { a.st.CloseThread(id) },
 		})
 		return
@@ -542,7 +542,7 @@ func (a *App) confirmClose(th proto.Thread, agent string) {
 	a.dialogs.Ask(frostui.Confirm{
 		Title: "Close " + name + "?",
 		Body: name + " leaves the desk: " + agent + " can no longer report on it, and a brief not started yet is withdrawn. " +
-			"Its sessions, its open questions and its pull requests stay.",
+			"Its sessions, its open asks and its pull requests stay.",
 		Action: "Close " + name, Destructive: true, OnConfirm: func() { a.st.CloseThread(id) },
 	})
 }

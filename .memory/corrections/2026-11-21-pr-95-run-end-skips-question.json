@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "What an abort settles once its task ended is settled at every run's end too, not only by the abort request and the start's pre-resume pass: an abort a restart cut off is finished by PiG after Resume, with no handler and no wait left to settle it.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P2] Retire questions whose tasks finish aborting after resume",
+  "promoted_to": "service/internal/api/questions_test.go"
+}

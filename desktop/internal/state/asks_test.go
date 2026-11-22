@@ -71,7 +71,7 @@ func TestAsksShowOldestFirst(t *testing.T) {
 func TestInboxNote(t *testing.T) {
 	kinds := func(asks, lessons, approvals int, asksStatus, lessonsStatus, approvalsStatus ListStatus) []InboxKind {
 		return []InboxKind{
-			{List: "questions", One: "question", Many: "questions", Count: asks, Status: asksStatus},
+			{List: "asks", One: "ask", Many: "asks", Count: asks, Status: asksStatus},
 			{List: "lessons", One: "lesson", Many: "lessons", Count: lessons, Status: lessonsStatus},
 			{List: "approvals", One: "tool call", Many: "tool calls", Count: approvals, Status: approvalsStatus},
 		}
@@ -82,14 +82,14 @@ func TestInboxNote(t *testing.T) {
 		want  string
 	}{
 		{kinds(0, 0, 0, L, L, L), "Nothing waits for you"},
-		{kinds(1, 0, 0, L, L, L), "1 question waits for you"},
+		{kinds(1, 0, 0, L, L, L), "1 ask waits for you"},
 		{kinds(0, 0, 2, L, L, L), "2 tool calls wait for you"},
 		{kinds(0, 1, 0, L, L, L), "1 lesson waits for you"},
-		{kinds(2, 0, 1, L, L, L), "2 questions and 1 tool call wait for you"},
-		{kinds(1, 3, 1, L, L, L), "1 question, 3 lessons and 1 tool call wait for you"},
-		{kinds(0, 0, 0, F, L, L), "The questions are not loaded"},
+		{kinds(2, 0, 1, L, L, L), "2 asks and 1 tool call wait for you"},
+		{kinds(1, 3, 1, L, L, L), "1 ask, 3 lessons and 1 tool call wait for you"},
+		{kinds(0, 0, 0, F, L, L), "The asks are not loaded"},
 		{kinds(0, 0, 0, L, L, W), "The approvals are not loaded"},
-		{kinds(3, 0, 3, F, L, F), "The questions and the approvals are not loaded"},
+		{kinds(3, 0, 3, F, L, F), "The asks and the approvals are not loaded"},
 		{kinds(0, 1, 0, L, F, L), "The lessons are not loaded"},
 	} {
 		if got := InboxNote(tc.kinds); got != tc.want {

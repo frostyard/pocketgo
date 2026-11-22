@@ -65,6 +65,9 @@ func (s *Server) inbox(ctx context.Context, now time.Time) (team.Inbox, error) {
 	for _, row := range rows.Approvals {
 		in.Approvals = append(in.Approvals, approvals.Wire(row))
 	}
+	for _, row := range rows.Questions {
+		in.Questions = append(in.Questions, team.InboxQuestion{Question: approvals.WireQuestion(row.QuestionRow), Profile: row.Profile})
+	}
 	for _, row := range rows.Answered {
 		in.Answered = append(in.Answered, team.InboxAsk{Ask: wireAsk(row), WithdrawnAt: row.WithdrawnAt})
 	}

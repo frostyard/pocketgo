@@ -197,7 +197,7 @@ func TestThePhoneSnapshot(t *testing.T) {
 	if n, ok := x.tt.AccessByRole(ui.RoleTab, "Inbox"); !ok || n.Bounds.Y+n.Bounds.H > phoneH-phoneBottom+0.5 {
 		t.Errorf("the Inbox's tab is under the home indicator: %+v", n.Bounds)
 	}
-	if r, ok := x.tt.Find("1 question, 1 pull request and 1 tool call wait for you"); !ok || r.Y < phoneTop {
+	if r, ok := x.tt.Find("1 ask, 1 pull request and 1 tool call wait for you"); !ok || r.Y < phoneTop {
 		t.Errorf("the Inbox's note is under the status bar: %+v, %v", r, ok)
 	}
 	// The top bar's color goes up under the status bar.
@@ -207,7 +207,7 @@ func TestThePhoneSnapshot(t *testing.T) {
 	if under != beside {
 		t.Errorf("under the status bar is %v, the top bar %v", under, beside)
 	}
-	x.within(t, ui.RoleGroup, "Question A1")
+	x.within(t, ui.RoleGroup, "Ask A1")
 	x.snapshot(t, "phone-1-inbox")
 
 	x.tap(t, "Sessions")

@@ -74,7 +74,8 @@ const (
 	SessionIdle SessionState = "idle"
 	// SessionRunning: a run is in progress.
 	SessionRunning SessionState = "running"
-	// SessionWaiting: a run waits on the owner (an approval).
+	// SessionWaiting: a run waits on the owner: an approval, or its
+	// question's answer (ADR-0048).
 	SessionWaiting SessionState = "waiting"
 )
 
@@ -100,9 +101,13 @@ type Session struct {
 	// (rule 23a). No other session names one.
 	StartedBy int64        `json:"startedBy,omitempty"`
 	State     SessionState `json:"state"`
-	Usage     Usage        `json:"usage"`
-	CreatedAt time.Time    `json:"createdAt"`
-	UpdatedAt time.Time    `json:"updatedAt"`
+	// Question is the question that waits for the owner in this session,
+	// nil while none does (ADR-0048, rule 60): its run waits for the
+	// answer. A session has at most one.
+	Question  *Question `json:"question,omitempty"`
+	Usage     Usage     `json:"usage"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // EntryKind is the kind of a transcript entry.
@@ -270,6 +275,89 @@ type Approval struct {
 	Reason      string          `json:"reason,omitempty"`
 }
 
+// QuestionState is where a question is (ADR-0048).
+type QuestionState string
+
+const (
+	// QuestionWaiting: its tool call waits for the owner.
+	QuestionWaiting QuestionState = "waiting"
+	// QuestionAnswered: the owner answered it; the answer is the call's
+	// result.
+	QuestionAnswered QuestionState = "answered"
+	// QuestionSkipped: it ended with no answer; Reason says why.
+	QuestionSkipped QuestionState = "skipped"
+)
+
+// Why a question was skipped (Question.Reason).
+const (
+	// SkippedByOwner: the owner skipped it.
+	SkippedByOwner = "owner"
+	// SkippedTimeout: no answer came before its Deadline.
+	SkippedTimeout = "timeout"
+	// SkippedAborted: its run was aborted.
+	SkippedAborted = "aborted"
+)
+
+// The limits of a question (rule 60). Its answer has at most MaxAnswer
+// characters.
+const (
+	// MaxQuestion is the most characters a question has.
+	MaxQuestion = 500
+	// MaxQuestionOptions is the most options a question suggests; one
+	// that suggests any suggests at least 2.
+	MaxQuestionOptions = 6
+	// MaxQuestionOption is the most characters an option has.
+	MaxQuestionOption = 60
+	// MaxQuestionPlaceholder is the most characters of the hint for a
+	// free answer.
+	MaxQuestionPlaceholder = 120
+)
+
+// Question is a question a supervisor's or a private agent's session puts
+// to the owner with its question tool, inline in the session
+// (ADR-0048): its tool call waits for the answer, which is the call's
+// result. It is no ask: it belongs to its session, not to a thread, and
+// GET /v1/asks never lists one. A waiting one is its session's Question.
+type Question struct {
+	// ID is derived from the task and the tool call: a call that waited
+	// when the service stopped shows the same question when its task runs
+	// again (rule 61).
+	ID        string `json:"id"`
+	SessionID int64  `json:"sessionId"`
+	CallID    string `json:"callId"`
+	Question  string `json:"question"`
+	// Options are the answers the agent suggests: none, or 2 to 6. Any
+	// answer is taken. Multiple lets the owner pick more than one.
+	Options  []string `json:"options,omitempty"`
+	Multiple bool     `json:"multiple,omitempty"`
+	// Placeholder is the hint for a free answer, "" for none.
+	Placeholder string        `json:"placeholder,omitempty"`
+	State       QuestionState `json:"state"`
+	CreatedAt   time.Time     `json:"createdAt"`
+	// Deadline is when a question that still waits is skipped, with the
+	// reason SkippedTimeout.
+	Deadline time.Time `json:"deadline"`
+	// Answer is the owner's answer, and Option the indexes of the options
+	// picked, from 0, in ascending order: set once answered.
+	Answer string `json:"answer,omitempty"`
+	Option []int  `json:"option,omitempty"`
+	// Reason is why a skipped question was skipped: SkippedByOwner,
+	// SkippedTimeout or SkippedAborted.
+	Reason string `json:"reason,omitempty"`
+	// SettledBy is the device that answered or skipped it, or pocketd.
+	SettledBy string     `json:"settledBy,omitempty"`
+	SettledAt *time.Time `json:"settledAt,omitempty"`
+}
+
+// AnswerQuestion is the body of POST /v1/sessions/{id}/question/{qid}
+// (rule 62): an answer, the options picked, or both; or Skipped alone.
+type AnswerQuestion struct {
+	RequestID string `json:"requestId"`
+	Answer    string `json:"answer,omitempty"`
+	Option    []int  `json:"option,omitempty"`
+	Skipped   bool   `json:"skipped,omitempty"`
+}
+
 // CreateSession is the body of POST /v1/sessions.
 type CreateSession struct {
 	RequestID string `json:"requestId"`
@@ -330,9 +418,12 @@ type Profile struct {
 	// Standing says the agent keeps one standing session, which New
 	// Session opens (rule 7c); CompactAt is the context, in tokens, at
 	// which pocketd compacts it, 0 for none of its own.
-	Standing  bool   `json:"standing,omitempty"`
-	CompactAt int    `json:"compactAt,omitempty"`
-	Problem   string `json:"problem,omitempty"`
+	Standing  bool `json:"standing,omitempty"`
+	CompactAt int  `json:"compactAt,omitempty"`
+	// QuestionMinutes is how long a question of its sessions waits for
+	// the owner (ADR-0048, rule 60), 0 for the default of 30.
+	QuestionMinutes int    `json:"questionMinutes,omitempty"`
+	Problem         string `json:"problem,omitempty"`
 }
 
 // Repository is a repository a profile names: owner/name, and the folder

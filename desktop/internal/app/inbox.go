@@ -30,6 +30,10 @@ func (a *App) inboxPane(c *ui.Context) {
 	pullsStatus, pullsProblem := a.st.Data.PullsStatus()
 	refusals := a.st.AnswerRefusals()
 	withdrawn := a.st.WithdrawnDrafts()
+	// A session's question is no ask: a line that opens its session, never
+	// a card among the asks (ADR-0048).
+	questions := a.st.Data.QuestionsWaiting()
+	sessionsStatus, sessionsProblem := a.st.Data.SessionsStatus()
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, a.gutter()).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
@@ -37,7 +41,7 @@ func (a *App) inboxPane(c *ui.Context) {
 					a.listProblem(c, "Loading the plans failed: "+plansProblem+". Plans may wait for your approval that this list does not show.")
 				}
 				if asksStatus == state.ListFailed {
-					a.listProblem(c, "Loading the questions failed: "+asksProblem+". Questions may wait for you that this list does not show.")
+					a.listProblem(c, "Loading the asks failed: "+asksProblem+". Asks may wait for you that this list does not show.")
 				}
 				if lessonsStatus == state.ListFailed {
 					a.listProblem(c, "Loading the lessons failed: "+lessonsProblem+". Lessons may wait for you that this list does not show.")
@@ -48,16 +52,21 @@ func (a *App) inboxPane(c *ui.Context) {
 				if status == state.ListFailed {
 					a.listProblem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.")
 				}
+				// The sessions bring their questions (Codex review of #95,
+				// round 1).
+				if sessionsStatus == state.ListFailed {
+					a.listProblem(c, "Loading the sessions failed: "+sessionsProblem+". A session may wait for your answer to its question that this list does not show.")
+				}
 				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0 && len(pulls) == 0 && len(plans) == 0 && len(refusals) == 0 &&
-					len(withdrawn) == 0
+					len(withdrawn) == 0 && len(questions) == 0
 				switch {
 				case (status == state.ListLoading || asksStatus == state.ListLoading || lessonsStatus == state.ListLoading ||
-					pullsStatus == state.ListLoading || plansStatus == state.ListLoading) && none:
+					pullsStatus == state.ListLoading || plansStatus == state.ListLoading || sessionsStatus == state.ListLoading) && none:
 					frostui.Loading(c, "Loading what waits for you…")
 				case status == state.ListLoaded && asksStatus == state.ListLoaded && lessonsStatus == state.ListLoaded &&
-					pullsStatus == state.ListLoaded && plansStatus == state.ListLoaded && none:
+					pullsStatus == state.ListLoaded && plansStatus == state.ListLoaded && sessionsStatus == state.ListLoaded && none:
 					frostui.Empty(c, "object-select", "Nothing waits for you",
-						"Plans to approve, questions from the team's threads, lessons the agents propose, pull requests to review, and tool calls that need your approval, show here.")
+						"Plans to approve, asks from the team's threads, lessons the agents propose, pull requests to review, and tool calls that need your approval, show here.")
 				}
 				for _, p := range plans {
 					a.planCard(c, p)
@@ -86,12 +95,42 @@ func (a *App) inboxPane(c *ui.Context) {
 				for _, ap := range approvals {
 					a.approvalCard(c, ap, true)
 				}
+				for _, q := range questions {
+					a.questionLine(c, q)
+				}
 				// What waits for nothing comes after everything that waits.
 				if inForce := a.st.Data.LessonsInForce(); len(inForce) > 0 {
 					a.lessonsInForce(c, inForce)
 				}
 			})
 		})
+	})
+}
+
+// questionLine says a session's question waits for the owner's answer
+// (ADR-0048): who waits, in which session, and the question's first line,
+// with Open Session, which goes to the session, where the question shows
+// and its composer answers it. The question is answered there, not here.
+func (a *App) questionLine(c *ui.Context, q proto.Question) {
+	t := c.Theme()
+	key := "question-line:" + q.ID
+	title := "Session"
+	if s, ok := a.st.Data.Session(q.SessionID); ok {
+		title = state.SessionTitle(s)
+	}
+	ui.Column(c.Key(key)).Gap(frostui.SpaceXS).Padding(frostui.SpaceS, frostui.SpaceL).AlignItems(ui.Stretch).
+		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
+		Role(ui.RoleGroup).Label("Waiting for your answer: " + title).Children(func() {
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			frostui.Icon(c, "help-browser").TextColor(frostui.ToneColor(t, frostui.Accent))
+			a.headTitle(c, a.questionFrom(q.SessionID)+" waits for your answer")
+			a.headCaption(c, title, true)
+			if ui.Button(c.Key(key+":open"), "Open Session").Clicked() {
+				a.openSession(q.SessionID)
+			}
+		})
+		a.headCaption(c, title, false)
+		frostui.Muted(c, truncate(firstLine(q.Question), 160)).SingleLine()
 	})
 }
 
@@ -117,7 +156,7 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 	text := a.st.AnswerDraft(ask.ID)
 	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
-		Role(ui.RoleGroup).Label("Question A" + itoa(int(ask.ID))).Children(func() {
+		Role(ui.RoleGroup).Label("Ask A" + itoa(int(ask.ID))).Children(func() {
 		title := "Thread T" + itoa(int(ask.Thread))
 		if th, ok := a.st.Data.Thread(ask.Thread); ok {
 			title = "T" + itoa(int(th.ID)) + " · " + th.Title
@@ -174,7 +213,7 @@ func (a *App) withdrawnDraftCard(c *ui.Context, w state.WithdrawnDraft) {
 	key := "withdrawn-draft:" + itoa(int(w.Ask.ID))
 	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Warning)).
-		Role(ui.RoleGroup).Label("Question " + name + " withdrawn").Children(func() {
+		Role(ui.RoleGroup).Label("Ask " + name + " withdrawn").Children(func() {
 		title := "Thread T" + itoa(int(w.Ask.Thread))
 		if th, ok := a.st.Data.Thread(w.Ask.Thread); ok {
 			title = "T" + itoa(int(th.ID)) + " · " + th.Title
