@@ -575,6 +575,12 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				input := ui.TextAreaBase(c.Key(fieldKey), draft).Lines(1, 10).Placeholder(placeholder).Label(label).
 					Bind(&cp.field).Disabled(sending.Busy || answering.Busy).
 					OnTextKey(func(k ui.TextKey) bool {
+						// A prompt on its way in is the field's text for the
+						// keys that come before the next frame puts it there
+						// (Codex review of #108, round 3).
+						if e := cp.edit; e != nil && e.key == fieldKey {
+							return a.keyOnEdit(id, composing, picker, e, k)
+						}
 						// While the picker shows, it takes the keys it uses: a
 						// prompt goes in, and is never sent.
 						if key, ok := pickerKey(k); ok && composing.TakesPrompts() {
@@ -594,7 +600,13 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						}
 						return false
 					}).
-					OnPaste(func(string) bool {
+					OnPaste(func(text string) bool {
+						// Pasted text follows a prompt on its way in, as
+						// typed text does (Codex review of #108, round 3).
+						if e := cp.edit; e != nil && e.key == fieldKey && text != "" {
+							e.Typed(text)
+							return true
+						}
 						// An answer carries text alone: a pasted file is not
 						// attached to it (state.Composer.Attaches).
 						if !composing.Attaches() {
@@ -620,6 +632,9 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				// the owner chose the prompt to write on (Codex review of
 				// #108, round 1).
 				if e := cp.edit; e != nil && e.key == fieldKey {
+					// What came in this frame first, as a paste, which
+					// follows the prompt (keyOnEdit); then the prompt.
+					input.ReplaceText(0, 0, "")
 					input.ReplaceText(0, math.MaxInt, e.Text)
 					input.SetTextSelection(e.Caret, e.Caret)
 					cp.edit = nil

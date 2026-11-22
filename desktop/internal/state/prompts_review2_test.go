@@ -10,19 +10,19 @@ import (
 // trims, after its name is a call: the picker opens on it, and Enter never
 // sends it as typed (Codex review of #108, round 2).
 func TestACallWithAnyWhiteSpaceAfterItsNameIsACall(t *testing.T) {
-	for _, draft := range []string{"/review-pr 42", "/review-pr  42", "/review-pr　 42 "} {
+	for _, draft := range []string{"/review-pr\u00a042", "/review-pr\u2003 42", "/review-pr\u3000 42 "} {
 		if got, ok := ParseSlashHead(draft); !ok || got != (SlashHead{Name: "review-pr", Args: "42"}) {
 			t.Errorf("%q: %+v %v", draft, got, ok)
 		}
 	}
-	for _, draft := range []string{"/review-pr­42", "/review-pr·42"} {
+	for _, draft := range []string{"/review-pr\u00ad42", "/review-pr·42"} {
 		if got, ok := ParseSlashHead(draft); ok {
 			t.Errorf("%q is a call: %+v", draft, got)
 		}
 	}
 	var p PromptPicker
-	p.View("/review-pr 42", savedPrompts, ListLoaded, "")
-	if r := p.Key(PickerEnter, "/review-pr 42", savedPrompts); !r.Insert || r.Text != "Review pull request 42 and fix what you find." {
+	p.View("/review-pr\u00a042", savedPrompts, ListLoaded, "")
+	if r := p.Key(PickerEnter, "/review-pr\u00a042", savedPrompts); !r.Insert || r.Text != "Review pull request 42 and fix what you find." {
 		t.Fatalf("enter: %+v", r)
 	}
 }

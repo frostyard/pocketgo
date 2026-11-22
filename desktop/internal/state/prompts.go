@@ -176,8 +176,10 @@ type PromptPicker struct {
 	// highlight is the prompt highlighted, by name, for the name typed
 	// query: a list that changes under the same query keeps it, the first
 	// one shown included, and another query highlights its best match
-	// (Codex review of #108, round 1).
+	// (Codex review of #108, round 1). drawn says a frame showed the picker
+	// for query, highlight "" when it showed no prompt to take (round 3).
 	highlight, query string
+	drawn            bool
 	// holdEnter says an Enter put a prompt in and is still held: its
 	// repeats do nothing until it is let go, so one press never inserts
 	// and sends (Codex review of #108, round 1).
@@ -201,7 +203,7 @@ func (p *PromptPicker) closed(draft string) bool {
 
 // close closes the picker on text's call.
 func (p *PromptPicker) close(text string) {
-	p.closedOn, p.highlight, p.query, p.shown = firstLine(text), "", "", false
+	p.closedOn, p.highlight, p.query, p.drawn, p.shown = firstLine(text), "", "", false, false
 }
 
 // PromptMenu is what the picker shows over the composer.
@@ -227,9 +229,10 @@ type PromptMenu struct {
 	None bool
 	// Refused says why the prompt chosen did not go in, "" for nothing.
 	Refused string
-	// gone says the prompt shown highlighted for this name typed is no
-	// longer offered: Enter and Tab take nothing until the next frame
-	// shows another.
+	// gone says the prompt Enter would take is not the one the last frame
+	// showed highlighted for this name typed: that one is no longer
+	// offered, or the frame showed none (Codex review of #108, rounds 2
+	// and 3). Enter and Tab take nothing until the next frame shows it.
 	gone bool
 }
 
@@ -310,14 +313,15 @@ func (p *PromptPicker) menu(draft string, prompts proto.Prompts, status ListStat
 	}
 	m.Open = true
 	m.Items, m.Broken = PromptMatches(prompts.Prompts, head.Name)
+	same := p.drawn && head.Name == p.query
 	if len(m.Items) > 0 {
 		m.Highlight = 0
-		if head.Name == p.query && p.highlight != "" {
+		if same {
 			i := slices.IndexFunc(m.Items, func(q proto.Prompt) bool { return q.Name == p.highlight })
 			m.Highlight, m.gone = max(i, 0), i < 0
 		}
 	} else {
-		m.gone = head.Name == p.query && p.highlight != ""
+		m.gone = same && p.highlight != ""
 	}
 	return m
 }
@@ -337,11 +341,14 @@ func (p *PromptPicker) View(draft string, prompts proto.Prompts, status ListStat
 	m := p.menu(draft, prompts, status, err)
 	m.Opened = m.Open && !p.shown
 	p.shown = m.Open
-	p.highlight, p.query = "", ""
-	if m.Highlight >= 0 {
+	p.highlight, p.query, p.drawn = "", "", m.Open
+	if m.Open {
 		// The prompt shown highlighted is the one Enter takes, whatever a
-		// later answer adds before it.
-		p.highlight, p.query = m.Items[m.Highlight].Name, m.Head.Name
+		// later answer adds before it, and none shown takes none.
+		p.query = m.Head.Name
+		if m.Highlight >= 0 {
+			p.highlight = m.Items[m.Highlight].Name
+		}
 	}
 	return m
 }
@@ -381,12 +388,49 @@ type PromptEdit struct {
 // Typed is the edit once text was typed into the field before it went
 // in: the text follows the prompt, at its caret, which moves past it, so
 // what the owner typed after Tab or Enter is not lost when the field's
-// text is replaced (Codex review of #108, round 2).
+// text is replaced (Codex review of #108, round 2). A paste is typed so
+// too.
 func (e *PromptEdit) Typed(text string) {
 	runes := []rune(e.Text)
 	at := min(max(e.Caret, 0), len(runes))
 	e.Text = string(runes[:at]) + text + string(runes[at:])
 	e.Caret = at + utf8.RuneCountInString(text)
+}
+
+// EditKey is a key that edits a prompt's text on its way in.
+type EditKey int
+
+const (
+	EditBackspace EditKey = iota
+	EditDelete
+	EditLeft
+	EditRight
+)
+
+// Key is the edit once key was pressed in the field before it went in, as
+// the field does it at the edit's caret: Backspace takes the character
+// before it, Delete the one after it, Left and Right move it. The text
+// the prompt put in is what keys edit, never the call it replaced (Codex
+// review of #108, round 3).
+func (e *PromptEdit) Key(key EditKey) {
+	runes := []rune(e.Text)
+	at := min(max(e.Caret, 0), len(runes))
+	switch key {
+	case EditBackspace:
+		if at > 0 {
+			runes = append(runes[:at-1], runes[at:]...)
+			at--
+		}
+	case EditDelete:
+		if at < len(runes) {
+			runes = append(runes[:at], runes[at+1:]...)
+		}
+	case EditLeft:
+		at = max(at-1, 0)
+	case EditRight:
+		at = min(at+1, len(runes))
+	}
+	e.Text, e.Caret = string(runes), at
 }
 
 // Key is what key does in the picker with text, the field's text as the
@@ -418,7 +462,7 @@ func (p *PromptPicker) Key(key PickerKey, text string, prompts proto.Prompts) Pi
 			step = -1
 		}
 		i := (m.Highlight + step + len(m.Items)) % len(m.Items)
-		p.highlight, p.query = m.Items[i].Name, m.Head.Name
+		p.highlight, p.query, p.drawn = m.Items[i].Name, m.Head.Name, true
 		return PickerResult{Took: true}
 	case PickerEnter, PickerTab:
 		if m.gone {
@@ -483,7 +527,7 @@ func (p *PromptPicker) Refused(draft string) string {
 // end; another gets a / of its own on a first line, its text below, and
 // the caret after the /.
 func (p *PromptPicker) Summon(draft string) (text string, caret int) {
-	p.closedOn, p.highlight, p.query, p.shown = "", "", "", false
+	p.closedOn, p.highlight, p.query, p.drawn, p.shown = "", "", "", false, false
 	if _, ok := ParseSlashHead(draft); ok {
 		line, _, _ := strings.Cut(draft, "\n")
 		return draft, utf8.RuneCountInString(line)

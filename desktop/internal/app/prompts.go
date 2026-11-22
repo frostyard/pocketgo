@@ -35,6 +35,36 @@ func (cp *composer) hidePicker(id int64) {
 	}
 }
 
+// keyOnEdit is what key k does in session id's field while prompt edit e
+// waits for the next frame to go in (Codex review of #108, round 3): it
+// acts on the prompt's text, never on the call the field still shows.
+// Enter sends that text, as it would once shown, unless it is the Enter
+// that put the prompt in, which the picker holds; Shift+Enter breaks its
+// line; Backspace, Delete, Left and Right edit it at its caret
+// (state.PromptEdit.Key); any other key waits for nothing and does
+// nothing.
+func (a *App) keyOnEdit(id int64, composing state.Composer, picker *state.PromptPicker, e *fieldEdit, k ui.TextKey) bool {
+	switch {
+	case k.Key == ui.KeyEnter && k.Mods == 0:
+		if picker.Key(state.PickerEnter, e.Text, a.st.Data.Prompts()).Took {
+			return true
+		}
+		a.submit(id, composing, e.Text)
+	case k.Key == ui.KeyEnter && k.Mods == ui.Shift:
+		e.Typed("\n")
+	case k.Mods != 0:
+	case k.Key == ui.KeyBackspace:
+		e.Key(state.EditBackspace)
+	case k.Key == ui.KeyDelete:
+		e.Key(state.EditDelete)
+	case k.Key == ui.KeyLeft:
+		e.Key(state.EditLeft)
+	case k.Key == ui.KeyRight:
+		e.Key(state.EditRight)
+	}
+	return true
+}
+
 // picker is session id's / picker, made when missing.
 func (cp *composer) picker(id int64) *state.PromptPicker {
 	if cp.pickers == nil {
@@ -77,8 +107,16 @@ func pickerKey(k ui.TextKey) (state.PickerKey, bool) {
 func (a *App) promptMenu(c *ui.Context, id int64, draft *string, picker *state.PromptPicker, menu state.PromptMenu) {
 	t := c.Theme()
 	cp := &a.composer
-	ui.Column(c.Key("prompt-menu")).AlignItems(ui.Stretch).Radius(10).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
-		Background(frostui.Panel(t)).Padding(frostui.SpaceXS, 0).Role(ui.RoleList).Label("Saved prompts").Children(func() {
+	list := ui.Column(c.Key("prompt-menu")).AlignItems(ui.Stretch).Radius(10).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
+		Background(frostui.Panel(t)).Padding(frostui.SpaceXS, 0).Role(ui.RoleList).Label("Saved prompts")
+	// Escape closes it from a row the keyboard went to as well, and the
+	// field gets the keys back with its text as it was (Codex review of
+	// #108, round 3).
+	if list.Shortcut(0, ui.KeyEscape) {
+		picker.Key(state.PickerEscape, *draft, a.st.Data.Prompts())
+		cp.refocus = true
+	}
+	list.Children(func() {
 		if note := state.PromptNote(menu); note != "" {
 			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Padding(frostui.SpaceXS, frostui.SpaceM).Children(func() {
 				switch {
@@ -245,7 +283,12 @@ func (a *App) phonePrompts(c *ui.Context) {
 							if mobile.ListRow(c.Key("prompt:"+p.Name), mobile.RowOptions{Title: "/" + p.Name, Subtitle: subtitle,
 								Leading: func() { frostui.Icon(c, "pocket-prompt").FontSize(20).TextColor(t.Accent) }}).Focusable().Clicked() {
 								// Only into the composer shown, while it writes a
-								// message (Codex review of #108, round 1).
+								// message (Codex review of #108, round 1), and
+								// only while the sheet is open, not as it slides
+								// away after a choice (round 3).
+								if !a.phone.prompts {
+									return
+								}
 								if shown, ok := a.promptsComposer(); !ok || shown != id {
 									a.phone.prompts = false
 									return
