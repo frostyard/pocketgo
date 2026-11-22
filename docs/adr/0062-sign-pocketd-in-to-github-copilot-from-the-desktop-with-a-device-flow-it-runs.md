@@ -46,6 +46,6 @@
 
 ## References
 
-- Shapes: [specs: protocol rules 1, 5 and 69](../specs/protocol.md#rules), [design: system architecture](../design/architecture.md#operational-notes), [design: desktop client](../design/architecture.md#desktop-client), [plans: roadmap](../plans/roadmap.md) (item 32)
+- Shapes: [specs: protocol rules 1, 5 and 69](../specs/protocol.md#rules), [design: system architecture](../design/architecture.md#operational-notes), [design: desktop client](../design/architecture.md#desktop-client), [plans: roadmap](../plans/roadmap.md) (item 33)
 - Builds on: [ADR-0004](0004-build-the-service-on-pigs-durable-harness.md), [ADR-0005](0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0008](0008-keep-work-records-in-the-services-own-tables.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0018](0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md), [ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md), [ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [ADR-0049](0049-notify-the-owner-of-what-waits-once-decided-in-code.md)
 - Issue: [frostyard/pocketgo#73](https://github.com/frostyard/pocketgo/issues/73)
