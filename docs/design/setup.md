@@ -78,7 +78,7 @@ On a host whose journal is kept only in memory, the user's `journalctl` may show
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `POCKETD_LISTEN` | `127.0.0.1:8788` | where pocketd listens (step 3) |
-| `POCKETD_DATA` | `$XDG_STATE_HOME/pocketgo`, else `~/.local/state/pocketgo` | the data folder (step 4). Changing it moves nothing, and only the new folder is hidden from agents: stop pocketd and move the whole folder there first |
+| `POCKETD_DATA` | `$XDG_STATE_HOME/pocketgo`, else `~/.local/state/pocketgo` | the data folder (step 4). Changing it moves nothing, and only the new folder is hidden from agents: stop pocketd and move the whole folder there first. Where the file system of `~/.local/share/pocketgo-uploads` makes no unnamed files (`O_TMPFILE`), attachments are staged in the data folder, which must then be on the same file system (`uploads.Folder`) |
 | `POCKETD_PROFILES` | `~/.config/pi-pocket-team/agents` | the profile folder (step 7) |
 | `POCKETD_SKILLS` | `~/.pi/agent/skills` | the global skills folder (step 7) |
 | `POCKETD_INSTRUCTIONS` | `~/.pi/agent/AGENTS.md` | your rules for every session (step 7) |
@@ -107,7 +107,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:8788
 tailscale serve status
 ```
 
-`tailscale serve` needs MagicDNS and HTTPS certificates turned on for your tailnet in Tailscale's admin console. The *service URL* your devices sign in at is then `https://<host>.<tailnet>.ts.net`, and nothing else on the tailnet reaches port 8788.
+`tailscale serve` needs MagicDNS and HTTPS certificates turned on for your tailnet in Tailscale's admin console. The *service URL* your devices sign in at is the HTTPS address `tailscale serve status` prints, `https://<host>.<tailnet>.ts.net` with the host's MagicDNS name, which may differ from the name ssh uses; nothing else on the tailnet reaches port 8788.
 
 **Without `tailscale serve`:** set `POCKETD_LISTEN=<the host's tailnet address>:8788` in `~/.config/pocketd.env`, with pocketd stopped as Settings in step 2 says, and start it; the service URL is then `http://<host>.<tailnet>.ts.net:8788`. That is plain HTTP inside the tailnet, which WireGuard encrypts. The desktop asks before it sends the token over plain HTTP to any host but a loopback address or a `*.ts.net` name, a tailnet address such as `100.x.y.z` included (`state.NeedsHTTPWarning`). Never set an address outside the tailnet: the device token is the key to the service, and a shell on the host ([ADR-0025](../adr/0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md)).
 
@@ -203,14 +203,17 @@ scp -r examples/profiles/prompts <user>@<host>:.config/pi-pocket-team/agents/
 
 Copy `schedules.json` only when you want it: from then on it sends the supervisor's standing session a message every weekday at 8:30, with nobody at the desktop.
 
-With `POCKETD_PROFILES` set, copy to that folder instead. Over incus, `incus file push` does the same (with `--project <project>` if you deployed with one), with `--uid` and `--gid` of the service user so the files stay yours to edit.
+With `POCKETD_PROFILES` set, copy to that folder instead. Over incus, make the `prompts` folder first as the service user (`mkdir ~/.config/pi-pocket-team/agents/prompts`), then push each file without `-r`, with `--uid` and `--gid` of the service user so the files stay yours to edit, and `--project <project>` if you deployed with one: `incus file push --uid <uid> --gid <gid> examples/profiles/prompts/*.md <remote>:<instance><home>/.config/pi-pocket-team/agents/prompts/`, and the same for the profiles, where `<home>` is the user's home folder.
 
 **What must exist on the host:** each profile's `home` and `workspace`, and a git checkout of each repository at its folder, with `origin` on GitHub and a parent folder the service user can write. For cross-reviews, the checkout's repository must have no `info/attributes` file and git no system attributes file (`git var GIT_ATTR_SYSTEM` names it), even an empty one; a tracked `.gitattributes` is fine (`attributesIsolated`). A thread works in `<checkout>--<agent>-<slug>`, on the branch `<agent>/<slug>`, started from a fresh fetch of `origin`'s default branch; when that fetch fails, from the checkout's `HEAD`, and the specialist's brief says so (`team.Worktree`, `team.StaleBase`, [ADR-0056](../adr/0056-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md)). For the examples:
 
 ```sh
 mkdir -p ~/team/supervisor ~/team/builder ~/src
-git clone https://github.com/your-org/your-repo ~/src/your-repo
+GIT_CONFIG_GLOBAL=/dev/null git -c credential.helper='!gh auth git-credential' \
+  clone https://github.com/your-org/your-repo ~/src/your-repo
 ```
+
+Agents can change the user's git configuration, and a credential helper, a filter or a hook it names would run outside the sandbox: `GIT_CONFIG_GLOBAL=/dev/null` reads none of it, and the one helper named is gh, from the shell's `PATH`, which holds no folder of the user's.
 
 **`providers.json`** names servers of your own, which speak the OpenAI completions API or Anthropic's messages API. Keep its addresses in your private copy, never in this repository:
 
@@ -306,7 +309,7 @@ systemctl --user -M <user>@ start pocketd
 
 Copy only after the stop succeeded, and trust the backup only when `backup done` printed.
 
-Restore it the same way. Stop pocketd, and while the current data folder is still there, list its devices with `~/.local/bin/pocketd device list` as the service user, and keep its `auth.json`. Put the saved folder back whole, owned by the service user, with the current `auth.json` in place of the saved one: a subscription may have replaced its refresh token since the backup. Before you start pocketd, list the devices again and revoke, with `~/.local/bin/pocketd device revoke <name>`, every restored device that is active and not active with the same ID in the current list: the restored `work.sqlite` holds every token as it was at the backup, a device since revoked or replaced included. Add a device you still use again under a new name. Without the current folder, revoke every restored device that is active, add the ones you use again, set the restored `auth.json` aside where agents cannot read it, and sign in again to the models you still use. pocketd does not reconcile one database restored to an earlier point than the other. The uploads folder, the profile folder and the checkouts are not in the data folder: keep them as you keep the rest of your configuration.
+Restore it the same way. Stop pocketd, and while the current data folder is still there, list its devices with `~/.local/bin/pocketd device list` as the service user, and keep its `auth.json`. Put the saved folder back whole, owned by the service user, with the current `auth.json` in place of the saved one: a subscription may have replaced its refresh token since the backup. Before you start pocketd, list the devices again and revoke, with `~/.local/bin/pocketd device revoke <name>`, every restored device that is active and not active with the same ID in the current list: the restored `work.sqlite` holds every token as it was at the backup, a device since revoked or replaced included. Add a device you still use again under a new name. Without the current folder, revoke every restored device that is active, add the ones you use again, set the restored `auth.json` aside where agents cannot read it, and sign in again to the models you still use. pocketd does not reconcile one database restored to an earlier point than the other. The uploads folder, the profile folder and the checkouts are not in the data folder: keep them as you keep the rest of your configuration. An open thread's files are in its worktree beside the checkout, which no database holds: to move to another host with work in flight, copy the checkouts with their worktrees, at the same paths, before pocketd starts there.
 
 ### Starting over
 
@@ -323,8 +326,8 @@ Before it binds its port, `pocketd serve` makes the sandbox and proves it with t
 | `bwrap is not installed in /usr/bin/bwrap, /bin/bwrap, /usr/local/bin/bwrap` | install bubblewrap from the system's packages |
 | `no bwrap only root can change is installed` | the named file or a folder on its way is writable by a user other than root: install bwrap where only root can change it |
 | `the sandbox check failed: process 1 is "…", not bwrap` | the first trial command did not run as it should: most often bwrap could not make its namespaces (turn on unprivileged user namespaces, and check with the probe in step 1); the error after it says more |
-| `… is a symbolic link the service user can change: pocketd cannot protect …` | a protected path, such as the profile folder, the skills folder or `~/.config/systemd`, is a link the user owns: make it a real folder, or name the real folder with `-profiles`, `-skills` or their variables |
-| `… leads through something the service user can change` | the same, for a folder on the way to a protected path, or a link in the systemd folders to a file the user can change |
+| `… is a symbolic link the service user can change: pocketd cannot protect …` | a link on the way to a protected path (the profile folder, the skills folder, `~/.config/systemd`, …) lies in a folder the service user can write, whoever owns the link (`checkedPath`): replace it with the real folder, or name the real folder with `POCKETD_PROFILES` or `POCKETD_SKILLS` |
+| `… leads through something the service user can change` | a link inside the systemd folders leads through a folder or to a file the user can change (`linksStayProtected`): point it at a file only root can change, or remove it |
 | `… is not empty in the sandbox` or `… is on a mount that is not read-only in the sandbox` | a mount the masks or the read-only binds miss: look at `/proc/self/mountinfo` for a second mount of the named path |
 | `no regular file` | the global instructions path holds a folder or another kind of file: make it a regular file, or turn the global instructions off with `-instructions=` in the unit's drop-in (step 2) |
 

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide takes the service URL from tailscale serve status, the host's MagicDNS name, which may differ from the name ssh uses.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 9 (codex-cli 0.169.0) of head 0519584: [P2] Use the HTTPS name printed by Tailscale Serve",
+  "promoted_to": "docs/design/setup.md"
+}

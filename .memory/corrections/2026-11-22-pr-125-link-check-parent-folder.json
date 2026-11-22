@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's start-check table says a link fails checkedPath when it lies in a folder the user can write, whoever owns it, and names linksStayProtected's check of links inside the systemd folders apart.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 9 (codex-cli 0.169.0) of head 0519584: [P2] Diagnose changeable symlinks by their parent directory",
+  "promoted_to": "docs/design/setup.md"
+}
