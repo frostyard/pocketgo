@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "make",
+  "correction": "The test that pins make race's default timeout runs its dry run with the caller's RACE_TIMEOUT, MAKEFLAGS, MAKEOVERRIDES and MFLAGS cleared, so a valid override such as RACE_TIMEOUT=1200s never fails verify and the Makefile's own default is what is checked.",
+  "evidence": "frostyard/pocketgo#115, Codex CLI review round 1 of head 7c2518e: [P2] Isolate the default timeout test from caller overrides",
+  "promoted_to": "test/makefile.test.mjs"
+}

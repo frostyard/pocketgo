@@ -148,7 +148,11 @@ test("make check formats before it verifies", () => {
 // at fault (frostyard/pocketgo#114), and that timeout leaves CI's job time
 // for the rest of make ci.
 test("make race gives each package a timeout longer than go test's default and shorter than CI's job", () => {
-  const run = make("-n", "race", "MODULES=proto");
+  // The Makefile's own default: neither the caller's RACE_TIMEOUT nor an
+  // outer make's overrides reach this dry run (Codex review of #115).
+  const env = { ...process.env };
+  for (const name of ["RACE_TIMEOUT", "MAKEFLAGS", "MAKEOVERRIDES", "MFLAGS"]) delete env[name];
+  const run = spawnSync("make", ["--no-print-directory", "-n", "race", "MODULES=proto"], { cwd: repo, encoding: "utf8", env });
   assert.equal(run.status, 0, run.stderr);
   const flag = /go test -race -short -timeout (\d+)m \.\/\.\.\./.exec(run.stdout);
   assert.ok(flag, run.stdout);
