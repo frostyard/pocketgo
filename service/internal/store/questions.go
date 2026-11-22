@@ -92,7 +92,9 @@ func jsonList[T any](list []T) string {
 // QuestionID's), created now, or returns the question its call recorded
 // already, waiting or settled; created says which. A question of a call
 // that has none, while another of its session waits, is
-// ErrQuestionWaits.
+// ErrQuestionWaits. Two calls of one turn that run at once are read and
+// written one after the other: every transaction of the store takes the
+// write lock as it begins (dsn's _txlock).
 func (s *Store) PutQuestion(ctx context.Context, row QuestionRow) (QuestionRow, bool, error) {
 	row.ID = QuestionID(row.TaskID, row.CallID)
 	tx, err := s.db.BeginTx(ctx, nil)
