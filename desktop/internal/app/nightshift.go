@@ -41,11 +41,11 @@ func boardSection(c *ui.Context, key, title, icon string, count int, fn func()) 
 
 // proposalsSection lists the proposals still proposed, in board order,
 // each with a Pick checkbox and a Drop button, then the end chooser and
-// Launch picks (N).
-func (a *App) proposalsSection(c *ui.Context) {
+// Launch picks (N). list is the board's proposals (Data.BoardProposals),
+// which the board reads once.
+func (a *App) proposalsSection(c *ui.Context, list []proto.Proposal) {
 	d := &a.st.Data
 	status, problem := d.ProposalsStatus()
-	list := d.BoardProposals()
 	now := a.opts.Now()
 	boardSection(c, "proposals", "Proposals", "view-list", len(list), func() {
 		if status == state.ListFailed {

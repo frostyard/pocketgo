@@ -113,6 +113,7 @@ Built on 2026-11-21, as [ADR-0044](../adr/0044-navigate-a-compact-window-by-a-ba
   - The bars go under the status bar and the home indicator, and the toasts show under the top bar.
   - Nothing raises a phone's keyboard unasked: an opened session does not focus its composer, and New Session gives its Cancel the focus. New Session opens as a sheet, which keeps its buttons above the keyboard. The composer's hints name no keys, and its model chip takes a row of its own, so Send stays on screen.
   - Settings is a list in More (Appearance's Zoom), not the desktop's two-pane window.
+  - The work board puts a Proposals or Schedules section that holds nothing after the threads, and keeps one that holds something above them (`state.BoardOrder`, the owner's answer of 2026-11-21 to #85's question).
 - [x] The same compact layout for an iPad window narrower than 760 under Split View, Slide Over or Stage Manager. The iPad keeps multitasking, with no full-screen requirement (the owner's choice of 2026-11-21). `state.Compact` holds for any iOS window narrower than 760.
 - [ ] The titles cut short at iPad portrait (820×1180): the main bar's title and its note, which the search field crowds ("2 tool calls…"), and the cards' titles ("write waits for your ap…"). The owner left them for this phase on 2026-11-21.
   - Not done: Phase 3 keeps the iPad's full window as it is. Its card titles could wrap as a compact window's do.

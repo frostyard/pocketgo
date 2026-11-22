@@ -55,5 +55,5 @@
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#service), [specs/protocol.md](../specs/protocol.md) (rules 25 and 25a)
-- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 20, the supervisor's view of the owner's Inbox)
+- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 21, the supervisor's view of the owner's Inbox)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0017](0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md), [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0037](0037-unblock-a-thread-when-the-supervisors-message-reaches-it.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md)

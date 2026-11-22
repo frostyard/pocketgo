@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A list the view needs for a rule and for drawing is read once a frame and passed on, not read again by the section that draws it",
+  "evidence": "frostyard/pocketgo#90, Codex CLI review round 1 (codex-cli 0.169.0) of head 73339ff: [P3] Reuse the filtered proposal list when drawing the board",
+  "promoted_to": "desktop/internal/app/compact_board_test.go"
+}

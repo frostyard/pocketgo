@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Whether a board section holds anything counts everything the section shows, not only its entries: the Proposals section holds a launch in flight, its refusal and its confirmation until its end too (state.ProposalsSay), so a compact window keeps it above the threads as the owner waits on a launch",
+  "evidence": "frostyard/pocketgo#90, Codex CLI review round 1 (codex-cli 0.169.0) of head 73339ff: [P2] Keep launch results above threads on compact boards",
+  "promoted_to": "desktop/internal/app/compact_board_test.go"
+}

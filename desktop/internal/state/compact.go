@@ -1,6 +1,11 @@
 package state
 
-import "strconv"
+import (
+	"strconv"
+	"time"
+
+	"github.com/frostyard/pocketgo/proto"
+)
 
 // A compact window (Compact), an iPhone's, goes between its places by a
 // bar of tabs at the bottom (ADR-0044): the Inbox, with what waits there,
@@ -104,4 +109,62 @@ func InboxBadge(kinds []InboxKind) string {
 		return "!"
 	}
 	return ""
+}
+
+// BoardPart is a part of the work board, as BoardOrder orders them.
+type BoardPart int
+
+const (
+	// PartProposals and PartSchedules are the night shift's sections
+	// (ADR-0034).
+	PartProposals BoardPart = iota
+	PartSchedules
+	// PartThreads are the threads, grouped by who moves them next.
+	PartThreads
+)
+
+// NightShiftHolds reports whether a night shift's section of the work
+// board holds anything beyond its note that it is empty: an entry, the
+// failure of its list's last fetch, or more, which the section says (a
+// launch whose answer was lost, for the proposals; the problem of the
+// owner's schedules file, for the schedules). While its list loads, it
+// holds nothing yet.
+func NightShiftHolds(entries int, status ListStatus, more bool) bool {
+	return entries > 0 || status == ListFailed || more
+}
+
+// ProposalsSay reports whether the board's Proposals section says more
+// than its proposals (NightShiftHolds' more), as the owner waits on a
+// launch: a launch whose answer was lost, which it offers again
+// (uncertain); a launch in flight, or its refusal (launching); or the
+// launch it confirms, until its end at now (launched). The last proposal
+// may have left the board with any of them (Codex review of #90, round
+// 1).
+func ProposalsSay(uncertain bool, launching Pending, launched *proto.Launch, now time.Time) bool {
+	return uncertain || launching.Busy || launching.Err != "" || (launched != nil && launched.End.After(now))
+}
+
+// BoardOrder is the order the work board draws its parts in, given
+// whether its Proposals and Schedules sections hold anything
+// (NightShiftHolds). A desktop's window draws the night shift first, then
+// the threads, whatever they hold. A compact window, a phone's, keeps a
+// section that holds something above the threads, and puts one that holds
+// nothing after them, where it takes none of the screen the threads need
+// (the owner's choice of 2026-11-21, within ADR-0044).
+func BoardOrder(compact, proposals, schedules bool) []BoardPart {
+	if !compact {
+		return []BoardPart{PartProposals, PartSchedules, PartThreads}
+	}
+	var above, below []BoardPart
+	for _, s := range []struct {
+		part  BoardPart
+		holds bool
+	}{{PartProposals, proposals}, {PartSchedules, schedules}} {
+		if s.holds {
+			above = append(above, s.part)
+		} else {
+			below = append(below, s.part)
+		}
+	}
+	return append(append(above, PartThreads), below...)
 }
