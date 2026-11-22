@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A resync clears Data.threadReplied: the event a reply's copy waits for may be among the events lost, so no thread event is dropped for a reply held before the resync, even after the fetch that follows brings a copy as old as the reply.",
+  "evidence": "frostyard/pocketgo#117, Codex CLI review round 1 of head 1b53165: [P2] Retire reply markers when the stream loses its replay history",
+  "promoted_to": "desktop/internal/state/shift_test.go"
+}
