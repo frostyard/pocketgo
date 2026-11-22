@@ -26,6 +26,8 @@ import (
 	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/MichaelKinsy/PiG/mcp"
 	"github.com/MichaelKinsy/PiG/mcp/oauth"
+	pigschema "github.com/MichaelKinsy/PiG/schema"
+	"github.com/MichaelKinsy/PiG/schema/formats"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
@@ -724,8 +726,17 @@ func normalSchema(input json.RawMessage) json.RawMessage {
 	if json.Unmarshal(data, &decoded) != nil || !validSchema(decoded) {
 		return json.RawMessage(emptySchema)
 	}
+	// It compiles as PiG compiles a tool's schema to check a call's
+	// arguments: a pattern that is no regular expression would fail every
+	// call before it reaches the server.
+	if _, err := pigschema.CompileCoercing(decoded, pigschema.CompileOptions{Formats: schemaFormats(), UnresolvedRefs: pigschema.UnresolvedRefsReject}); err != nil {
+		return json.RawMessage(emptySchema)
+	}
 	return data
 }
+
+// schemaFormats are the formats PiG checks a tool's arguments with.
+var schemaFormats = sync.OnceValue(formats.Formats)
 
 // maxSchemaDepth bounds how deep validSchema reads a schema.
 const maxSchemaDepth = 32
@@ -1150,24 +1161,111 @@ func (c *mcpConn) list(ctx context.Context, client *mcp.Client) error {
 		if err != nil {
 			return err
 		}
-		var result struct {
-			Tools      *[]mcp.Tool `json:"tools"`
-			NextCursor *string     `json:"nextCursor"`
-		}
 		// Every page names its tools, an empty list included: one that
 		// names none is no list, and the last listing stays.
-		if err := json.Unmarshal(raw, &result); err != nil || result.Tools == nil {
+		got, next, err := decodeToolsPage(raw, maxMCPTools-len(listed))
+		if err != nil {
 			return errMCPList
 		}
-		got := *result.Tools
-		listed = append(listed, got[:min(len(got), maxMCPTools-len(listed))]...)
-		if result.NextCursor == nil || *result.NextCursor == "" {
+		listed = append(listed, got...)
+		if next == nil || *next == "" {
 			break
 		}
-		cursor = result.NextCursor
+		cursor = next
 	}
 	c.hub.listed(c.server.Name, toolsOf(listed))
 	return nil
+}
+
+// decodeToolsPage reads a tools/list result a value at a time: at most
+// allow of its tools, each decoded as PiG's mcp.Tool, the others skipped
+// with nothing kept of them, so a page of many small entries costs no
+// more than the tools pocketd takes; and its next cursor, before or after
+// the tools. A result that is no object, or names no tools list, is
+// errMCPList.
+func decodeToolsPage(raw json.RawMessage, allow int) ([]mcp.Tool, *string, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, nil, errMCPList
+	}
+	var tools []mcp.Tool
+	var next *string
+	listed := false
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return nil, nil, errMCPList
+		}
+		switch key {
+		case "tools":
+			tok, err := dec.Token()
+			if err != nil {
+				return nil, nil, errMCPList
+			}
+			if tok == nil {
+				listed, tools = false, nil
+				continue
+			}
+			if tok != json.Delim('[') {
+				return nil, nil, errMCPList
+			}
+			listed, tools = true, nil
+			for dec.More() {
+				if len(tools) < allow {
+					var tool mcp.Tool
+					if err := dec.Decode(&tool); err != nil {
+						return nil, nil, errMCPList
+					}
+					tools = append(tools, tool)
+					continue
+				}
+				// A tool past the allowance, skipped into nothing: a
+				// tool is an object, and an entry that is none makes no
+				// list, as it would decoded.
+				var skipped struct{}
+				if err := dec.Decode(&skipped); err != nil {
+					return nil, nil, errMCPList
+				}
+			}
+			if _, err := dec.Token(); err != nil {
+				return nil, nil, errMCPList
+			}
+		case "nextCursor":
+			next = nil
+			if err := dec.Decode(&next); err != nil {
+				return nil, nil, errMCPList
+			}
+		default:
+			if err := skipJSON(dec); err != nil {
+				return nil, nil, errMCPList
+			}
+		}
+	}
+	if !listed {
+		return nil, nil, errMCPList
+	}
+	return tools, next, nil
+}
+
+// skipJSON reads the next value of dec, token by token, keeping nothing
+// of it.
+func skipJSON(dec *json.Decoder) error {
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch tok {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+		if depth == 0 {
+			return nil
+		}
+	}
 }
 
 // dropLocked closes client, the connection's or an old one; mu is held.
@@ -1488,6 +1586,10 @@ func redactText(text string, secrets []string) string {
 	return redact(text, secrets)
 }
 
+// redactResultText is redactText for a result's text block (tests count
+// its calls).
+var redactResultText = redactText
+
 // holdsSecret says whether text holds one of secrets, as it is or as JSON
 // writes it in a string.
 func holdsSecret(text string, secrets []string) bool {
@@ -1504,15 +1606,15 @@ func holdsSecret(text string, secrets []string) bool {
 // secret in it. Its text blocks are one text, each after the last on a
 // line of its own, the newline counted, an empty one left out: a
 // provider joins blocks with newlines past any bound pocketd would count
-// otherwise. The notices pocketd adds count in the text's bound: the mark
-// of a cut text, and one notice of the images left out on a line of its
-// own, both kept room for before any text. A structured result is
-// redacted before PiG renders it as JSON, whose escapes a secret's
-// spelling would not match.
+// otherwise. The notices pocketd adds count in the text's bound, each
+// only when it is said: one notice of the images left out on a line of
+// its own, and the mark of a text cut, which a text that fits with the
+// notice never is. No text past the bound is redacted, since none of it
+// goes. A structured result is redacted before PiG renders it as JSON,
+// whose escapes a secret's spelling would not match.
 func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult {
 	const imagesNotice = "[pocketd left out %d images: a result takes at most %d, of at most %d bytes each, png, jpeg, gif or webp]"
 	cutMark := fmt.Sprintf("\n[pocketd cut the rest: the result is longer than %d bytes]", maxMCPOutput)
-	budget := maxMCPOutput - len("\n") - len(fmt.Sprintf(imagesNotice, 9_999_999_999, maxMCPImages, maxMCPImageBytes)) - len(cutMark)
 	secrets := c.hub.store.secrets()
 	// PiG renders a structured result with no content blocks as indented
 	// JSON, whole, before any bound: pocketd writes it compact, redacted,
@@ -1525,7 +1627,7 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 	}
 	var images []ai.ToolResultMessageContent
 	var text strings.Builder
-	tried, dropped, done := 0, 0, false
+	tried, dropped := 0, 0
 	for _, block := range blocks {
 		if block.Type == mcp.LLMContentTypeImage {
 			// The cheap bounds first: no image past them is decoded, and
@@ -1544,28 +1646,35 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 			images = append(images, image)
 			continue
 		}
-		s := redactText(block.Text, secrets)
-		if done || s == "" {
+		// Past the bound already: nothing more goes, so nothing more is
+		// redacted.
+		if text.Len() > maxMCPOutput {
+			continue
+		}
+		s := redactResultText(block.Text, secrets)
+		if s == "" {
 			continue
 		}
 		if text.Len() > 0 {
-			s = "\n" + s
-		}
-		if len(s) > budget {
-			s, done = cut(s, budget)+cutMark, true
-		}
-		budget = max(0, budget-len(s))
-		text.WriteString(s)
-	}
-	if dropped > 0 {
-		if text.Len() > 0 {
 			text.WriteString("\n")
 		}
-		fmt.Fprintf(&text, imagesNotice, dropped, maxMCPImages, maxMCPImageBytes)
+		text.WriteString(s)
 	}
+	notice := ""
+	if dropped > 0 {
+		notice = fmt.Sprintf(imagesNotice, dropped, maxMCPImages, maxMCPImageBytes)
+		if text.Len() > 0 {
+			notice = "\n" + notice
+		}
+	}
+	body := text.String()
+	if len(body)+len(notice) > maxMCPOutput {
+		body = cut(body, max(0, maxMCPOutput-len(notice)-len(cutMark))) + cutMark
+	}
+	body += notice
 	var out []ai.ToolResultMessageContent
-	if text.Len() > 0 {
-		out = append(out, ai.TextContent{Text: text.String()})
+	if body != "" {
+		out = append(out, ai.TextContent{Text: body})
 	}
 	out = append(out, images...)
 	isError := result.IsError != nil && *result.IsError
@@ -1597,6 +1706,55 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 type serveAuth struct {
 	conn     *mcpConn
 	provider refreshOnly
+}
+
+// oauthChallenge is the Bearer or DPoP challenge of an answer's
+// WWW-Authenticate headers, wherever it comes among their schemes: PiG's
+// ParseWWWAuthenticate reads one only when it comes first, and a gateway
+// may offer Basic before it. A scheme starts a header or follows a comma
+// outside a quoted value, and is a token followed by a space, a comma or
+// the end, not by "=" as a parameter is.
+func oauthChallenge(header http.Header) oauth.OAuthChallenge {
+	joined := strings.Join(header.Values("Www-Authenticate"), ", ")
+	quoted, escaped, start := false, false, true
+	for i := 0; i < len(joined); i++ {
+		ch := joined[i]
+		switch {
+		case escaped:
+			escaped = false
+			continue
+		case quoted && ch == '\\':
+			escaped = true
+			continue
+		case ch == '"':
+			quoted = !quoted
+			continue
+		case quoted:
+			continue
+		case ch == ',':
+			start = true
+			continue
+		case ch == ' ' || ch == '\t':
+			continue
+		}
+		if !start {
+			continue
+		}
+		start = false
+		rest := joined[i:]
+		end := strings.IndexAny(rest, " \t,=")
+		word := rest
+		if end >= 0 {
+			word = rest[:end]
+		}
+		if end >= 0 && rest[end] == '=' {
+			continue
+		}
+		if strings.EqualFold(word, "bearer") || strings.EqualFold(word, "dpop") {
+			return oauth.ParseWWWAuthenticate(rest)
+		}
+	}
+	return oauth.OAuthChallenge{}
 }
 
 // mcpScopeError is a call the server refused for scope, which pocketd's
@@ -1651,10 +1809,10 @@ func (a *serveAuth) OnUnauthorized(ctx context.Context, unauthorized mcp.Unautho
 	if unauthorized.Response != nil && unauthorized.Response.StatusCode == http.StatusForbidden {
 		// The scope it asks for, as pocketd may say it: a call may want
 		// one that no sign-in's probe discovers.
-		asked := oauth.ParseWWWAuthenticate(strings.Join(unauthorized.Response.Header.Values("Www-Authenticate"), ", "))
+		asked := oauthChallenge(unauthorized.Response.Header)
 		return &mcpScopeError{scope: challengeScope(asked.Scope, a.conn.hub.store.secrets())}
 	}
-	challenge := oauth.ParseWWWAuthenticate(strings.Join(unauthorized.Response.Header.Values("Www-Authenticate"), ", "))
+	challenge := oauthChallenge(unauthorized.Response.Header)
 	a.conn.authMu.Lock()
 	flight := a.conn.flight
 	if flight == nil {

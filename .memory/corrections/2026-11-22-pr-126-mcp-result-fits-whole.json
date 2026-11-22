@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep room in an MCP result for the images notice and the cut mark only when each is said, so a text that fits the bound goes whole.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 10 (codex-cli 0.169.0) of head edc4f78: [P2] Keep text results that fit the advertised output limit",
+  "promoted_to": "service/pig/mcp_round10_test.go"
+}

@@ -172,6 +172,12 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 		return fmt.Errorf("the sign-in to %s did not start: %s; nothing was changed", server.Name, oauthWords(err))
 	}
 	scope := loginScope(server, challenge, info)
+	// The probe went out with the stored headers, and a server may echo
+	// one in its challenge: a scope that holds a secret pocketd keeps
+	// would reach the authorization server and the printed page.
+	if holdsSecret(scope, store.secrets()) {
+		return fmt.Errorf("the sign-in to %s did not start: the scope the server asks for holds a secret pocketd keeps; nothing was changed", server.Name)
+	}
 	// The sign-in runs on a copy: only a sign-in that ends reaches the
 	// store. A client pocketd registered before is kept when it was
 	// registered with the authorization server discovery names now, for
@@ -284,7 +290,7 @@ func probeChallenge(ctx context.Context, fetch *http.Client, server string, head
 	if response.StatusCode != http.StatusUnauthorized {
 		return oauth.OAuthChallenge{}
 	}
-	return oauth.ParseWWWAuthenticate(strings.Join(response.Header.Values("Www-Authenticate"), ", "))
+	return oauthChallenge(response.Header)
 }
 
 // loginScope is the scopes a sign-in asks for: the ones the server asks

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Redact no MCP text block once the result's text is past its bound: none of it goes.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 10 (codex-cli 0.169.0) of head edc4f78: [P3] Skip redaction of text blocks after output has been truncated",
+  "promoted_to": "service/pig/mcp_round10_test.go"
+}

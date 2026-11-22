@@ -96,6 +96,10 @@ type fakeMCP struct {
 	// page on plain HTTP.
 	metadataFails        int
 	plainAuth, plainPage bool
+	// challengeScope, when set, is the scope of the gateway's challenge,
+	// and basicFirst offers a Basic challenge before its Bearer one.
+	challengeScope string
+	basicFirst     bool
 }
 
 // otherAuthURL is an authorization server the gateway's metadata may
@@ -161,7 +165,14 @@ func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
 		}
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !f.access[token] {
-			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/gateway/mcp"`)
+			challenge := `Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/gateway/mcp"`
+			if f.challengeScope != "" {
+				challenge += `, scope="` + f.challengeScope + `"`
+			}
+			if f.basicFirst {
+				w.Header().Add("WWW-Authenticate", `Basic realm="gateway, Bearer scope=wrong"`)
+			}
+			w.Header().Add("WWW-Authenticate", challenge)
 			w.WriteHeader(http.StatusUnauthorized)
 			break
 		}
