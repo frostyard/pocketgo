@@ -174,24 +174,28 @@ func TestRealWaitHonorsTheContext(t *testing.T) {
 }
 
 // Each pull_request rule's approvals count on their own: two rules, one of
-// two approvals and one of one plus an extra, need two for a bot's pull
-// request, not three (pocketgo ADR-0018, Codex review of #24, round 4).
+// two approvals and one of one plus an extra, need two where the extra
+// counts, not three (pocketgo ADR-0018, Codex review of #24, round 4).
+// Where it does not (extraCounts, pocketgo ADR-0059), each rule needs its
+// count alone.
 func TestApprovalsNeededPerRule(t *testing.T) {
 	two := ApprovalRule{Count: 2}
 	oneExtra := ApprovalRule{Count: 1, Extra: true}
 	for _, c := range []struct {
-		name   string
-		p      BypassRules
-		author string
-		want   int
+		name  string
+		p     BypassRules
+		extra bool
+		want  int
 	}{
-		{"two rules, a bot", BypassRules{ApprovalRules: []ApprovalRule{two, oneExtra}}, "Bot", 2},
-		{"two rules, a user", BypassRules{ApprovalRules: []ApprovalRule{two, oneExtra}}, "User", 2},
-		{"one rule with the extra, a bot", BypassRules{ApprovalRules: []ApprovalRule{{Count: 2, Extra: true}}}, "Bot", 3},
-		{"no count, the extra alone", BypassRules{ApprovalRules: []ApprovalRule{{Extra: true}}}, "Bot", 0},
-		{"built without rules", BypassRules{Approvals: 1, ExtraUnattributed: true}, "Bot", 2},
+		{"two rules, the extra counts", BypassRules{ApprovalRules: []ApprovalRule{two, oneExtra}}, true, 2},
+		{"two rules, the extra does not count", BypassRules{ApprovalRules: []ApprovalRule{two, oneExtra}}, false, 2},
+		{"one rule with the extra, which counts", BypassRules{ApprovalRules: []ApprovalRule{{Count: 2, Extra: true}}}, true, 3},
+		{"one rule with the extra, which does not count", BypassRules{ApprovalRules: []ApprovalRule{{Count: 2, Extra: true}}}, false, 2},
+		{"no count, the extra alone", BypassRules{ApprovalRules: []ApprovalRule{{Extra: true}}}, true, 0},
+		{"built without rules", BypassRules{Approvals: 1, ExtraUnattributed: true}, true, 2},
+		{"built without rules, the extra does not count", BypassRules{Approvals: 1, ExtraUnattributed: true}, false, 1},
 	} {
-		if got := approvalsNeeded(c.p, c.author); got != c.want {
+		if got := approvalsNeeded(c.p, c.extra); got != c.want {
 			t.Errorf("%s: %d, want %d", c.name, got, c.want)
 		}
 	}

@@ -67,7 +67,8 @@ type BypassRules struct {
 }
 
 // ApprovalRule is one pull_request rule's approvals: its count, and
-// whether an unattributed change needs one more.
+// whether an unattributed change needs one more, which the gate counts as
+// GitHub's review decision shows it (extraCounts, pocketgo ADR-0059).
 type ApprovalRule struct {
 	Count int
 	Extra bool
