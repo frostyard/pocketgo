@@ -130,9 +130,23 @@ func TestTeamInboxListsWhatWaitsAndWhatWasSettled(t *testing.T) {
 	if _, _, err := h.store.SetPullChecks(ctx, three.ID, three.HeadSHA, string(proto.ChecksGreen)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, err := h.store.AddReview(ctx, three, store.ReviewRow{Key: "review", PullID: three.ID, ThreadID: vera.ID, SessionID: vera.Session, Agent: "irulan",
-		Provider: "openai", Model: "gpt", Family: "openai", HeadSHA: three.HeadSHA, Verdict: "ready", Summary: "Fine.", BaseRef: "main"}, nil); err != nil {
-		t.Fatal(err)
+	// GitHub named #3's merge base, and a ready verdict was filed on it; a
+	// later not-ready verdict on another merge base backs nothing, so the
+	// verdict at its head is the ready one (ADR-0019; Codex review of #91,
+	// round 1).
+	mergeBase := strings.Repeat("c", 40)
+	if three, _, err = h.store.SetPullMergeBase(ctx, three.ID, three.HeadSHA, three.Base, mergeBase); err != nil || three.MergeBase != mergeBase {
+		t.Fatalf("the merge base: %+v %v", three, err)
+	}
+	for _, r := range []store.ReviewRow{
+		{Key: "review", Verdict: "ready", MergeBase: mergeBase},
+		{Key: "stale", Verdict: "not-ready", MergeBase: strings.Repeat("d", 40)},
+	} {
+		r.PullID, r.ThreadID, r.SessionID, r.Agent, r.Provider, r.Model, r.Family = three.ID, vera.ID, vera.Session, "irulan", "openai", "gpt", "openai"
+		r.HeadSHA, r.Summary, r.BaseRef = three.HeadSHA, "Read it.", "main"
+		if _, _, _, _, err := h.store.AddReview(ctx, three, r, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := h.server.TeamMemory(ctx, TeamCall{Session: vera.Session, Task: 6, CallID: "l1"}, team.Memory{Action: team.MemoryAdd, Text: "Rebase before you push."}); err != nil {
 		t.Fatal(err)
@@ -140,7 +154,12 @@ func TestTeamInboxListsWhatWaitsAndWhatWasSettled(t *testing.T) {
 	if _, _, err := h.store.RequestApproval(ctx, store.ApprovalRow{SessionID: vera.Session, TaskID: 9, CallID: "w1", Tool: "write", Arguments: []byte(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
-	h.server.StartPulls(5 * time.Minute)
+	// Rounds every 5 minutes, as StartPulls records them, with no timer and
+	// no review pass started on these records (Codex review of #91, round
+	// 1; TestTheInboxSaysHowOftenPullRequestsAreRead covers StartPulls).
+	h.server.sessionMu.Lock()
+	h.server.pullsStarted, h.server.pullEvery = true, 5*time.Minute
+	h.server.sessionMu.Unlock()
 	h.clock.Advance(time.Hour)
 
 	text, err := h.server.TeamInbox(ctx, TeamCall{Session: h.super.ID, Task: 7, CallID: "i1"})
@@ -157,15 +176,52 @@ func TestTeamInboxListsWhatWaitsAndWhatWasSettled(t *testing.T) {
 		"Tool calls to approve (1):\n- " + store.ApprovalID(9, "w1") + " · session " + fmt.Sprint(vera.Session) + " · write · asked 1h ago",
 		"Settled in the last 7 days, since Thu 19 Nov 23:00 UTC:\nQuestions answered or withdrawn (1):\n" +
 			`- A2 · T2 "Fix CI" · vera: "Which branch?" · answered 1h ago (Thu 26 Nov 22:00 UTC) on laptop: "main"` + "\n",
-		"Pull requests merged or closed (1):\n" + `- frostyard/example#6 · T2 "Fix CI" · "Abandoned" · closed · recorded 1h ago (Thu 26 Nov 22:00 UTC)` + "\n",
+		"Pull requests merged or closed whose record changed in the window (1):\n" + `- frostyard/example#6 · T2 "Fix CI" · "Abandoned" · closed · record last changed 1h ago (Thu 26 Nov 22:00 UTC)` + "\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the answer lacks %q:\n%s", want, text)
 		}
 	}
-	for _, not := range []string{"#4", "#5", "Old fix", "A1 ·", "Squash"} {
+	for _, not := range []string{"#4", "#5", "Old fix", "A1 ·", "Squash", "not-ready"} {
 		if strings.Contains(text, not) {
 			t.Errorf("the answer holds %q:\n%s", not, text)
+		}
+	}
+}
+
+// The answer's first line says how often pocketd reads pull requests, as
+// StartPulls set it: not begun before it runs, every interval after, or
+// in no rounds. The rounds' timer is the test's, never the wall clock's
+// (Codex review of #91, round 1).
+func TestTheInboxSaysHowOftenPullRequestsAreRead(t *testing.T) {
+	for _, tc := range []struct {
+		every time.Duration
+		want  string
+	}{{5 * time.Minute, "again every 5m;"}, {0, "in no rounds (-pr-every 0)"}} {
+		h := newTeamHarness(t)
+		ctx := context.Background()
+		var rounds []time.Duration
+		h.server.pullTimer = func(d time.Duration, _ func()) func() {
+			rounds = append(rounds, d)
+			return func() {}
+		}
+		inbox := func() string {
+			t.Helper()
+			text, err := h.server.TeamInbox(ctx, TeamCall{Session: h.super.ID, Task: 1, CallID: "i1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return text
+		}
+		if text := inbox(); !strings.Contains(text, "have not begun since it started") {
+			t.Fatalf("before StartPulls:\n%s", text)
+		}
+		h.server.StartPulls(tc.every)
+		if text := inbox(); !strings.Contains(text, tc.want) {
+			t.Fatalf("after StartPulls(%v):\n%s", tc.every, text)
+		}
+		if tc.every > 0 && (len(rounds) != 1 || rounds[0] != tc.every) || tc.every == 0 && len(rounds) != 0 {
+			t.Fatalf("StartPulls(%v) scheduled %v", tc.every, rounds)
 		}
 	}
 }

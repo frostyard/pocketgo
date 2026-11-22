@@ -878,43 +878,25 @@ func (s *Store) Ask(ctx context.Context, id int64) (AskRow, error) {
 
 // OpenAsks are the asks that wait for the owner, the oldest first.
 func (s *Store) OpenAsks(ctx context.Context) ([]AskRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+askColumns+` FROM asks WHERE state = ? ORDER BY created_at, id`, AskOpen)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []AskRow
-	for rows.Next() {
-		row, err := scanAsk(rows.Scan)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
+	return openAsksIn(ctx, s.db)
+}
+
+func openAsksIn(ctx context.Context, q queryer) ([]AskRow, error) {
+	return queryRows(ctx, q, scanAsk, `SELECT `+askColumns+` FROM asks WHERE state = ? ORDER BY created_at, id`, AskOpen)
 }
 
 // SettledAsks are the asks answered at since or later, and those a
 // supervisor's message withdrew at since or later (ADR-0037), the most
 // recently settled first: what team_inbox lists as settled (ADR-0046).
 func (s *Store) SettledAsks(ctx context.Context, since time.Time) ([]AskRow, error) {
+	return settledAsksIn(ctx, s.db, since)
+}
+
+func settledAsksIn(ctx context.Context, q queryer, since time.Time) ([]AskRow, error) {
 	at := toMillis(since)
-	rows, err := s.db.QueryContext(ctx, `SELECT `+askColumns+` FROM asks
+	return queryRows(ctx, q, scanAsk, `SELECT `+askColumns+` FROM asks
 		WHERE (state = ? AND answered_at >= ?) OR (state = ? AND withdrawn_at >= ?)
 		ORDER BY COALESCE(answered_at, withdrawn_at) DESC, id DESC`, AskAnswered, at, AskWithdrawn, at)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []AskRow
-	for rows.Next() {
-		row, err := scanAsk(rows.Scan)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
 }
 
 // ErrWithdrawn is an answer to an ask a supervisor's message withdrew

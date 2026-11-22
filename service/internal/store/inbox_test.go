@@ -105,4 +105,84 @@ func TestSettledAsksAndPulls(t *testing.T) {
 	if asks, _ := s.SettledAsks(ctx, base); asks[0].WithdrawnAt == nil || !asks[0].WithdrawnAt.Equal(base.Add(6*24*time.Hour)) || asks[1].AnsweredAt == nil {
 		t.Fatalf("settled asks %+v", asks)
 	}
+	// A pull request merged on day 0 whose title a read changes on day 7
+	// is listed from day 1: its record changed then, and pocketd keeps no
+	// time of the merge (Codex review of #91, round 1).
+	now = base.Add(7 * 24 * time.Hour)
+	p, _, err := s.PullByRef(ctx, "frostyard/example", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ReadSeq, err = s.NextPullRead(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.Title = "renamed"
+	if _, changed, err := s.UpdatePull(ctx, p.ID, p); err != nil || !changed {
+		t.Fatalf("the rename: %v %v", changed, err)
+	}
+	if settled, _ := s.SettledPulls(ctx, base.Add(24*time.Hour)); len(settled) != 3 || settled[0].Number != 2 || !settled[0].UpdatedAt.Equal(now) {
+		t.Fatalf("after the rename: %+v", settled)
+	}
+}
+
+// Inbox reads in one snapshot: an ask answered and a pull request merged
+// while it reads, between its reads of what waits and of what was
+// settled, are in neither list of that read, never in both, and in the
+// settled lists of the next (Codex review of #91, round 1).
+func TestInboxReadsOneSnapshot(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "w.sqlite"), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	thread, _, err := s.CreateThread(ctx, ThreadRow{Key: "k", Title: "Fix CI", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask, err := s.CreateAsk(ctx, AskRow{Key: "a", ThreadID: thread.ID, SessionID: 9, Question: "Squash?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pull := PullRow{GitHubID: 101, Repository: "frostyard/example", Number: 1, Title: "t", URL: "u", State: PullOpen, Head: "b", HeadSHA: "s", Base: "main"}
+	if _, _, _, _, err := s.FileReportWithPulls(ctx, "r", thread.ID, ThreadOpen, "r", nil, []PullRow{pull}, func([]int64, []PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	since := now.Add(-time.Hour)
+	now = now.Add(time.Minute)
+	s.inboxRead = func() {
+		s.inboxRead = nil
+		if _, _, err := s.AnswerAsk(ctx, "answer", ask.ID, "yes", "laptop"); err != nil {
+			t.Error(err)
+		}
+		p, _, err := s.PullByRef(ctx, "frostyard/example", 1)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if p.ReadSeq, err = s.NextPullRead(ctx); err != nil {
+			t.Error(err)
+		}
+		p.State = PullMerged
+		if _, _, err := s.UpdatePull(ctx, p.ID, p); err != nil {
+			t.Error(err)
+		}
+	}
+	during, err := s.Inbox(ctx, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(during.Asks) != 1 || len(during.Answered) != 0 || len(during.Pulls) != 1 || during.Pulls[0].State != PullOpen || len(during.Closed) != 0 {
+		t.Fatalf("the read the changes crossed: asks %+v, answered %+v, pulls %+v, closed %+v", during.Asks, during.Answered, during.Pulls, during.Closed)
+	}
+	if during.Threads[thread.ID].Title != "Fix CI" {
+		t.Fatalf("threads %+v", during.Threads)
+	}
+	after, err := s.Inbox(ctx, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Asks) != 0 || len(after.Answered) != 1 || after.Pulls[0].State != PullMerged || len(after.Closed) != 1 {
+		t.Fatalf("the next read: asks %+v, answered %+v, pulls %+v, closed %+v", after.Asks, after.Answered, after.Pulls, after.Closed)
+	}
 }

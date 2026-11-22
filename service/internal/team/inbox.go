@@ -32,11 +32,14 @@ const (
 	// output limits let an answer this size through whole.
 	MaxInboxBytes = 24 << 10
 	MaxInboxLines = 400
-	// The most characters an item shows of a question, of an answer, and
-	// of a title: an answer is shown short.
+	// The most characters an item shows of a question, of an answer, of a
+	// title, and of the name of the device that answered: an answer is
+	// shown short, and every one of them on one line, so no item can push
+	// the others out of the answer (Codex review of #91, round 1).
 	inboxQuestion = 200
 	inboxAnswer   = 160
 	inboxTitle    = 100
+	inboxDevice   = 40
 )
 
 // InboxGuide is the line of the supervisor's instructions that names
@@ -198,7 +201,7 @@ func (in Inbox) lists(since time.Time) (waiting, settled []inboxList) {
 	}
 	settled = []inboxList{
 		{"Questions answered or withdrawn", in.answeredLines(since)},
-		{"Pull requests merged or closed", in.closedLines(since)},
+		{"Pull requests merged or closed whose record changed in the window", in.closedLines(since)},
 	}
 	return waiting, settled
 }
@@ -219,7 +222,7 @@ func (in Inbox) render(waiting, settled []inboxList, since time.Time, keep int, 
 	for _, l := range settled {
 		writeList(&b, l, keep)
 	}
-	b.WriteString("\nA question's times are pocketd's own. A merged or closed pull request's time is when pocketd recorded the change, at its first read after it; pocketd keeps no time of the merge or close itself.")
+	b.WriteString("\nA question's times are pocketd's own. pocketd keeps no time of a pull request's merge or close: a merged or closed one's time is when pocketd last changed its record, which is the read that found it merged or closed or a later change of its title, label or other fields, so one closed long ago may be listed for a recent change.")
 	return b.String()
 }
 
@@ -354,8 +357,8 @@ func (in Inbox) answeredLines(since time.Time) []string {
 		head := fmt.Sprintf("A%d · %s · %s: %q", a.ID, in.thread(a.Thread), in.agent(a.Thread), flat(a.Question, inboxQuestion))
 		if a.State == proto.AskAnswered {
 			by := ""
-			if a.AnsweredBy != "" {
-				by = " on " + a.AnsweredBy
+			if device := flat(a.AnsweredBy, inboxDevice); device != "" {
+				by = " on " + device
 			}
 			out[i] = fmt.Sprintf("%s · answered %s%s: %q", head, in.ago(at), by, flat(a.Answer, inboxAnswer))
 		} else {
@@ -365,8 +368,10 @@ func (in Inbox) answeredLines(since time.Time) []string {
 	return out
 }
 
-// closedLines are the pull requests merged or closed whose change pocketd
-// recorded at since or later, the most recent first.
+// closedLines are the pull requests merged or closed whose record last
+// changed at since or later, the most recent first: pocketd keeps no time
+// of a merge or a close, so the time shown is said to be the record's last
+// change, never the close (Codex review of #91, round 1).
 func (in Inbox) closedLines(since time.Time) []string {
 	var pulls []proto.PullRequest
 	for _, p := range in.Closed {
@@ -379,7 +384,7 @@ func (in Inbox) closedLines(since time.Time) []string {
 	})
 	out := make([]string, len(pulls))
 	for i, p := range pulls {
-		out[i] = fmt.Sprintf("%s#%d · %s · %q · %s · recorded %s", p.Repository, p.Number, in.thread(p.Thread), flat(p.Title, inboxTitle), p.State, in.ago(p.UpdatedAt))
+		out[i] = fmt.Sprintf("%s#%d · %s · %q · %s · record last changed %s", p.Repository, p.Number, in.thread(p.Thread), flat(p.Title, inboxTitle), p.State, in.ago(p.UpdatedAt))
 	}
 	return out
 }

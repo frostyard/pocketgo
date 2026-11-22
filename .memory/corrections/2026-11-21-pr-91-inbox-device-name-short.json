@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_inbox flattens and caps the answering device's name as it does a question and an answer, so a name with a line break or a long one neither splits its item nor pushes the others out of the bounded answer.",
+  "evidence": "frostyard/pocketgo#91, Codex CLI review round 1 (codex-cli 0.169.0) of head e223935: [P3] Bound the answering device name like other inbox text",
+  "promoted_to": "service/internal/team/inbox_test.go"
+}

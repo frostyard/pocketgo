@@ -249,7 +249,11 @@ func (s *Store) ListPulls(ctx context.Context) ([]PullRow, error) {
 // it so, unless a later read changed it again (a closed one of a thread
 // not closed is read in every round).
 func (s *Store) SettledPulls(ctx context.Context, since time.Time) ([]PullRow, error) {
-	return s.pulls(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE state IN (?, ?) AND updated_at >= ? ORDER BY updated_at DESC, id DESC`,
+	return settledPullsIn(ctx, s.db, since)
+}
+
+func settledPullsIn(ctx context.Context, q queryer, since time.Time) ([]PullRow, error) {
+	return queryRows(ctx, q, scanPull, `SELECT `+pullColumns+` FROM pull_requests WHERE state IN (?, ?) AND updated_at >= ? ORDER BY updated_at DESC, id DESC`,
 		PullMerged, PullClosed, toMillis(since))
 }
 

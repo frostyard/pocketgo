@@ -111,10 +111,10 @@ func TestInboxTextListsWhatWaitsAndWhatWasSettled(t *testing.T) {
 			`- A8 · T5 "Fix CI" · vera: "Ship it?" · answered 26h ago (Fri 20 Nov 13:00 UTC) on laptop: "not yet"` + "\n" +
 			`- A2 · T6 "Tidy the docs" · duncan: "Which branch?" · withdrawn 2d ago (Thu 19 Nov 15:00 UTC) by a supervisor's message to the thread, unanswered` + "\n" +
 			`- A1 · T5 "Fix CI" · vera: "Squash?" · answered 6d ago (Sat 14 Nov 15:30 UTC) on laptop: "yes, squash it"` + "\n",
-		"Pull requests merged or closed (2):\n" +
-			`- frostyard/docs#2 · T6 "Tidy the docs" · "Add the docs" · merged · recorded 2d ago (Thu 19 Nov 15:00 UTC)` + "\n" +
-			`- frostyard/example#11 · T5 "Fix CI" · "Abandoned" · closed · recorded 6d ago (Sat 14 Nov 15:01 UTC)` + "\n",
-		"pocketd keeps no time of the merge or close itself.",
+		"Pull requests merged or closed whose record changed in the window (2):\n" +
+			`- frostyard/docs#2 · T6 "Tidy the docs" · "Add the docs" · merged · record last changed 2d ago (Thu 19 Nov 15:00 UTC)` + "\n" +
+			`- frostyard/example#11 · T5 "Fix CI" · "Abandoned" · closed · record last changed 6d ago (Sat 14 Nov 15:01 UTC)` + "\n",
+		"pocketd keeps no time of a pull request's merge or close: a merged or closed one's time is when pocketd last changed its record",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the answer lacks %q:\n%s", want, text)
@@ -146,7 +146,7 @@ func TestInboxTextSaysWhatIsEmptyAndHowFresh(t *testing.T) {
 	empty := Inbox{Now: inboxNow, PullsStarted: true, PullEvery: time.Hour}
 	text := InboxText(empty)
 	for _, want := range []string{"Questions: none.", "Pull requests to review: none.", "Plans to approve: none.", "Lessons to decide: none.",
-		"Tool calls to approve: none.", "Questions answered or withdrawn: none.", "Pull requests merged or closed: none.", "again every 1h;"} {
+		"Tool calls to approve: none.", "Questions answered or withdrawn: none.", "Pull requests merged or closed whose record changed in the window: none.", "again every 1h;"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the answer lacks %q:\n%s", want, text)
 		}
@@ -257,5 +257,49 @@ func TestPullAndPlanWait(t *testing.T) {
 		if got := PlanWaits(tc.p); got != tc.want {
 			t.Errorf("%s: %v", name, got)
 		}
+	}
+}
+
+// pocketd keeps no time of a merge or a close, and a closed pull request
+// of a thread not closed is read in every round, so a change of its title
+// moves its record's time: the answer names that time as the record's last
+// change, never as when it was closed or first read so (Codex review of
+// #91, round 1).
+func TestInboxTextNamesAPullsTimeAsItsRecordsLastChange(t *testing.T) {
+	in := Inbox{Now: inboxNow, Zone: time.UTC, PullsStarted: true, PullEvery: 5 * time.Minute,
+		Closed: []proto.PullRequest{{ID: 1, Thread: 5, Repository: "frostyard/example", Number: 7, Title: "Renamed today", State: proto.PullClosed, UpdatedAt: at(time.Hour)}}}
+	text := InboxText(in)
+	for _, want := range []string{
+		"Pull requests merged or closed whose record changed in the window (1):",
+		`"Renamed today" · closed · record last changed 1h ago (Sat 21 Nov 14:00 UTC)`,
+		"so one closed long ago may be listed for a recent change",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the answer lacks %q:\n%s", want, text)
+		}
+	}
+	for _, not := range []string{"recorded 1h", "closed 1h ago", "first read"} {
+		if strings.Contains(text, not) {
+			t.Errorf("the answer says %q:\n%s", not, text)
+		}
+	}
+}
+
+// The name of the device that answered is one short line, as a question
+// and an answer are: a name with a line break, or a long one, neither
+// splits its item nor pushes every other item out of the answer (Codex
+// review of #91, round 1).
+func TestInboxTextKeepsTheDevicesNameShort(t *testing.T) {
+	in := inboxFixture()
+	in.Answered = []InboxAsk{{Ask: proto.Ask{ID: 1, Thread: 5, Question: "Squash?", State: proto.AskAnswered, Answer: "yes",
+		AnsweredBy: "lap\ntop " + strings.Repeat("\U0001F600", MaxInboxBytes), AnsweredAt: atPtr(time.Hour)}}}
+	text := InboxText(in)
+	if strings.Contains(text, "[team_inbox: cut") || !strings.Contains(text, "A3 ·") || !strings.Contains(text, "frostyard/example#12 ·") {
+		t.Fatalf("a long device name cut the answer:\n%s", text)
+	}
+	line := text[strings.Index(text, "- A1 ·"):]
+	line = line[:strings.IndexByte(line, '\n')]
+	if !strings.Contains(line, " on lap top ") || !strings.HasSuffix(line, `…: "yes"`) || len(line) > 600 {
+		t.Fatalf("the answered ask's line (%d bytes): %q", len(line), line)
 	}
 }

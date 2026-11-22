@@ -282,7 +282,12 @@ func (s *Store) Plans(ctx context.Context) ([]PlanFacts, error) {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	ids, err := queryRows(ctx, tx, func(scan func(...any) error) (int64, error) {
+	return plansIn(ctx, tx)
+}
+
+// plansIn is Plans' read in q, a read transaction.
+func plansIn(ctx context.Context, q queryer) ([]PlanFacts, error) {
+	ids, err := queryRows(ctx, q, func(scan func(...any) error) (int64, error) {
 		var id int64
 		return id, scan(&id)
 	}, `SELECT id FROM plans ORDER BY updated_at DESC, id DESC`)
@@ -291,7 +296,7 @@ func (s *Store) Plans(ctx context.Context) ([]PlanFacts, error) {
 	}
 	out := make([]PlanFacts, 0, len(ids))
 	for _, id := range ids {
-		facts, err := loadPlanFacts(ctx, tx, id)
+		facts, err := loadPlanFacts(ctx, q, id)
 		if err != nil {
 			return nil, err
 		}

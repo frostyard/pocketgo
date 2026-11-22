@@ -78,20 +78,11 @@ func (s *Store) Lesson(ctx context.Context, id int64) (LessonRow, error) {
 }
 
 func (s *Store) lessons(ctx context.Context, where string, args ...any) ([]LessonRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+lessonColumns+` FROM lessons WHERE `+where+` ORDER BY id`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []LessonRow
-	for rows.Next() {
-		row, err := scanLesson(rows.Scan)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
+	return lessonsIn(ctx, s.db, where, args...)
+}
+
+func lessonsIn(ctx context.Context, q queryer, where string, args ...any) ([]LessonRow, error) {
+	return queryRows(ctx, q, scanLesson, `SELECT `+lessonColumns+` FROM lessons WHERE `+where+` ORDER BY id`, args...)
 }
 
 // The lesson queries' predicates, with the indexes they read (migration

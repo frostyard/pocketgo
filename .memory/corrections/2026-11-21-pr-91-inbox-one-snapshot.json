@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "team_inbox reads what waits and what was settled in one read transaction (store.Inbox), so an ask answered or a pull request merged while it reads is never listed as both waiting and settled.",
+  "evidence": "frostyard/pocketgo#91, Codex CLI review round 1 (codex-cli 0.169.0) of head e223935: [P2] Read waiting and settled items from one database snapshot",
+  "promoted_to": "service/internal/store/inbox_test.go"
+}
