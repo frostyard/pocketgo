@@ -356,3 +356,10 @@ func CheckoutKey(p profiles.Profile, repository string) (key string, ok bool) {
 	}
 	return "", false
 }
+
+// QuestionKey is question as two asks are compared (#97): its words
+// joined by single spaces, the ends trimmed, in lower case. Two asks
+// whose keys are equal ask the same thing.
+func QuestionKey(question string) string {
+	return strings.ToLower(strings.Join(strings.Fields(question), " "))
+}

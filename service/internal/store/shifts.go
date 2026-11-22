@@ -274,8 +274,10 @@ func (s *Store) NextShiftRound(ctx context.Context, thread int64, from int, verd
 // verdict and stops the shift for stop (a reason) and why, with the CI
 // failure streak as it stands then, and the pull requests whose CI a done
 // was checked green on (ciHeads): the shift moves to its summary round,
-// whose message is kept in the outbox, in one transaction.
-func (s *Store) SummarizeShift(ctx context.Context, thread int64, from int, verdict, reason string, failures int, fingerprint, stop, why string, ciHeads []string, message ReportRow, quiet ...int64) (ShiftRow, error) {
+// whose message is kept in the outbox, in one transaction. When text is
+// non-nil, it builds the message from the thread's open asks and those
+// answered since the shift began, read in that transaction.
+func (s *Store) SummarizeShift(ctx context.Context, thread int64, from int, verdict, reason string, failures int, fingerprint, stop, why string, ciHeads []string, message ReportRow, text func(open, answered []team.ShiftAsk) string, quiet ...int64) (ShiftRow, error) {
 	row, _, err := s.shiftChange(ctx, thread, nil, func(r ShiftRow) bool { return r.State == team.ShiftRunning && r.Round == from },
 		func(tx *sql.Tx, _ ShiftRow, now int64) error {
 			if err := owedNothing(ctx, tx, quiet); err != nil {
@@ -290,9 +292,51 @@ func (s *Store) SummarizeShift(ctx context.Context, thread int64, from int, verd
 				team.ShiftSummary, stop, why, failures, fingerprint, strings.Join(ciHeads, "\n"), thread); err != nil {
 				return err
 			}
+			if text != nil {
+				open, answered, err := shiftAsks(ctx, tx, thread)
+				if err != nil {
+					return err
+				}
+				message.Text = text(open, answered)
+			}
 			return queueShiftMessage(ctx, tx, message, now)
 		})
 	return row, err
+}
+
+// shiftAsks reads the asks a shift's summary names in the same transaction.
+func shiftAsks(ctx context.Context, tx *sql.Tx, thread int64) (open, answered []team.ShiftAsk, err error) {
+	for _, state := range []string{AskOpen, AskAnswered} {
+		query := `SELECT ` + askColumns + ` FROM asks WHERE thread_id = ? AND state = ?`
+		args := []any{thread, state}
+		if state == AskAnswered {
+			query += ` AND answered_at >= (SELECT created_at FROM shifts WHERE thread_id = ?)`
+			args = append(args, thread)
+		}
+		rows, err := tx.QueryContext(ctx, query+` ORDER BY id`, args...)
+		if err != nil {
+			return nil, nil, err
+		}
+		for rows.Next() {
+			a, err := scanAsk(rows.Scan)
+			if err != nil {
+				_ = rows.Close()
+				return nil, nil, err
+			}
+			ask := team.ShiftAsk{ID: a.ID, Question: a.Question, Answer: a.Answer}
+			if state == AskOpen {
+				open = append(open, ask)
+			} else {
+				answered = append(answered, ask)
+			}
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return open, answered, nil
 }
 
 // ShiftReport is the report pocketd files for its supervisor when a shift

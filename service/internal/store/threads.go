@@ -341,7 +341,10 @@ type ReportRow struct {
 // kept to send. A key filed already changes nothing, so a report run again
 // after a restart never writes over a newer one: it returns the thread as
 // it is, the asks the key made and its message. A thread closed before the
-// report is ErrConflict, and nothing of the report is kept.
+// report is ErrConflict, and nothing of the report is kept. An ask whose
+// question matches an open ask of the same thread (team.QuestionKey) files
+// no new ask: the report names the open one, and the link is kept under
+// the ask's key in requests so a replay returns the same rows.
 func (s *Store) FileReport(ctx context.Context, key string, id int64, state, report string, asks []AskRow,
 	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, error) {
 	thread, filed, message, _, err := s.FileReportWithPulls(ctx, key, id, state, report, asks, nil,
@@ -478,8 +481,13 @@ func shiftTakesReport(ctx context.Context, tx *sql.Tx, id int64, state string, s
 	return shiftState == team.ShiftSummary && status != team.StatusWorking, nil
 }
 
-// fileReport is FileReport's work in tx; before says key was filed
-// already.
+// askRepeatKind keeps a repeated report ask's link to the existing ask.
+const askRepeatKind = "askRepeat"
+
+// fileReport is FileReport's work in tx. An ask whose question matches an
+// open ask of the same thread (team.QuestionKey) files no new ask: the
+// report names the open one, and the link is kept under the ask's key in
+// requests so a replay returns the same rows.
 func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64, state, report string, asks []AskRow,
 	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, bool, error) {
 	thread, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
@@ -498,28 +506,66 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 	}
 	var out []AskRow
 	for _, a := range asks {
+		var row AskRow
 		if !filed {
-			options := a.Options
-			if options == nil {
-				options = []string{}
-			}
-			encoded, err := json.Marshal(options)
+			rows, err := tx.QueryContext(ctx, `SELECT `+askColumns+` FROM asks WHERE thread_id = ? AND state = ? ORDER BY id`, id, AskOpen)
 			if err != nil {
 				return ThreadRow{}, nil, ReportRow{}, false, err
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO asks (key, thread_id, session_id, question, options, state, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
-				a.Key, id, a.SessionID, a.Question, string(encoded), AskOpen, now); err != nil {
+			for rows.Next() {
+				candidate, err := scanAsk(rows.Scan)
+				if err != nil {
+					_ = rows.Close()
+					return ThreadRow{}, nil, ReportRow{}, false, err
+				}
+				if row.ID == 0 && team.QuestionKey(candidate.Question) == team.QuestionKey(a.Question) {
+					row = candidate
+				}
+			}
+			err = rows.Err()
+			_ = rows.Close()
+			if err != nil {
+				return ThreadRow{}, nil, ReportRow{}, false, err
+			}
+			if row.ID != 0 {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO requests (key, kind, result, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+					a.Key, askRepeatKind, strconv.FormatInt(row.ID, 10), now); err != nil {
+					return ThreadRow{}, nil, ReportRow{}, false, err
+				}
+			} else {
+				options := a.Options
+				if options == nil {
+					options = []string{}
+				}
+				encoded, err := json.Marshal(options)
+				if err != nil {
+					return ThreadRow{}, nil, ReportRow{}, false, err
+				}
+				if _, err := tx.ExecContext(ctx, `INSERT INTO asks (key, thread_id, session_id, question, options, state, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+					a.Key, id, a.SessionID, a.Question, string(encoded), AskOpen, now); err != nil {
+					return ThreadRow{}, nil, ReportRow{}, false, err
+				}
+			}
+		}
+		if row.ID == 0 {
+			row, err = scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE key = ?`, a.Key).Scan)
+			if filed && errors.Is(err, sql.ErrNoRows) {
+				var result string
+				err = tx.QueryRowContext(ctx, `SELECT result FROM requests WHERE key = ? AND kind = ?`, a.Key, askRepeatKind).Scan(&result)
+				if err == nil {
+					row, err = scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, result).Scan)
+				}
+			}
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			} else if err != nil {
 				return ThreadRow{}, nil, ReportRow{}, false, err
 			}
 		}
-		row, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE key = ?`, a.Key).Scan)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		} else if err != nil {
-			return ThreadRow{}, nil, ReportRow{}, false, err
+		if !slices.ContainsFunc(out, func(existing AskRow) bool { return existing.ID == row.ID }) {
+			out = append(out, row)
 		}
-		out = append(out, row)
 	}
 	if !filed {
 		ids := make([]int64, len(out))

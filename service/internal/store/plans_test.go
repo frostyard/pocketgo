@@ -926,3 +926,64 @@ func TestAWithdrawnAskLeavesThePlanGate(t *testing.T) {
 		t.Fatalf("the cleared note %+v %v", note, err)
 	}
 }
+
+// #97: repeated asks preserve the plan's open-ask, write and review gates.
+func TestARepeatedAskKeepsThePlanRules(t *testing.T) {
+	s, _ := open(t)
+	thread, plan := newPlan(t, s, "p1")
+	report := func(key, question string) AskRow {
+		t.Helper()
+		_, asks, _, err := s.FileReport(ctx, key, thread.ID, ThreadOpen, "question", []AskRow{{Key: key + ":ask:0", SessionID: thread.Session, Question: question}}, reportText)
+		if err != nil || len(asks) != 1 {
+			t.Fatalf("report %+v: %v", asks, err)
+		}
+		return asks[0]
+	}
+	gate := func(want ...string) {
+		t.Helper()
+		facts, err := s.PlanFacts(ctx, plan.ID)
+		if err != nil || !slices.Equal(facts.Gate(), want) {
+			t.Fatalf("gate %v, want %v: %v", facts.Gate(), want, err)
+		}
+	}
+	a := report("r1", "Which key?")
+	gate(fmt.Sprintf("A%d open", a.ID))
+	if repeat := report("r2", "  WHICH\n key? "); repeat.ID != a.ID {
+		t.Fatalf("repeat %+v", repeat)
+	}
+	gate(fmt.Sprintf("A%d open", a.ID))
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asks WHERE thread_id = ? AND state = 'open'`, thread.ID).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("open asks %d: %v", n, err)
+	}
+	if _, _, err := s.AnswerAsk(ctx, "answer1", a.ID, "TPM", "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	gate(fmt.Sprintf("A%d not written", a.ID))
+	b := report("r3", "Which key?")
+	if b.ID == a.ID {
+		t.Fatal("answered ask reused")
+	}
+	gate(fmt.Sprintf("A%d open", b.ID), fmt.Sprintf("A%d not written", a.ID))
+	if _, _, err := s.AnswerAsk(ctx, "answer2", b.ID, "TPM", "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.WritePlan(ctx, "w", plan.ID, "# TPM", []int64{a.ID, b.ID}, allow, says("written")); err != nil {
+		t.Fatal(err)
+	}
+	gate()
+	if _, _, _, err := s.DraftGraph(ctx, "g", plan.ID, graph, allow, says("drafted")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.ReadyPlan(ctx, "ready", plan.ID, allow, says("ready")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Plan(ctx, plan.ID); err != nil || got.State != team.PlanReview {
+		t.Fatalf("before new question %+v: %v", got, err)
+	}
+	c := report("r4", "Which ISO?")
+	if got, err := s.Plan(ctx, plan.ID); err != nil || got.State != team.PlanDrafting {
+		t.Fatalf("after new question %+v: %v", got, err)
+	}
+	gate(fmt.Sprintf("A%d open", c.ID))
+}
