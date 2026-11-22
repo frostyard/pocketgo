@@ -78,12 +78,38 @@ test:
 # The race detector needs CGO and a C compiler. Each package's run gets
 # RACE_TIMEOUT, not go test's 10-minute default: service/internal/api takes
 # 5 to 7 minutes under -race on CI's runners and passed 10 on one, which
-# failed verify with no test at fault (frostyard/pocketgo#114). It stays
-# below CI's job limit (timeout-minutes in .github/workflows/ci.yml), which
-# test/makefile.test.mjs checks.
+# failed verify with no test at fault (frostyard/pocketgo#114). The full local
+# run keeps that larger default; CI's race shards pass a smaller timeout that
+# stays below the race job's limit, checked by test/makefile.test.mjs.
+# CI can run the race detector as RACE_SHARDS parallel jobs. make race runs
+# shard RACE_SHARD (1-based) of RACE_SHARDS. With one shard it runs everything
+# without listing. With more shards, each module lists with -race -short,
+# keeps tests, examples and fuzz targets (not benchmarks; names may contain
+# Unicode letters, but a line with whitespace is output, not a name), sorts
+# with LC_ALL=C, and takes every RACE_SHARDS-th name starting at RACE_SHARD.
+# Together the shards run each name once in every package that has it, with
+# the same flags and timeout. make ci uses these same defaults.
 RACE_TIMEOUT ?= 20m
+RACE_SHARDS ?= 1
+RACE_SHARD ?= 1
+
 race:
-	@for m in $(MODULES); do echo "==> race: $$m"; (cd $$m && $(HEADLESS) CGO_ENABLED=1 $(GOCMD) test -race -short -timeout $(RACE_TIMEOUT) ./...) || exit 1; done
+	@if ! awk -v shard='$(RACE_SHARD)' -v shards='$(RACE_SHARDS)' 'BEGIN { exit !(shard ~ /^[1-9][0-9]*$$/ && shards ~ /^[1-9][0-9]*$$/ && shard + 0 <= shards + 0) }'; then \
+		echo "race: RACE_SHARD=$(RACE_SHARD) RACE_SHARDS=$(RACE_SHARDS) is not a shard (1 <= RACE_SHARD <= RACE_SHARDS)"; exit 1; \
+	fi; \
+	for m in $(MODULES); do \
+		if [ '$(RACE_SHARDS)' = 1 ]; then \
+			echo "==> race: $$m"; \
+			(cd $$m && $(HEADLESS) CGO_ENABLED=1 $(GOCMD) test -race -short -timeout $(RACE_TIMEOUT) ./...) || exit 1; \
+			continue; \
+		fi; \
+		echo "==> race: $$m shard $(RACE_SHARD)/$(RACE_SHARDS)"; \
+		listing="$$(cd $$m && $(HEADLESS) CGO_ENABLED=1 $(GOCMD) test -race -short -list . ./...)" || { printf '%s\n' "$$listing"; exit 1; }; \
+		names="$$(printf '%s\n' "$$listing" | grep -E '^(Test|Example|Fuzz)[^[:space:]]*$$' | LC_ALL=C sort -u | \
+			awk -v shard='$(RACE_SHARD)' -v shards='$(RACE_SHARDS)' '(NR-1) % shards == shard-1' | paste -sd '|' -)"; \
+		if [ -z "$$names" ]; then echo "==> race: $$m has no tests in this shard"; continue; fi; \
+		(cd $$m && $(HEADLESS) CGO_ENABLED=1 $(GOCMD) test -race -short -timeout $(RACE_TIMEOUT) -run "^($$names)$$" ./...) || exit 1; \
+	done
 
 # Build and vet every package, tests included, for each module's targets.
 # -o /dev/null discards every output, so no command lands in a module.
@@ -203,18 +229,14 @@ check:
 	$(MAKE) --no-print-directory fmt
 	$(MAKE) --no-print-directory verify
 
-# What CI's verify job runs, in fail-fast order: verify, the corrections check
-# against BASE when it is set (make ci BASE=origin/main), the race detector,
-# the cross-build of every module's targets and the phone's portability step.
-ci: verify
-	$(MAKE) --no-print-directory corrections-base
-	@echo "==> ci: race detector"
-	$(MAKE) --no-print-directory race
-	@echo "==> ci: cross-build"
-	$(MAKE) --no-print-directory cross
-	@echo "==> ci: portability to the phone"
-	$(MAKE) --no-print-directory portable
-	@echo "==> ci passed"
+# What CI runs, in fail-fast order (make builds prerequisites left to right
+# without -j): verify's two parts (verify-static, then test), the corrections
+# check against BASE when set (make ci BASE=origin/main), the race detector,
+# every module's cross-build and the phone's portability step. CI runs the same
+# targets as parallel jobs (.github/workflows/ci.yml), each prerequisite as
+# make <target>, checked by core baseline row B12 (core ADR-0073). A prerequisite
+# added here needs a job step in ci.yml in the same change; ci has no recipe.
+ci: verify-static test corrections-base race cross portable
 
 # .memory/corrections/ is checked against BASE (no record removed or renamed,
 # only an empty promoted_to filled, and the old corrections file does not come

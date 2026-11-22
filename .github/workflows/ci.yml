@@ -1,6 +1,12 @@
 # CI workflow (ADR-0021: SHA-pinned actions, least privilege): the job verify
 # is the required check. Actions use full commit SHA pins, the token has only
 # contents read, and checkout does not persist credentials.
+#
+# The jobs static, test and race run the prerequisites of `make ci` in
+# parallel, each as `make <target>` (core ADR-0073, baseline row B12); race
+# runs as RACE_SHARDS jobs, which together run every test once. The job verify
+# needs all of them and fails unless each one succeeded, so the ruleset's one
+# required check covers every part of `make ci`.
 name: CI
 
 on:
@@ -17,9 +23,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  # verify-static (tidy, vet, mygo vet, gofmt, lint, template gate), the
+  # corrections check against the base, the cross-build and the phone's
+  # portability step.
+  static:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -27,16 +36,25 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # Go comes from go.work's go line, the only Go pin.
+      # Go comes from go.work's go line, the only Go pin. Each job keeps a
+      # cache of its own (actions/cache below), so the jobs' builds do not
+      # overwrite each other's.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.work
-          # The cache key covers the workspace and every module file, so it
-          # holds while a module has no go.sum yet.
-          cache-dependency-path: |
-            go.work
-            **/go.mod
-            **/go.sum
+          cache: false
+      # The key covers the workspace and every module file, so it holds while
+      # a module has no go.sum yet. golangci-lint's cache is keyed by file
+      # content, so an older one only saves work.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+          key: go-${{ github.job }}-${{ runner.os }}-${{ hashFiles('go.work', '**/go.mod', '**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-
       # golangci-lint and Node come from mise.toml and mise.lock (ADR-0043),
       # checksum-verified, the same way a developer's `mise install` does.
       - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
@@ -44,14 +62,91 @@ jobs:
           install: true
           install_args: golangci-lint node
           cache: true
+      - run: make verify-static
+      - run: make corrections-base BASE="$BASE"
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+      - run: make cross portable
+
+  # The tests of every module, without the race detector.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ github.job }}-${{ runner.os }}-${{ hashFiles('go.work', '**/go.mod', '**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-
       # The desktop's view tests draw with MyGo's Tester, which lays text
       # out with Pango and cairo (no GTK, no display).
       - name: Install the text runtime of the UI tests
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends fonts-dejavu-core libpangocairo-1.0-0
-      # make ci runs every Go gate in each module of go.work, then the race
-      # detector and the cross-build of each module's targets.
-      - run: make ci BASE="$BASE"
+      - run: make test
+
+  # The race detector, as RACE_SHARDS jobs: shard i runs every RACE_SHARDS-th
+  # test name of each module (make race), so together they run each test once.
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ github.job }}-${{ runner.os }}-${{ hashFiles('go.work', '**/go.mod', '**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-
+      - name: Install the text runtime of the UI tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends fonts-dejavu-core libpangocairo-1.0-0
+      # Each package's run of a shard gets RACE_TIMEOUT, below this job's
+      # limit, which test/makefile.test.mjs checks.
+      - run: make race RACE_SHARDS=4 RACE_SHARD="$SHARD" RACE_TIMEOUT=10m
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          SHARD: ${{ matrix.shard }}
+
+  # The required check: it passes only when every job above succeeded. It
+  # runs even when one failed or was skipped, so a skipped job never counts
+  # as a pass.
+  verify:
+    needs: [static, test, race]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check that every job of make ci succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          printf '%s\n' "$NEEDS" | jq -e 'length == 3 and all(.[]; .result == "success")' > /dev/null

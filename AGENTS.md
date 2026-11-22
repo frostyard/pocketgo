@@ -45,7 +45,7 @@ removed. -->
   - `service` and `desktop` carry `replace github.com/frostyard/pocketgo/proto => ../proto`, so `go mod tidy` works outside the workspace.
   - A new module needs all four of these in one change: a `use` line in `go.work`, a `MODULES` entry and a `CROSS_<module>` list in the `Makefile` (`make cross` fails without the list), and a `directories` entry in `.github/dependabot.yml`.
   - A new command `<module>/cmd/<name>` gets `.gitignore` entries for `/<module>/<name>` and `/<module>/cmd/<name>/<name>`.
-  - The `Makefile`'s behaviour is pinned by `test/makefile.test.mjs`; change both together.
+  - The `Makefile`'s behaviour is pinned by `test/makefile.test.mjs`, and so is ci.yml's coverage of `make ci`; change them together.
 - **PiG stays in `service/pig`** ([ADR-0004](docs/adr/0004-build-the-service-on-pigs-durable-harness.md)). No other package imports `github.com/MichaelKinsy/PiG`; the depguard rule in `.golangci.yml` fails `make lint` when one does. PiG is pinned to a release in `service/go.mod`. A release tag is required, because the module proxy and checksum database do not serve PiG's later commits.
 - **The protocol changes in one pull request.** A change touches all of these together: [docs/specs/protocol.md](docs/specs/protocol.md), the `proto` types, `service/internal/api` and its tests.
 - **Work-database migrations are append-only.** `service/internal/store/store.go` applies `migrations` in order. Never edit a released migration; add a new entry.
@@ -95,11 +95,15 @@ removed. -->
 - **Desktop tests use no wall clock and no sleeps.** The stream's backoff waits on `state.Options.After`, so pass a fake clock. View tests draw with `ui.NewTesterWith` on a `frostuitest.Loop`, against `desktop/internal/pocketdtest`, which `Server.Transport` serves in memory: no test opens a socket. The fake answers as pocketd does, its refusals' codes included, and checks a request id's receipt, changes its rows and keeps its reply under one lock, as pocketd's transaction does. After a view change, run `make snapshot` and look at the PNGs.
 - **Build without CGO** (the `Makefile` exports `CGO_ENABLED=0`). Only `make race` turns CGO on.
 - **`make verify` needs three tools:** Go (go.work's go line, the only Go pin), golangci-lint (pinned in `mise.toml`) and Node.js 22 or later. `mise install` provides the last two. The desktop's view tests also need Pango and cairo, but no display (Debian and Ubuntu: `fonts-dejavu-core libpangocairo-1.0-0`; CI installs them). `make verify` also runs `go tool mygo vet .` in `desktop`.
-- Run `make verify` before you call any change done. CI job `verify` runs
-  `make ci`, which also checks the corrections records against the PR base: no
-  record removed or renamed, only an empty `promoted_to` filled, and the old
-  corrections file does not come back. Run `make ci BASE=origin/main` for the
-  same check locally.
+- Run `make verify` before you call any change done. CI runs the prerequisites
+  of `make ci` as parallel jobs (static, test, and race in shards;
+  [ci.yml](.github/workflows/ci.yml)); the required job `verify` passes only
+  when all of them succeed. A prerequisite added to `ci` needs a job step in
+  ci.yml in the same change (core ADR-0073, baseline row B12, checked by
+  `test/makefile.test.mjs`). CI also checks the corrections records against
+  the PR base: no record removed or renamed, only an empty `promoted_to`
+  filled, and the old corrections file does not come back. Run
+  `make ci BASE=origin/main` for the same check locally.
 - A doc that says what a gate refuses names the command, the condition it
   runs under (for example `make ci BASE=<ref>`, not `make ci`) and each change
   the gate allows (for example a filled empty `promoted_to`), as the

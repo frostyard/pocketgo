@@ -62,6 +62,7 @@ All three build with `CGO_ENABLED=0`. The iPad build is the one exception: Go li
 - adds `go vet`, `gofmt`, golangci-lint, tests with `CGO_ENABLED=0`, and a cross-platform build, for each module
 - adds `go tool mygo vet` for the desktop, which checks MyGo's build lifetimes. The desktop's view tests need Pango and cairo, but no display; CI installs them.
 - adds `make portable`: `proto` and the desktop's UI-free packages (`internal/state`, `internal/config`, `internal/github`, `internal/icons`) build for `ios/arm64` with `CGO_ENABLED=0`, and the desktop's iOS app, listed as MyGo's build lists it, leaves out MyGo's terminal plugin (`IOS_LEFT_OUT`).
+- [CI](../../.github/workflows/ci.yml) runs these targets as parallel jobs under [core ADR-0073](https://github.com/frostyard/core/blob/main/docs/adr/0073-let-ci-run-the-make-ci-targets-as-separate-jobs.md), with the race detector in 4 shards (`make race RACE_SHARDS=4 RACE_SHARD=<i>`) that together run each test once. The required check `verify` needs all of them to succeed.
 
 ### Protocol
 
