@@ -73,4 +73,5 @@
 ## References
 
 - Shapes: [specs: protocol](../specs/protocol.md), [design: system architecture](../design/architecture.md#service), [design: desktop client](../design/architecture.md#desktop-client), [plans: roadmap](../plans/roadmap.md)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md), [ADR-0025](0025-give-the-owner-a-shell-on-the-service-host-from-the-desktop.md), [ADR-0027](0027-start-the-owners-session-on-a-repository-in-a-new-worktree-named-in-code.md), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md)
