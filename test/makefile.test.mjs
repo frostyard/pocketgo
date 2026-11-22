@@ -263,8 +263,11 @@ test("each race shard's timeout leaves its job time for the rest", (t) => {
   };
   const text = workflowText();
   check(text);
-  rejectsMutation(t, text, "RACE_TIMEOUT=10m", "RACE_TIMEOUT=11m", check);
-  rejectsMutation(t, text, "RACE_TIMEOUT=10m", "", check);
+  // A timeout 1 minute too long for the job's limit, and none at all, fail.
+  const current = /\bRACE_TIMEOUT=\d+m\b/.exec(text)[0];
+  const jobLimit = Number(field(oneJob(workflowJobs(text), "race").lines, "timeout-minutes", 4));
+  rejectsMutation(t, text, current, `RACE_TIMEOUT=${jobLimit - 4}m`, check);
+  rejectsMutation(t, text, current, "", check);
 });
 
 test("every Go cache of CI is keyed on files that exist before any go.sum", (t) => {
