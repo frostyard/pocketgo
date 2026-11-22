@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide notes the revoked devices from the current data folder before a restore, and without it revokes every restored device the owner cannot vouch for.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P2] Preserve the device revocation list before replacing the database",
+  "promoted_to": "docs/design/setup.md"
+}

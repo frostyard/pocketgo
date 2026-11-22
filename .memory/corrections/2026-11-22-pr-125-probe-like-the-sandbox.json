@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's bwrap probe uses the options every sandboxed command starts with (--unshare-pid --proc /proc --die-with-parent), and leaves the decision to pocketd's own start check, whose process 1 error has more causes than namespaces.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P2] Use pocketd's namespace requirements for the host probe",
+  "promoted_to": "docs/design/setup.md"
+}
