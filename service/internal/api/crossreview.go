@@ -334,6 +334,7 @@ func (s *Server) reviewPass(ctx context.Context) { s.reviewPassOf(ctx, reviewWor
 func (s *Server) reviewPassOf(ctx context.Context, w reviewWork) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
+	defer s.cleanPass(ctx)
 	if w.failed == nil {
 		w.failed = map[int64]bool{}
 	}

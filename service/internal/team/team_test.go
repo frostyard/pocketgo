@@ -89,13 +89,13 @@ func TestTitleSlugAndWorktree(t *testing.T) {
 }
 
 func TestBrief(t *testing.T) {
-	brief := Brief("Odrade", 12, "Fix CI", "Fix the flaky test.", "/src/example--vera-fix-ci-t12", "vera/fix-ci-t12")
+	brief := Brief("Odrade", 12, "Fix CI", "Fix the flaky test.", "/src/example--vera-fix-ci-t12", "vera/fix-ci-t12", "")
 	for _, want := range []string{"Odrade", "thread T12: Fix CI", "Fix the flaky test.", "branch vera/fix-ci-t12", "team_message", "asks"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("brief lacks %q:\n%s", want, brief)
 		}
 	}
-	if home := Brief("Odrade", 3, "Look", "Look around.", "/home/vera", ""); strings.Contains(home, "branch") {
+	if home := Brief("Odrade", 3, "Look", "Look around.", "/home/vera", "", ""); strings.Contains(home, "branch") {
 		t.Errorf("a home brief names a branch:\n%s", home)
 	}
 }
@@ -213,5 +213,25 @@ func TestCheckoutKey(t *testing.T) {
 	}
 	if _, ok := CheckoutKey(p, "frostyard/other"); ok {
 		t.Error("another repository has a checkout")
+	}
+}
+
+func TestBriefSaysWhenItsBranchStartsFromHEAD(t *testing.T) {
+	for _, tc := range []struct {
+		branch, stale string
+		want          bool
+	}{
+		{"agent/task", "lookup failed", true},
+		{"agent/task", "", false},
+		{"", "lookup failed", false},
+	} {
+		brief := Brief("Supervisor", 1, "Task", "Build it.", "/src", tc.branch, tc.stale)
+		line := StaleBase("lookup failed")
+		if strings.Contains(brief, line) != tc.want {
+			t.Fatalf("brief = %q, want stale line = %v", brief, tc.want)
+		}
+		if tc.want && !strings.Contains(brief, "when the change is ready.\n"+line+"\nReport") {
+			t.Fatalf("stale line is misplaced: %q", brief)
+		}
 	}
 }

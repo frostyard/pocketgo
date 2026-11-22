@@ -2047,7 +2047,7 @@ func TestARecoveredSessionsWorktreeIsCheckedBeforeItsBrief(t *testing.T) {
 	// An earlier run made the worktree and the session, then pocketd
 	// stopped; meanwhile the worktree moved to another branch.
 	path, branch := team.Worktree(h.checkout, "vera", team.Slug(thread.Title, thread.ID, thread.Owner))
-	if err := worktree.Add(ctx, h.server.worktreeTools(), h.checkout, path, branch); err != nil {
+	if _, err := worktree.Add(ctx, h.server.worktreeTools(), h.checkout, path, branch); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.engine.CreateSession(ctx, "thread:"+thread.Owner, SessionSpec{Title: "T1 · x", Cwd: path, Model: model, Route: "profile"}); err != nil {
@@ -2401,6 +2401,65 @@ func TestAFailedCloseSaysItsRequestIDIsKept(t *testing.T) {
 	if !strings.Contains(err.Error(), "requestId could not be freed") {
 		t.Fatalf("the client was not told: %v", err)
 	}
+}
+
+func TestABriefSaysWhenTheBranchStartsFromHEAD(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "stale"}, team.Delegation{Agent: "vera", Task: "Build it", Repository: "frostyard/example"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.Thread(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(thread.Brief, "pocketd could not fetch the default branch from origin") {
+		t.Fatalf("brief lacks stale warning: %q", thread.Brief)
+	}
+	head := branchBaseGit(t, h.checkout, "rev-parse", "HEAD")
+	if got := branchBaseGit(t, thread.Cwd, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("worktree HEAD = %s, checkout HEAD = %s", got, head)
+	}
+}
+
+func TestABranchStartsFromOriginsTipAndItsBriefSaysNothingOfHEAD(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	bare, clone := filepath.Join(t.TempDir(), "origin.git"), filepath.Join(t.TempDir(), "advance")
+	branchBaseGit(t, h.checkout, "clone", "-q", "--bare", h.checkout, bare)
+	branchBaseGit(t, h.checkout, "remote", "add", "origin", bare)
+	branchBaseGit(t, h.checkout, "clone", "-q", bare, clone)
+	branchBaseGit(t, clone, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "advance")
+	branchBaseGit(t, clone, "push", "-q", "origin", "main")
+	tip := branchBaseGit(t, bare, "rev-parse", "refs/heads/main")
+	head := branchBaseGit(t, h.checkout, "rev-parse", "HEAD")
+	if tip == head {
+		t.Fatal("origin did not advance")
+	}
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "fresh"}, team.Delegation{Agent: "vera", Task: "Build it", Repository: "frostyard/example"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.Thread(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := branchBaseGit(t, thread.Cwd, "rev-parse", "HEAD"); got != tip || got == head {
+		t.Fatalf("worktree HEAD = %s, origin tip = %s, checkout HEAD = %s", got, tip, head)
+	}
+	if strings.Contains(thread.Brief, "could not fetch") {
+		t.Fatalf("fresh brief warns about HEAD: %q", thread.Brief)
+	}
+}
+
+func branchBaseGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = gitEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // #97: ordinary threads also reuse an open ask rather than filing a duplicate.

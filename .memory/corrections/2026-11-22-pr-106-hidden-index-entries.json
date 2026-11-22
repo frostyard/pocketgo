@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Closed-thread cleanup keeps a worktree whose index marks an entry assume-unchanged or skip-worktree: git status and git worktree remove cannot see a change to such a file, so a clean status alone could let the removal delete it.",
+  "evidence": "frostyard/pocketgo#106, cross-review of head a368fa0: high blocking, remove.go checked only git status before git worktree remove",
+  "promoted_to": "service/internal/worktree/remove_test.go"
+}

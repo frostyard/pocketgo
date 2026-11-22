@@ -1289,3 +1289,30 @@ func (s *Store) ClosedReviewSessions(ctx context.Context) ([]int64, error) {
 	}
 	return out, rows.Err()
 }
+
+// NoteClosedThread adds note to closed thread id's report, after a blank
+// line when it has one, and says whether it did: a thread not closed
+// stays as it is.
+func (s *Store) NoteClosedThread(ctx context.Context, id int64, note string) (ThreadRow, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `UPDATE threads SET report = CASE WHEN report = '' THEN ? ELSE report || char(10) || char(10) || ? END, updated_at = ? WHERE id = ? AND state = ?`, note, note, s.millis(), id, ThreadClosed)
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	row, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRow{}, false, ErrNotFound
+	}
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	return row, n != 0, tx.Commit()
+}

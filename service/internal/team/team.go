@@ -228,15 +228,25 @@ func Worktree(checkout, agent, slug string) (path, branch string) {
 	return filepath.Clean(checkout) + "--" + agent + "-" + slug, agent + "/" + slug
 }
 
+// StaleBase is the line a thread's brief carries when its new branch
+// starts from the checkout's HEAD because the fetch of the remote's
+// default branch failed (reason, one line).
+func StaleBase(reason string) string {
+	return "pocketd could not fetch the default branch from origin, so this branch starts from the checkout's HEAD, which may be behind it (" + reason + "): fetch and compare before you build on it."
+}
+
 // Brief is the first message of a thread's specialist session, written by
 // code: who asked, the task, where to work, and how to report.
-func Brief(supervisor string, thread int64, title, task, cwd, branch string) string {
+func Brief(supervisor string, thread int64, title, task, cwd, branch, stale string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s, the team's supervisor, delegated this to you in thread T%d: %s\n\n", supervisor, thread, title)
 	b.WriteString(strings.TrimSpace(task))
 	b.WriteString("\n\n")
 	if branch != "" {
 		fmt.Fprintf(&b, "Work in %s, a git worktree on the branch %s. Open a pull request from that branch when the change is ready.\n", cwd, branch)
+		if stale != "" {
+			b.WriteString(StaleBase(stale) + "\n")
+		}
 	} else {
 		fmt.Fprintf(&b, "Work in %s.\n", cwd)
 	}
@@ -355,6 +365,12 @@ func CheckoutKey(p profiles.Profile, repository string) (key string, ok bool) {
 		}
 	}
 	return "", false
+}
+
+// WorktreeKept is the line a closed thread's report gets for a worktree
+// pocketd keeps (ADR-0054).
+func WorktreeKept(path, reason string) string {
+	return "pocketd kept the worktree " + path + ": " + reason + "."
 }
 
 // QuestionKey is question as two asks are compared (#97): its words

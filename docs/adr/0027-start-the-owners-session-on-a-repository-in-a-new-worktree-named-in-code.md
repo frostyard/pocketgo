@@ -1,6 +1,6 @@
 # 0027 — Start the owner's session on a repository, in a new worktree named in code
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 3's new branch "from the checkout's `HEAD`, with no fetch" superseded by [ADR-0056](0056-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md), which starts it, as a thread's, at the tip of `origin`'s default branch, fetched first
 - **Date:** 2026-11-20
 
 ## Context

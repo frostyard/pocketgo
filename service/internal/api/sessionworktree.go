@@ -105,8 +105,12 @@ func (s *Server) makeSessionWorktree(w http.ResponseWriter, r *http.Request, key
 	}
 	// git makes it at its real place, in the checkout the request bound
 	// (Codex review of #46, rounds 4 and 5).
-	if err := worktree.AddNew(gitCtx, s.worktreeTools(), place.Top, place.Dest, wt.branch, worktreeToken(key), worktree.Step(claim.Made), record); err != nil {
+	start, err := worktree.AddNew(gitCtx, s.worktreeTools(), place.Top, place.Dest, wt.branch, worktreeToken(key), worktree.Step(claim.Made), record)
+	if err != nil {
 		return s.worktreeFailed(w, wt, err)
+	}
+	if start.Stale != "" {
+		s.log.Warn("a session's worktree starts from the checkout's HEAD", "path", wt.path, "why", start.Stale)
 	}
 	return true
 }

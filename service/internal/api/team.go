@@ -328,7 +328,7 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 		return store.ThreadRow{}, err
 	}
 	var spec SessionSpec
-	var profile, cwd, branch string
+	var profile, cwd, branch, stale string
 	if exists {
 		spec = SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Review: thread.ReviewPull != 0}
 		profile, cwd = made.Profile, made.Cwd
@@ -336,7 +336,7 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 			_, branch = team.Worktree(made.Cwd, thread.Agent, team.Slug(thread.Title, thread.ID, thread.Owner))
 		}
 	} else {
-		if spec, cwd, branch, err = s.newSpecialist(ctx, thread); err != nil {
+		if spec, cwd, branch, stale, err = s.newSpecialist(ctx, thread); err != nil {
 			return store.ThreadRow{}, err
 		}
 		profile = spec.Profile.ID
@@ -351,9 +351,12 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	if p, err := s.callerProfile(db, thread.SupervisorSession); err == nil && p != nil {
 		supervisor = p.Name
 	}
-	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch)
+	brief := team.Brief(supervisor, thread.ID, thread.Title, thread.Task, cwd, branch, stale)
 	if thread.IsPlanThread() {
 		brief = team.PlanBrief(supervisor, thread.ID, thread.Plan, thread.Title, thread.Task, cwd)
+		if stale != "" {
+			brief += "\n\n" + team.StaleBase(stale)
+		}
 	}
 	// A shift's brief is its round 1, and says how its rounds go
 	// (ADR-0024).
@@ -700,46 +703,46 @@ func (s *Server) stopping() bool {
 // newSpecialist is what a thread's new specialist session starts from:
 // its profile, checked again now (team.CheckTarget, team.CheckDestination),
 // the router's model, and its folder, made now.
-func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (SessionSpec, string, string, error) {
+func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (SessionSpec, string, string, string, error) {
 	if s.profiles == nil {
-		return SessionSpec{}, "", "", errors.New("pocketd has no profiles, so the specialist cannot start")
+		return SessionSpec{}, "", "", "", errors.New("pocketd has no profiles, so the specialist cannot start")
 	}
 	target, err := s.profiles.Find(thread.Agent)
 	if err != nil {
-		return SessionSpec{}, "", "", err
+		return SessionSpec{}, "", "", "", err
 	}
 	models, err := s.engine.Models(ctx)
 	if err != nil {
-		return SessionSpec{}, "", "", err
+		return SessionSpec{}, "", "", "", err
 	}
 	if thread.ReviewPull != 0 {
 		// A cross-review pocketd started (ADR-0019).
 		spec, cwd, err := s.reviewSpecialist(ctx, thread, target, models)
-		return spec, cwd, "", err
+		return spec, cwd, "", "", err
 	}
 	if err := team.CheckTarget(target, func() error { return s.startable(target, models) }); err != nil {
-		return SessionSpec{}, "", "", err
+		return SessionSpec{}, "", "", "", err
 	}
 	if err := team.CheckDestination(target, thread.Repository); err != nil {
-		return SessionSpec{}, "", "", err
+		return SessionSpec{}, "", "", "", err
 	}
-	cwd, branch, err := s.threadFolder(ctx, thread, target)
+	cwd, branch, stale, err := s.threadFolder(ctx, thread, target)
 	if err != nil {
-		return SessionSpec{}, "", "", err
+		return SessionSpec{}, "", "", "", err
 	}
 	if s.afterFolder != nil {
 		s.afterFolder()
 	}
 	choice, err := router.Choose(router.Request{Profile: &target}, models)
 	if err != nil {
-		return SessionSpec{}, "", "", err
+		return SessionSpec{}, "", "", "", err
 	}
 	spec := SessionSpec{Title: "T" + strconv.FormatInt(thread.ID, 10) + " · " + thread.Title, Cwd: cwd, Model: choice.Model,
 		Profile: &target, Route: string(choice.Rule), Thread: thread.ID}
 	if thread.IsPlanThread() {
 		spec.Plan = thread.Plan
 	}
-	return spec, cwd, branch, nil
+	return spec, cwd, branch, stale, nil
 }
 
 // recheckSpecialist reads a new specialist's profile again, at the moment
@@ -838,22 +841,23 @@ func (s *Server) worktreeTools() worktree.Tools {
 // owned by the thread's random owner, or the specialist's home, else its
 // workspace.
 // The git that makes the worktree ends with ctx, or after worktreeTimeout.
-func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, target profiles.Profile) (cwd, branch string, err error) {
+func (s *Server) threadFolder(ctx context.Context, thread store.ThreadRow, target profiles.Profile) (cwd, branch, stale string, err error) {
 	if thread.Repository != "" {
 		checkout := target.Repositories[thread.Repository]
 		cwd, branch = team.Worktree(checkout, target.ID, team.Slug(thread.Title, thread.ID, thread.Owner))
 		gitCtx, cancel := s.withTimeout(ctx, worktreeTimeout)
 		defer cancel()
-		if err := worktree.Add(gitCtx, s.worktreeTools(), checkout, cwd, branch); err != nil {
-			return "", "", fmt.Errorf("make the worktree: %w", err)
+		start, err := worktree.Add(gitCtx, s.worktreeTools(), checkout, cwd, branch)
+		if err != nil {
+			return "", "", "", fmt.Errorf("make the worktree: %w", err)
 		}
-		return cwd, branch, nil // worktree.Add checked it, in the sandbox
+		return cwd, branch, start.Stale, nil // worktree.Add checked it, in the sandbox
 	}
 	cwd = target.Start()
 	if err := s.isFolder(ctx, cwd); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return cwd, branch, nil
+	return cwd, branch, "", nil
 }
 
 // isFolder refuses a home that is not a folder as a command in the sandbox
@@ -1938,6 +1942,9 @@ func (s *Server) deliverPass() {
 // task the desk's cap held back): a delivery pass brings it, whichever
 // path closed the thread (Codex review of #25, round 4).
 func (s *Server) publishThread(row store.ThreadRow) {
+	if row.State == store.ThreadClosed && row.Repository != "" {
+		s.cleanLater(row.ID)
+	}
 	// A shift that cannot be read now holds the thread's event back, as a
 	// plan's does: one with no shift would tell a client it has none. A
 	// delivery pass publishes it as it is then (Codex review of #36).
