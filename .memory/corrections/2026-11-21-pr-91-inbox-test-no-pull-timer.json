@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "service",
+  "correction": "A read test sets pocketd's pull-round metadata directly instead of calling StartPulls, whose production timer and review pass the test's clock does not control; StartPulls is tested with an injected pullTimer.",
+  "evidence": "frostyard/pocketgo#91, Codex CLI review round 1 (codex-cli 0.169.0) of head e223935: [P3] Keep the inbox freshness test off the wall clock",
+  "promoted_to": "service/internal/api/inbox_test.go"
+}

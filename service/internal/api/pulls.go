@@ -419,11 +419,12 @@ func (s *Server) StartPulls(every time.Duration) {
 	s.startReviews()
 	// A worker's reply that a stop left unsent goes now (ADR-0021).
 	s.settleWorkers()
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	s.pullsStarted = true
 	if every <= 0 {
 		return
 	}
-	s.sessionMu.Lock()
-	defer s.sessionMu.Unlock()
 	s.pullEvery = every
 	s.schedulePullsLocked()
 }

@@ -746,6 +746,9 @@ type harness struct {
 	// it (requestKey).
 	device string
 	work   string
+	// dbPath is the work database's file: a test opens it apart to see
+	// that a read wrote nothing (ADR-0046).
+	dbPath string
 	// scheduled are the retries the server scheduled (Server.retry), run
 	// only when a test runs them: no timer outlives a test.
 	retryMu   sync.Mutex
@@ -1004,7 +1007,8 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	ctx := context.Background()
 	now := &clock{now: time.Date(2026, 11, 18, 22, 0, 0, 0, time.UTC)}
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "w.sqlite"), now.Now)
+	dbPath := filepath.Join(t.TempDir(), "w.sqlite")
+	s, err := store.Open(ctx, dbPath, now.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1024,7 +1028,7 @@ func newHarness(t *testing.T) *harness {
 	server.SetEngine(engine)
 	// The owner's uploads go in a home of the test's own (ADR-0029).
 	server.SetUploads(uploads.New(uploads.Dir(t.TempDir()), filepath.Join(t.TempDir(), "upload-staging"), now.Now))
-	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, device: device.ID, work: t.TempDir()}
+	h := &harness{t: t, clock: now, hub: hub, server: server, engine: engine, store: s, token: token, device: device.ID, work: t.TempDir(), dbPath: dbPath}
 	// A retry waits for the test, never for a timer, and the server stops
 	// before its store closes (cleanups run last first).
 	server.retry = func(f func()) func() {
