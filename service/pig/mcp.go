@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"log/slog"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 	"github.com/MichaelKinsy/PiG/mcp/oauth"
 
 	"github.com/frostyard/pocketgo/service/internal/profiles"
+	"github.com/frostyard/pocketgo/service/internal/uploads"
 )
 
 // A profile's MCP servers (ADR-0063) are connected by pocketd itself, not
@@ -99,15 +101,15 @@ func defaultMCPAfter(d time.Duration, f func()) (stop func() bool) { return time
 // redirect followed only to the origin it came from, so a stored header
 // never reaches a host mcp.json does not name, and every exchange bounded
 // by timeout, its body included: PiG sends a notification and refreshes a
-// sign-in with no deadline of their own. Every answer but the endpoint's
-// own, whose messages PiG bounds (maxMCPMessage), is bounded too
+// sign-in with no deadline of their own. Every answer but an MCP
+// message's, which PiG bounds by message (maxMCPMessage), is bounded too
 // (maxMCPDocument): PiG reads an OAuth document whole.
-func mcpClient(timeout time.Duration, endpoint string) *http.Client {
+func mcpClient(timeout time.Duration) *http.Client {
 	var transport http.RoundTripper = directTransport
 	if mcpTransport != nil {
 		transport = mcpTransport
 	}
-	transport = boundedTransport{next: transport, endpoint: endpoint}
+	transport = boundedTransport{next: transport}
 	return &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if first := via[0].URL; req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
 			return http.ErrUseLastResponse
@@ -126,19 +128,32 @@ const maxMCPDocument = 1 << 20
 // errMCPTooLarge is an answer past maxMCPDocument.
 var errMCPTooLarge = fmt.Errorf("an answer is larger than %d bytes", maxMCPDocument)
 
-// boundedTransport bounds the body of every answer but endpoint's.
+// boundedTransport bounds the body of every answer but an MCP message's,
+// known by what the request takes: PiG's MCP transport, and pocketd's
+// probe, accept an event stream, and no OAuth request of PiG's does,
+// whatever URL either names.
 type boundedTransport struct {
-	next     http.RoundTripper
-	endpoint string
+	next http.RoundTripper
 }
 
 func (t boundedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := t.next.RoundTrip(r)
-	if err != nil || resp.Body == nil || r.URL.String() == t.endpoint {
+	if err != nil || resp.Body == nil || mcpMessage(r) {
 		return resp, err
 	}
 	resp.Body = &boundedBody{body: resp.Body, left: maxMCPDocument}
 	return resp, nil
+}
+
+// mcpMessage says whether r is an MCP message, whose answer PiG bounds by
+// message (maxMCPMessage): one that accepts an event stream.
+func mcpMessage(r *http.Request) bool {
+	for _, accept := range r.Header.Values("Accept") {
+		if strings.Contains(accept, "text/event-stream") {
+			return true
+		}
+	}
+	return false
 }
 
 // boundedBody fails a read once more than left bytes came: a document cut
@@ -593,6 +608,8 @@ func (h *mcpHub) close(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+	// Whatever is still under way past the deadline writes nothing.
+	h.store.fence()
 }
 
 // registration is server tool offered as name in a profile's extension.
@@ -724,8 +741,43 @@ func validSchema(value any, depth int) bool {
 					return false
 				}
 			}
-		case "enum":
+		case "enum", "examples":
 			if _, ok := v.([]any); !ok {
+				return false
+			}
+		case "$ref":
+			// A reference into the schema itself: no provider fetches
+			// another.
+			ref, ok := v.(string)
+			if !ok || !strings.HasPrefix(ref, "#") {
+				return false
+			}
+		case "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties", "minContains", "maxContains":
+			n, ok := v.(float64)
+			if !ok || n < 0 || n != float64(int64(n)) {
+				return false
+			}
+		case "minimum", "maximum":
+			if _, ok := v.(float64); !ok {
+				return false
+			}
+		case "exclusiveMinimum", "exclusiveMaximum":
+			// A number, or draft 4's true or false.
+			_, number := v.(float64)
+			_, flag := v.(bool)
+			if !number && !flag {
+				return false
+			}
+		case "multipleOf":
+			if n, ok := v.(float64); !ok || n <= 0 {
+				return false
+			}
+		case "pattern", "format", "title", "description", "$id", "$schema", "$comment", "$anchor", "contentEncoding", "contentMediaType":
+			if _, ok := v.(string); !ok {
+				return false
+			}
+		case "uniqueItems", "readOnly", "writeOnly", "deprecated", "nullable":
+			if _, ok := v.(bool); !ok {
 				return false
 			}
 		}
@@ -909,7 +961,7 @@ func (c *mcpConn) open(ctx context.Context) (*mcp.Client, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("%w: %s (pocketd mcp set-header %s %s)", errMCPNeedsHeader, missing[0], server.Name, missing[0])
 	}
-	options := mcp.StreamableHTTPTransportOptions{URL: server.URL, Headers: headers, Fetch: mcpClient(server.Timeout, server.URL), OpenGetStream: new(false),
+	options := mcp.StreamableHTTPTransportOptions{URL: server.URL, Headers: headers, Fetch: mcpClient(server.Timeout), OpenGetStream: new(false),
 		MaxMessageBytes: maxMCPMessage}
 	if server.OAuth != nil {
 		if !store.signedIn(server.Name, server.URL) {
@@ -923,7 +975,7 @@ func (c *mcpConn) open(ctx context.Context) (*mcp.Client, error) {
 		if err != nil {
 			return nil, err
 		}
-		options.AuthProvider = scopeGuard{oauth.AdaptOAuthProvider(refreshOnly{provider})}
+		options.AuthProvider = &serveAuth{conn: c, provider: refreshOnly{provider}}
 	}
 	transport, err := mcp.NewStreamableHTTPTransport(options)
 	if err != nil {
@@ -1075,8 +1127,9 @@ func (c *mcpConn) call(ctx context.Context, tool string, args any) durable.ToolE
 
 // requestLocal says whether err ended one request alone, the connection
 // holding: a request stopped or past its own timeout, refused by the
-// server with an HTTP status of its own (a 401 included), or refused for
-// a sign-in the next request tries again. Only another failure is the
+// server with an HTTP status of its own (a 401 included) or a JSON-RPC
+// error, answered with no list, or refused for a sign-in the next request
+// tries again. Only another failure is the
 // connection's, which every session of the server shares.
 func requestLocal(ctx context.Context, err error) bool {
 	var abort *mcp.McpAbortError
@@ -1087,8 +1140,10 @@ func requestLocal(ctx context.Context, err error) bool {
 	if errors.As(err, &expired) {
 		return false
 	}
+	var rpc *mcp.McpError
 	return ctx.Err() != nil || errors.As(err, &abort) || errors.As(err, &timeout) || errors.As(err, &status) ||
-		errors.As(err, &oauthErr) || errors.Is(err, errMCPScope) || errors.Is(err, errMCPRefresh) || errors.Is(err, errMCPSignIn)
+		errors.As(err, &oauthErr) || errors.Is(err, errMCPScope) || errors.Is(err, errMCPRefresh) || errors.Is(err, errMCPSignIn) ||
+		errors.As(err, &rpc) || errors.Is(err, errMCPList)
 }
 
 // serverText is what a server said, with no secret in it, then cut to its
@@ -1220,11 +1275,26 @@ func redactJSON(data json.RawMessage, secrets []string) json.RawMessage {
 	if json.Unmarshal(data, &value) != nil {
 		return nil
 	}
-	out, err := json.Marshal(walkJSON(value, func(s string) string { return redact(s, secrets) }))
-	if err != nil {
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(walkJSON(value, func(s string) string { return redact(s, secrets) })) != nil {
 		return nil
 	}
-	return out
+	return bytes.TrimRight(out.Bytes(), "\n")
+}
+
+// redactText is a text block of a result with no secret in it: one that
+// is JSON, as servers often send, is redacted decoded, then written again
+// compact (any encoder's escapes would hide a secret from its spelling),
+// and any text literally, as it is and as JSON writes it.
+func redactText(text string, secrets []string) string {
+	if trimmed := strings.TrimSpace(text); trimmed != "" && (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid([]byte(trimmed)) {
+		if out := redactJSON(json.RawMessage(trimmed), secrets); out != nil {
+			text = string(out)
+		}
+	}
+	return redact(text, secrets)
 }
 
 // holdsSecret says whether text holds one of secrets, as it is or as JSON
@@ -1249,24 +1319,32 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 	cutMark := fmt.Sprintf("\n[pocketd cut the rest: the result is longer than %d bytes]", maxMCPOutput)
 	budget := maxMCPOutput - len(fmt.Sprintf(imagesNotice, 9_999_999_999, maxMCPImages, maxMCPImageBytes)) - len(cutMark)
 	secrets := c.hub.store.secrets()
-	safe := *result
-	safe.StructuredContent = redactJSON(result.StructuredContent, secrets)
+	// PiG renders a structured result with no content blocks as indented
+	// JSON, whole, before any bound: pocketd writes it compact, redacted,
+	// as a text block the bound then cuts.
+	blocks := mcp.ToLLMContent(mcp.CallToolResult{Content: result.Content})
+	if len(result.Content) == 0 && len(result.StructuredContent) > 0 {
+		if structured := redactJSON(result.StructuredContent, secrets); structured != nil {
+			blocks = append(blocks, mcp.LLMContent{Type: mcp.LLMContentTypeText, Text: string(structured)})
+		}
+	}
 	var out []ai.ToolResultMessageContent
 	images, dropped, done := 0, 0, false
-	for _, block := range mcp.ToLLMContent(safe) {
+	for _, block := range blocks {
 		if block.Type == mcp.LLMContentTypeImage {
-			if images >= maxMCPImages || len(block.Data) > maxMCPImageBytes || !mcpImage(block.MimeType, block.Data, secrets) {
+			image, ok := mcpImage(block.MimeType, block.Data, secrets)
+			if images >= maxMCPImages || len(block.Data) > maxMCPImageBytes || !ok {
 				dropped++
 				continue
 			}
 			images++
-			out = append(out, ai.ImageContent{Data: block.Data, MimeType: block.MimeType})
+			out = append(out, image)
 			continue
 		}
 		if done {
 			continue
 		}
-		s := redact(block.Text, secrets)
+		s := redactText(block.Text, secrets)
 		if len(s) > budget {
 			s, done = cut(s, budget)+cutMark, true
 		}
@@ -1291,45 +1369,120 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 	return r
 }
 
-// scopeGuard is the OAuth sign-in of a serving pocketd's connection: a
-// 403 that asks for more scope (PiG hands it here as an insufficient_scope
-// challenge) is errMCPScope at once, since the step up needs the owner,
-// and a 401 is PiG's refresh (refreshOnly).
-type scopeGuard struct{ mcp.AuthProvider }
+// serveAuth is the OAuth sign-in of a serving pocketd's connection, as
+// PiG's adapter (oauth.AdaptOAuthProvider) runs one, but with its refresh
+// counted among the hub's exchanges: pocketd's close waits for it, so no
+// refresh writes the store once it closed. A 403 that asks for more scope
+// (PiG hands it here as an insufficient_scope challenge) is errMCPScope at
+// once, since the step up needs the owner. A 401 refreshes the tokens with
+// PiG's flow (refreshOnly), once for every request that waits on it, and
+// a request whose token was replaced meanwhile is made again with the new
+// one: a second refresh with a rotated refresh token would fail.
+type serveAuth struct {
+	conn     *mcpConn
+	provider refreshOnly
+	mu       sync.Mutex
+	flight   *authFlight
+}
 
-func (g scopeGuard) OnUnauthorized(ctx context.Context, unauthorized mcp.UnauthorizedContext) error {
+// authFlight is one refresh, which every request refused meanwhile waits
+// for.
+type authFlight struct {
+	done chan struct{}
+	err  error
+}
+
+func (a *serveAuth) Token(ctx context.Context) (string, error) {
+	tokens, err := a.provider.Tokens(ctx)
+	if err != nil || tokens == nil {
+		return "", err
+	}
+	return tokens.AccessToken, nil
+}
+
+func (a *serveAuth) OnUnauthorized(ctx context.Context, unauthorized mcp.UnauthorizedContext) error {
 	if unauthorized.Response != nil && unauthorized.Response.StatusCode == http.StatusForbidden {
 		return errMCPScope
 	}
-	if handler, ok := g.AuthProvider.(mcp.UnauthorizedHandler); ok {
-		return handler.OnUnauthorized(ctx, unauthorized)
+	challenge := oauth.ParseWWWAuthenticate(strings.Join(unauthorized.Response.Header.Values("Www-Authenticate"), ", "))
+	a.mu.Lock()
+	flight := a.flight
+	if flight == nil && unauthorized.Token != "" {
+		if tokens, err := a.provider.Tokens(ctx); err == nil && tokens != nil && tokens.AccessToken != "" && tokens.AccessToken != unauthorized.Token {
+			a.mu.Unlock()
+			return nil
+		}
 	}
-	return nil
+	if flight == nil {
+		if !a.conn.hub.begin() {
+			a.mu.Unlock()
+			return errMCPClosed
+		}
+		flight = &authFlight{done: make(chan struct{})}
+		a.flight = flight
+		server, fetch := unauthorized.ServerURL.String(), unauthorized.Fetch
+		go func() {
+			defer a.conn.hub.work.Done()
+			// A refresh the server answered may have rotated the refresh
+			// token, so it runs to its end, within the server's timeout,
+			// whoever stopped waiting.
+			ctx, cancel := context.WithTimeout(context.Background(), a.conn.server.Timeout)
+			defer cancel()
+			result, err := oauth.AuthorizeMcp(ctx, a.provider, oauth.OAuthFlowOptions{
+				ServerURL: server, ResourceMetadataURL: challenge.ResourceMetadataURL, Fetch: fetch,
+			})
+			if err == nil && result != oauth.OAuthAuthorized {
+				err = errMCPRefresh
+			}
+			a.mu.Lock()
+			a.flight = nil
+			a.mu.Unlock()
+			flight.err = err
+			close(flight.done)
+		}()
+	}
+	a.mu.Unlock()
+	select {
+	case <-flight.done:
+		return flight.err
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
 }
 
 // mcpImageTypes are the image types a result's image may have: the ones
 // the model providers take.
 var mcpImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
-// mcpImage says whether an image of a result goes to the model: one of
-// mcpImageTypes, its data base64 that decodes to an image of that type
-// (http.DetectContentType reads its first bytes), and holding no secret
-// the store keeps, encoded or decoded. A server's image is never redacted
-// inside; one that fails is left out.
-func mcpImage(mimeType, data string, secrets []string) bool {
+// mcpImage is an image of a result as the model gets it, and whether it
+// goes: one of mcpImageTypes, its data base64 holding no secret the store
+// keeps, encoded or decoded, that decodes whole, pixels and all, within
+// the bounds an owner's attached image has (uploads.PrepareImage, which
+// fits a large one): a header that reads well before pixels that do not
+// would have the provider refuse every request that carries it. A
+// server's image is never redacted inside; one that fails is left out.
+func mcpImage(mimeType, data string, secrets []string) (ai.ImageContent, bool) {
 	if !slices.Contains(mcpImageTypes, mimeType) || holdsSecret(data, secrets) {
-		return false
+		return ai.ImageContent{}, false
 	}
 	decoded, err := base64.StdEncoding.DecodeString(data)
-	if err != nil || http.DetectContentType(decoded) != mimeType {
-		return false
+	if err != nil {
+		return ai.ImageContent{}, false
 	}
 	for _, secret := range secrets {
 		if secret != "" && bytes.Contains(decoded, []byte(secret)) {
-			return false
+			return ai.ImageContent{}, false
 		}
 	}
-	return true
+	// Of the type it says it is, then whole.
+	if _, format, err := image.DecodeConfig(bytes.NewReader(decoded)); err != nil || "image/"+format != mimeType {
+		return ai.ImageContent{}, false
+	}
+	prepared, _, err := uploads.PrepareImage(decoded)
+	if err != nil {
+		return ai.ImageContent{}, false
+	}
+	return ai.ImageContent{Data: base64.StdEncoding.EncodeToString(prepared.Data), MimeType: prepared.MimeType}, true
 }
 
 // refreshOnly is the OAuth sign-in a serving pocketd connects with: it

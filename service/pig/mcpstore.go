@@ -71,6 +71,20 @@ type mcpStore struct {
 	// pin, kept however many former ones come after them (pin).
 	pinned map[int][]string
 	pins   int
+	// fenced says the engine that owns the store closed: it writes no
+	// file from then on, so a writer that takes the data folder's lock
+	// after pocketd's stop is the only one.
+	fenced bool
+}
+
+// errMCPStoreFenced is a write the store refuses once its engine closed.
+var errMCPStoreFenced = errors.New("pocketd closed its MCP store: nothing is written")
+
+// fence ends the store's writes (fenced).
+func (s *mcpStore) fence() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fenced = true
 }
 
 // maxFormerSecrets bounds mcpStore.former.
@@ -229,6 +243,9 @@ func writeStoreFile(path string, v any) error {
 
 // saveCredsLocked writes the credentials file; mu is held.
 func (s *mcpStore) saveCredsLocked() error {
+	if s.fenced {
+		return errMCPStoreFenced
+	}
 	return writeStoreFile(filepath.Join(s.dir, MCPAuthFile), struct {
 		Servers map[string]*mcpCredential `json:"servers"`
 	}{s.creds})
@@ -339,6 +356,9 @@ func (s *mcpStore) listing(name, url string) ([]mcpTool, bool) {
 func (s *mcpStore) setListing(name, url string, tools []mcpTool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.fenced {
+		return errMCPStoreFenced
+	}
 	s.tools[name] = mcpListing{URL: url, Tools: slices.Clone(tools)}
 	return writeStoreFile(filepath.Join(s.dir, MCPToolsFile), struct {
 		Servers map[string]mcpListing `json:"servers"`

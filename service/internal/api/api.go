@@ -610,7 +610,10 @@ type Server struct {
 	// tests replace it), and mcpRetries cancel the one each scope waits on,
 	// by profile ("" for all); sessionMu guards mcpRetries.
 	mcpTimer   func(d time.Duration, f func()) (cancel func())
-	mcpRetries map[string]func()
+	mcpRetries map[string]mcpRetry
+	// mcpPassNo numbers the MCP tools' passes and new sessions' writes, in
+	// the order they take mcpMu, which guards it.
+	mcpPassNo uint64
 	// consultTimer wakes a delivery pass at a consult's deadline
 	// (armConsults; tests replace it), and consultCancel stops the one
 	// set; sessionMu guards consultCancel.
@@ -885,8 +888,8 @@ func (s *Server) Stop() {
 			s.launchCancel()
 			s.launchCancel = nil
 		}
-		for _, stop := range s.mcpRetries {
-			stop()
+		for _, r := range s.mcpRetries {
+			r.stop()
 		}
 		s.mcpRetries = nil
 		s.sessionMu.Unlock()

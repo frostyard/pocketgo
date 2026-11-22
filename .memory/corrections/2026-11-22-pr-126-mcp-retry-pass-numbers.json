@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Number MCP passes in the order they take their lock: a success ends only a retry whose failures came before it.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 5 (codex-cli 0.169.0) of head 8844571: [P2] Order retry cancellation with the pass that succeeded",
+  "promoted_to": "service/internal/api/mcp_test.go"
+}

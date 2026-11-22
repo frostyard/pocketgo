@@ -31,13 +31,20 @@ func (b bigBody) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // An answer from an MCP server's OAuth side is read within its bound, and
 // one past it fails, never cut: PiG reads an OAuth document whole. The
-// endpoint's own answers are PiG's to bound, by message.
+// MCP messages are PiG's to bound, by message, known by what they accept,
+// whatever URL either names: an OAuth request to the endpoint's own URL is
+// bounded too (Codex review of #126, round 5).
 func TestAnOAuthAnswerIsReadWithinItsBound(t *testing.T) {
 	mcpTransport = bigBody{n: 2 * maxMCPDocument}
 	t.Cleanup(func() { mcpTransport = nil })
-	client := mcpClient(mcpLoginTimeout, notesURL)
-	read := func(target string) error {
-		resp, err := client.Get(target)
+	client := mcpClient(mcpLoginTimeout)
+	read := func(target, accept string) error {
+		request, err := http.NewRequest(http.MethodGet, target, nil)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Accept", accept)
+		resp, err := client.Do(request)
 		if err != nil {
 			return err
 		}
@@ -45,11 +52,14 @@ func TestAnOAuthAnswerIsReadWithinItsBound(t *testing.T) {
 		_, err = io.ReadAll(resp.Body)
 		return err
 	}
-	if err := read(authURL + "/.well-known/oauth-authorization-server"); !errors.Is(err, errMCPTooLarge) {
+	if err := read(authURL+"/.well-known/oauth-authorization-server", "application/json"); !errors.Is(err, errMCPTooLarge) {
 		t.Fatalf("a document past its bound: %v", err)
 	}
-	if err := read(notesURL); err != nil {
-		t.Fatalf("the endpoint's answer: %v", err)
+	if err := read(notesURL, "application/json"); !errors.Is(err, errMCPTooLarge) {
+		t.Fatalf("an OAuth answer at the endpoint's URL: %v", err)
+	}
+	if err := read("https://mcp.example.com:443/notes", "application/json, text/event-stream"); err != nil {
+		t.Fatalf("an MCP message: %v", err)
 	}
 }
 

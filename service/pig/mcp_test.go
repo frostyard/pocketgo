@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -79,8 +81,8 @@ type fakeMCP struct {
 	perPage, pages int
 	// noList answers tools/list with no tools array, listBusy with a
 	// 429, and tokenError answers every refresh with that OAuth error.
-	noList, listBusy bool
-	tokenError       string
+	noList, listBusy, listError bool
+	tokenError                  string
 }
 
 func newFakeMCP(t *testing.T) *fakeMCP {
@@ -237,6 +239,10 @@ func (f *fakeMCP) serveMCP(w http.ResponseWriter, r *http.Request, body []byte) 
 	case "tools/list":
 		if f.listBusy {
 			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		if f.listError {
+			writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32603, "message": "the list is not ready"}})
 			return
 		}
 		if f.noList {
@@ -891,5 +897,12 @@ func TestTheFileToolsCannotReadTheMCPStore(t *testing.T) {
 	}
 }
 
-// pngImage is an image a provider takes: base64 of a PNG's first bytes.
-var pngImage = base64.StdEncoding.EncodeToString([]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d})
+// pngImage is an image a provider takes: a whole PNG of 2x2 pixels, in
+// base64.
+var pngImage = func() string {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		panic(err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}()

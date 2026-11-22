@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Run an MCP sign-in's refresh among the exchanges pocketd's stop waits for, and fence the store once the hub closed, so no refresh writes past the stop.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 5 (codex-cli 0.169.0) of head 8844571: [P1] Fence OAuth writes when the MCP hub closes",
+  "promoted_to": "service/pig/mcp_round5_test.go"
+}

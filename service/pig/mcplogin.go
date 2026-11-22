@@ -160,7 +160,7 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	if len(missing) > 0 {
 		return fmt.Errorf("server %s needs its header %s first: pocketd mcp set-header %s %s; nothing was changed", server.Name, missing[0], server.Name, missing[0])
 	}
-	fetch := mcpClient(mcpLoginTimeout, server.URL)
+	fetch := mcpClient(mcpLoginTimeout)
 	challenge := probeChallenge(ctx, fetch, server.URL, headers)
 	scope := loginScope(ctx, fetch, server, challenge)
 	// The sign-in runs on a copy: only a sign-in that ends reaches the
@@ -268,11 +268,12 @@ func probeChallenge(ctx context.Context, fetch *http.Client, server string, head
 // loginScope is the scopes a sign-in asks for: the ones the server asks
 // for, its challenge's, else its resource metadata's, with the ones
 // mcp.json adds. PiG asks for the scopes it is given in place of the
-// metadata's, so they are read here when mcp.json adds some: an added
-// scope never drops one the server's tools need.
+// metadata's, so they are read here: an added scope never drops one the
+// server's tools need, and a kept client is kept only for the scopes the
+// request names (registeredFor).
 func loginScope(ctx context.Context, fetch *http.Client, server profiles.MCPServer, challenge oauth.OAuthChallenge) string {
 	wanted := challenge.Scope
-	if wanted == "" && server.OAuth.Scope != "" {
+	if wanted == "" {
 		options := oauth.DiscoveryOptions{Fetch: fetch}
 		if challenge.ResourceMetadataURL != nil {
 			options.ResourceMetadataURL = challenge.ResourceMetadataURL.Href()
@@ -330,15 +331,24 @@ func oauthWords(err error) string {
 	return "pocketd could not complete the OAuth discovery, registration or token exchange with the server"
 }
 
-// safeWord is an OAuth error code as it may show: up to 64 characters of
-// letters, digits, _ and -, else a word that says it is not one.
+// oauthCodes are the OAuth error codes pocketd names (RFC 6749, RFC 6750,
+// RFC 7591 and OpenID Connect's): any other value is said to be none, as
+// a server or a pasted address may put a token or a code where a code
+// belongs.
+var oauthCodes = []string{
+	"invalid_request", "invalid_client", "invalid_grant", "unauthorized_client", "unsupported_grant_type", "invalid_scope",
+	"access_denied", "unsupported_response_type", "server_error", "temporarily_unavailable", "invalid_token", "insufficient_scope",
+	"invalid_redirect_uri", "invalid_client_metadata", "invalid_software_statement", "unapproved_software_statement",
+	"interaction_required", "login_required", "consent_required", "account_selection_required",
+}
+
+// safeWord is an OAuth error code as it may show: one of oauthCodes, else
+// words that say it is none.
 func safeWord(code string) string {
-	if code == "" || len(code) > 64 || strings.ContainsFunc(code, func(r rune) bool {
-		return r != '_' && r != '-' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9')
-	}) {
-		return "an error"
+	if slices.Contains(oauthCodes, code) {
+		return code
 	}
-	return code
+	return "an error pocketd does not name"
 }
 
 // readLine reads one line of at most limit bytes from in, its line end

@@ -240,3 +240,33 @@ func TestMCPRetriesAreOneAScope(t *testing.T) {
 		t.Fatalf("after a pass that succeeded: %d pending, %d stopped", pending, timers.stopped)
 	}
 }
+
+// A pass that succeeds ends only the retry of failures before it: one a
+// later pass or record scheduled, between the pass's end and its look at
+// the retries, stays (Codex review of #126, round 5).
+func TestAPassEndsOnlyTheRetriesOfEarlierFailures(t *testing.T) {
+	h := newTeamHarness(t)
+	mcpSessions(t, h)
+	h.engine.mcpProfiles = []string{"duncan"}
+	timers := &fakeMCPTimers{}
+	h.server.mcpTimer = timers.timer
+	// A failure numbered after the pass about to run.
+	h.server.mcpRetryLater("duncan", mcpRetryFirst, 2)
+	h.server.MCPToolsChanged("duncan")
+	h.server.passes.Wait()
+	h.server.sessionMu.Lock()
+	_, waits := h.server.mcpRetries["duncan"]
+	h.server.sessionMu.Unlock()
+	if !waits || timers.stopped != 0 {
+		t.Fatalf("a pass numbered 1 ended a retry of pass 2 (waits %v, stopped %d)", waits, timers.stopped)
+	}
+	h.server.MCPToolsChanged("duncan")
+	h.server.MCPToolsChanged("duncan")
+	h.server.passes.Wait()
+	h.server.sessionMu.Lock()
+	_, waits = h.server.mcpRetries["duncan"]
+	h.server.sessionMu.Unlock()
+	if waits || timers.stopped != 1 {
+		t.Fatalf("a later pass left the retry (waits %v, stopped %d)", waits, timers.stopped)
+	}
+}

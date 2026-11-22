@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Send an MCP result's image only once it decodes whole, pixels and all, within an attached image's bounds (uploads.PrepareImage): a signature alone reads well.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 5 (codex-cli 0.169.0) of head 8844571: [P1] Validate image pixels before recording MCP results",
+  "promoted_to": "service/pig/mcp_round5_test.go"
+}

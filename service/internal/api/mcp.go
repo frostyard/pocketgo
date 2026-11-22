@@ -64,6 +64,8 @@ func (s *Server) mcpGo(f func(context.Context)) {
 // succeeds ends the retry its scope waits on.
 func (s *Server) mcpUpgrade(ctx context.Context, only string, wait time.Duration) {
 	s.mcpMu.Lock()
+	s.mcpPassNo++
+	pass := s.mcpPassNo
 	err := s.upgradeMCPTools(ctx, only)
 	s.mcpMu.Unlock()
 	if ctx.Err() != nil {
@@ -71,13 +73,15 @@ func (s *Server) mcpUpgrade(ctx context.Context, only string, wait time.Duration
 	}
 	if err != nil {
 		s.log.Warn("give sessions their profiles' MCP tools; tried again later", "err", err, "in", wait)
-		s.mcpRetryLater(only, wait)
+		s.mcpRetryLater(only, wait, pass)
 		return
 	}
+	// A pass ends only the retry of failures before it: one that failed
+	// after it, between its unlock and here, keeps its retry.
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
-	if stop, ok := s.mcpRetries[only]; ok {
-		stop()
+	if r, ok := s.mcpRetries[only]; ok && r.pass < pass {
+		r.stop()
 		delete(s.mcpRetries, only)
 	}
 }
@@ -87,24 +91,36 @@ func (s *Server) mcpUpgrade(ctx context.Context, only string, wait time.Duration
 // mcpRetryMost, until it succeeds: no new listing may come to start
 // another. A scope waits on one retry at most; a retry that fired lets go
 // of its place.
-func (s *Server) mcpRetryLater(only string, wait time.Duration) {
+func (s *Server) mcpRetryLater(only string, wait time.Duration, pass uint64) {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	if s.stopped {
 		return
 	}
-	if _, ok := s.mcpRetries[only]; ok {
+	if r, ok := s.mcpRetries[only]; ok {
+		// The retry that waits covers this failure too: it is a failure
+		// of pass, which no earlier pass's success ends.
+		r.pass = max(r.pass, pass)
+		s.mcpRetries[only] = r
 		return
 	}
 	if s.mcpRetries == nil {
-		s.mcpRetries = map[string]func(){}
+		s.mcpRetries = map[string]mcpRetry{}
 	}
-	s.mcpRetries[only] = s.mcpTimer(wait, func() {
+	s.mcpRetries[only] = mcpRetry{pass: pass, stop: s.mcpTimer(wait, func() {
 		s.sessionMu.Lock()
 		delete(s.mcpRetries, only)
 		s.sessionMu.Unlock()
 		s.mcpGo(func(ctx context.Context) { s.mcpUpgrade(ctx, only, min(2*wait, mcpRetryMost)) })
-	})
+	})}
+}
+
+// mcpRetry is a pass that waits to be tried again: pass is the newest
+// failure it covers, by the number of the pass or record it failed in
+// (mcpPassNo), and stop cancels it.
+type mcpRetry struct {
+	pass uint64
+	stop func()
 }
 
 // mcpAfterCreate gives session id, just recorded, its profile's MCP tools
@@ -123,12 +139,14 @@ func (s *Server) mcpAfterCreate(ctx context.Context, id int64, profile string, r
 		profile = ""
 	}
 	s.mcpMu.Lock()
+	s.mcpPassNo++
+	pass := s.mcpPassNo
 	_, err := s.engine.SetMCPTools(ctx, id, profile)
 	s.mcpMu.Unlock()
 	if err != nil {
 		// No other pass may come: its profile's pass is tried again.
 		s.log.Warn("give a new session its profile's MCP tools; tried again later", "session", id, "err", err)
-		s.mcpRetryLater(scope, mcpRetryFirst)
+		s.mcpRetryLater(scope, mcpRetryFirst, pass)
 	}
 }
 
