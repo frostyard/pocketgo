@@ -548,7 +548,16 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 // stopWorker stops worker's run, if one goes: its thread closed. A stop,
 // or a look at the worker, that fails is tried again by the delivery pass
 // (Codex review of #29, round 1); the run's reply reaches no one.
+//
+// It holds workerStartMu, which a worker's new work is kept under, and
+// stops nothing of a thread a message reopened since: its worker works for
+// it again (ADR-0061; Codex review of #121, round 2).
 func (s *Server) stopWorker(ctx context.Context, worker int64) {
+	s.workerStartMu.Lock()
+	defer s.workerStartMu.Unlock()
+	if thread, err := s.store.ThreadOfWorker(ctx, worker); err == nil && thread.State != store.ThreadClosed {
+		return
+	}
 	busy, err := s.engine.Busy(ctx, worker)
 	if err == nil && busy {
 		err = s.engine.Abort(ctx, worker)

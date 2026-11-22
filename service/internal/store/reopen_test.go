@@ -38,6 +38,36 @@ func TestACloseDropsItsMessagesInItsTransaction(t *testing.T) {
 	}
 }
 
+// A thread a message reopened frees its desk place again at its next
+// close: a plan the cap held back is told each time, by a note of its own
+// (Codex review of #121, round 2).
+func TestEachCloseOfAReopenedThreadFreesAHeldPlansPlace(t *testing.T) {
+	s, _ := open(t)
+	_, facts := approvedPlan(t, s, "p1")
+	row := openedThread(t, s, "k1", 9)
+	for round := range 2 {
+		if err := s.HoldPlan(ctx, facts.Plan.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CloseThread(ctx, row.ID); err != nil {
+			t.Fatal(err)
+		}
+		key := "plan:" + facts.Thread.Owner + ":free:" + row.Owner
+		if round > 0 {
+			key += ":1"
+		}
+		if note, err := s.Note(ctx, key); err != nil || note.Text == "" {
+			t.Fatalf("close %d: no note %q: %+v, %v", round+1, key, note, err)
+		}
+		if err := s.CompleteOwnerMessage(ctx, "u:d:m"+string(rune('1'+round)), "100", row.ID, 9); err != nil {
+			t.Fatal(err)
+		}
+		if _, reopened, err := s.OwnerMessagePlaced(ctx, "u:d:m"+string(rune('1'+round))); err != nil || !reopened {
+			t.Fatalf("reopen %d: %v, %v", round+1, reopened, err)
+		}
+	}
+}
+
 // openedThread records a thread whose specialist works in session, opened.
 func openedThread(t *testing.T, s *Store, key string, session int64) ThreadRow {
 	t.Helper()

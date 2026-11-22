@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "team_send notes the thread's placed messages under outboxMu held through its keeping, so a thread the owner's placed message reopened takes a message written for an open thread, which unblocks it.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 2 (codex-cli 0.169.0) of head b5739da: [P2] Note placed messages before classifying a supervisor send",
+  "promoted_to": "service/internal/api/reopen_round2_test.go"
+}

@@ -84,7 +84,7 @@ func (s *Server) ownerMessagePlaced(ctx context.Context, m store.OwnerMessage) e
 		return err
 	}
 	if reopened {
-		s.publishThread(thread)
+		s.publishReopened(ctx, thread)
 	}
 	return nil
 }
@@ -185,6 +185,37 @@ func (s *Server) noteClosed(ctx context.Context, row store.ThreadRow) (store.Thr
 		return store.ThreadRow{}, err
 	}
 	return s.store.Thread(ctx, row.ID)
+}
+
+// closedSince is the refusal of the owner's message to thread, read now
+// under outboxMu, when the thread closed after the send looked at it
+// (checked false) and the message could not reopen it (team.CheckReopen):
+// it was open then, so its specialist had its brief, and the cleanup lock
+// the send holds kept its folder.
+func (s *Server) closedSince(ctx context.Context, thread int64, checked bool) (refusal, err error) {
+	row, err := s.store.Thread(ctx, thread)
+	if err != nil || checked || row.State != store.ThreadClosed {
+		return nil, err
+	}
+	target := team.ReopenTarget{ID: row.ID, Plan: row.Plan, PlanTask: row.PlanTask, Briefed: true}
+	target.Successor, target.SuccessorAgent = s.successorOf(ctx, row)
+	return team.CheckReopen(target, team.FromOwner), nil
+}
+
+// publishReopened publishes thread, which a message just reopened, with
+// its pull requests: a client lists a closed thread's only while they are
+// open, so one that read them while it was closed has no copy of the rest
+// (Codex review of #121, round 2). workMu is held.
+func (s *Server) publishReopened(ctx context.Context, thread store.ThreadRow) {
+	s.publishThread(thread)
+	pulls, err := s.store.PullsOfThread(ctx, thread.ID)
+	if err != nil {
+		s.log.Warn("read a reopened thread's pull requests", "thread", thread.ID, "err", err)
+		return
+	}
+	for _, p := range pulls {
+		s.publishPull(p)
+	}
 }
 
 // reportRefused is team_message's refusal on closed thread row: what its

@@ -207,12 +207,16 @@ func (d *Data) Thread(id int64) (proto.Thread, bool) {
 // later, as ThreadChanged does: a closed thread still changes (pocketd
 // notes on its report), and the event of such a change may come before
 // the reply.
+//
+// A reply that is not closed is a close run again after a reopen, which
+// answers with the thread as it is: a snapshot, which applies only over an
+// older copy, as ThreadChanged's does (Codex review of #121, round 2).
 func (d *Data) ThreadClosed(t proto.Thread) {
 	if cur, ok := d.Thread(t.ID); ok {
 		if cur.Reopens > t.Reopens {
 			return
 		}
-		if cur.State == proto.ThreadClosed && !t.UpdatedAt.After(cur.UpdatedAt) {
+		if (cur.State == proto.ThreadClosed || t.State != proto.ThreadClosed) && !t.UpdatedAt.After(cur.UpdatedAt) {
 			return
 		}
 	}

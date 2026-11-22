@@ -135,8 +135,15 @@ func (s *Server) fileSendOnce(ctx context.Context, caller, supervisor, key strin
 		}
 		row.Text = team.SendTextToClosed(thread.ID, supervisor, text)
 	}
+	// The thread's messages already in the transcript are noted first,
+	// under outboxMu held through the keeping: one may have reopened it,
+	// and the text written for a closed thread is then refused as written
+	// for another state, and written again (Codex review of #121, round 2).
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
+	if err := s.noteSendsPlaced(ctx, thread.ID); err != nil {
+		return err
+	}
 	_, err = s.store.FileSendTo(ctx, row, closed)
 	return err
 }
@@ -289,7 +296,10 @@ func (s *Server) sendDeliveredLocked(ctx context.Context, row store.ReportRow) (
 	for _, ask := range change.Withdrawn {
 		s.emitAsk(ask)
 	}
-	if change.Reopened {
+	switch {
+	case change.FromClosed:
+		s.publishReopened(ctx, thread)
+	case change.Reopened:
 		s.publishThread(thread)
 	}
 	if len(change.Withdrawn) > 0 && thread.IsPlanThread() {

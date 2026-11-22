@@ -7,6 +7,24 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
+// A close run again after a reopen answers with the thread as it is, not
+// closed: that reply is a snapshot, which never undoes a later report's
+// copy (Codex review of #121, round 2).
+func TestAnOpenCloseReplyNeverUndoesALaterReport(t *testing.T) {
+	d := &Data{}
+	open := thread(1, proto.ThreadOpen, time.Minute)
+	at := open.UpdatedAt
+	open.Reopens, open.ReopenedAt = 1, &at
+	d.SetThreads(d.BeginThreads(), []proto.Thread{open})
+	done := thread(1, proto.ThreadDone, 2*time.Minute)
+	done.Reopens, done.ReopenedAt = 1, &at
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &done})
+	d.ThreadClosed(open)
+	if th, _ := d.Thread(1); th.State != proto.ThreadDone {
+		t.Fatalf("the open reply undid the later report: %s", th.State)
+	}
+}
+
 // A thread a message reopened is marked so while it is not closed again
 // (ADR-0061).
 func TestReopened(t *testing.T) {

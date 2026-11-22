@@ -392,6 +392,7 @@ type Server struct {
 	// the thread; failFollowedRead fails the read of the thread a
 	// delegation follows. Tests set them (ADR-0061); nil does nothing.
 	afterOwnerSend   func()
+	beforeOwnerSend  func()
 	afterCleanState  func(thread int64)
 	failFollowedRead error
 	// failSendNote, when set, fails team_send's answer's own noting of its
@@ -1994,7 +1995,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// thread takes a new one only when it may reopen, checked under its
 	// cleanup lock, held until the message is followed, so its worktree
 	// does not go from under it.
-	follow, unlockClean := int64(0), func() {}
+	follow, unlockClean, checkedClosed := int64(0), func() {}, false
 	defer func() { unlockClean() }()
 	if thread, err := s.store.ThreadOfSession(ctx, id); err == nil && thread.Session == id && thread.ReviewPull == 0 {
 		follow, unlockClean = thread.ID, s.lockClean(thread.ID)
@@ -2004,6 +2005,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if thread.State == store.ThreadClosed {
+				checkedClosed = true
 				refusal, failure := s.reopenRefused(ctx, thread, team.FromOwner)
 				if failure != nil {
 					s.internal(w, "check the closed thread", failure)
@@ -2078,8 +2080,26 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	}
 	unlockOutbox := func() {}
 	if followed != 0 {
+		if s.beforeOwnerSend != nil {
+			s.beforeOwnerSend()
+		}
 		s.outboxMu.Lock()
 		unlockOutbox = s.outboxMu.Unlock
+		// A thread that closed since its look above, which the cleanup lock
+		// does not hold off, takes the message only if it may reopen it:
+		// read again under outboxMu, which every close holds (Codex review
+		// of #121, round 2). Its folder is as it was: the cleanup lock is
+		// held.
+		if refusal, err := s.closedSince(ctx, followed, checkedClosed); err != nil || refusal != nil {
+			unlockOutbox()
+			release()
+			if err != nil {
+				s.internal(w, "read the session's thread", err)
+			} else {
+				writeError(w, http.StatusConflict, proto.ErrorCodeConflict, refusal.Error())
+			}
+			return
+		}
 	}
 	submission, err := s.engine.Send(ctx, id, key, text, files...)
 	if err != nil {

@@ -904,7 +904,14 @@ func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) er
 		if len(ready) == 0 {
 			continue
 		}
-		if err := insertNote(ctx, tx, NoteRow{Key: "plan:" + facts.Thread.Owner + ":free:" + before.Owner, SessionID: facts.Plan.SupervisorSession,
+		// One note per close of the thread: a thread a message reopened
+		// frees its place again at its next close (ADR-0061; Codex review
+		// of #121, round 2).
+		key := "plan:" + facts.Thread.Owner + ":free:" + before.Owner
+		if before.Reopened > 0 {
+			key += ":" + strconv.Itoa(before.Reopened)
+		}
+		if err := insertNote(ctx, tx, NoteRow{Key: key, SessionID: facts.Plan.SupervisorSession,
 			Text: team.FreeNote(plan, before.ID, team.TasksNamed(facts.Graph.Tasks, ready))}, now); err != nil {
 			return err
 		}
