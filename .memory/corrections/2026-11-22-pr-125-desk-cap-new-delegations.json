@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide describes POCKETD_DESK_CAP as the count at which a new delegation is refused (team.CheckDelegation), which a reopened thread may pass.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 13 (codex-cli 0.169.0) of head b90cbe8: [P2] Describe the desk cap as a limit on new delegations",
+  "promoted_to": "docs/design/setup.md"
+}

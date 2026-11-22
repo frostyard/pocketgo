@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide keeps sshd from trusting the service user's ~/.ssh/authorized_keys whatever the deploy path: DenyUsers for an incus deploy, a root-owned AuthorizedKeysFile for an ssh deploy.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 13 (codex-cli 0.169.0) of head b90cbe8: [P1] Protect the service account's SSH access on Incus deployments too",
+  "promoted_to": "docs/design/setup.md"
+}
