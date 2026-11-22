@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "No message reopens a closed thread before the stop its close owes the worker is done (threads.worker_stop_due), so an earlier close's stop never reaches work of the reopened thread.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 2 (codex-cli 0.169.0) of head b5739da: [P2] Keep an earlier close from aborting a reopened thread's worker",
+  "promoted_to": "service/internal/api/reopen_round2_test.go"
+}

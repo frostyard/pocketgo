@@ -174,6 +174,15 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 		Author: author.ID, MessageKey: "review-verdict:" + thread.Owner,
 		MessageText: team.AuthorVerdictText(author.ID, pull.Ref(), read.HeadSHA, v.Verdict, summary, findings),
 	}
+	// The author's messages already in its transcript are noted first,
+	// under outboxMu held through the filing: one may have reopened its
+	// thread, which then gets the verdict (ADR-0061; Codex review of #121,
+	// round 1).
+	s.outboxMu.Lock()
+	if err := s.noteSendsPlaced(ctx, author.ID); err != nil {
+		s.outboxMu.Unlock()
+		return "", err
+	}
 	s.workMu.Lock()
 	review, row, changed, replayed, err := s.store.AddReview(callCtx, read, store.ReviewRow{Key: key, PullID: pull.ID, ThreadID: thread.ID,
 		SessionID: call.Session, Agent: thread.Agent, Provider: model.Provider, Model: model.ID, Family: reviewerFamily, HeadSHA: read.HeadSHA,
@@ -187,6 +196,7 @@ func (s *Server) TeamVerdict(ctx context.Context, call TeamCall, v team.Verdict)
 		}
 	}
 	s.workMu.Unlock()
+	s.outboxMu.Unlock()
 	if errors.Is(err, store.ErrConflict) {
 		return "", fmt.Errorf("thread T%d is closed and files no verdict", thread.ID)
 	} else if err != nil {

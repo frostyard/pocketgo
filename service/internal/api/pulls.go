@@ -108,6 +108,9 @@ func (s *Server) lockPulls(ctx context.Context, refs []string) (unlock func(), e
 type ctxLocks struct {
 	mu   sync.Mutex
 	held map[string]*ctxLock
+	// onWait, in tests, sees each lock call that waits for another
+	// holder of its key.
+	onWait func(key string)
 }
 
 type ctxLock struct {
@@ -128,7 +131,11 @@ func (k *ctxLocks) lock(ctx context.Context, key string) (func(), error) {
 		k.held[key] = l
 	}
 	l.users++
+	waits := l.users > 1 && k.onWait != nil
 	k.mu.Unlock()
+	if waits {
+		k.onWait(key)
+	}
 	select {
 	case l.ch <- struct{}{}:
 		return func() {
@@ -268,6 +275,23 @@ func (s *Server) recordPull(ctx context.Context, id int64, p store.PullRow) (sto
 	return row, err
 }
 
+// mergedOf counts thread's pulls that merged, and those of them a read
+// after its last reopen found open (ADR-0061); open says one is open.
+func mergedOf(pulls []store.PullRow, thread store.ThreadRow) (merged, sinceOpen int, open bool) {
+	for _, p := range pulls {
+		switch p.State {
+		case store.PullOpen:
+			open = true
+		case store.PullMerged:
+			merged++
+			if p.OpenSeq > thread.ReopenSeq {
+				sinceOpen++
+			}
+		}
+	}
+	return merged, sinceOpen, open
+}
+
 // closeIfMerged closes thread once its pull requests merged (ADR-0016),
 // and publishes it. A closed one may have reopened since it was read: each
 // is read again first, and one open now keeps the thread. One that cannot
@@ -277,16 +301,13 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	if err != nil {
 		return err
 	}
-	merged := false
-	for _, p := range pulls {
-		switch p.State {
-		case store.PullOpen:
-			return nil
-		case store.PullMerged:
-			merged = true
-		}
+	// A thread that reopened closes so only by a merge a read after its
+	// reopen saw open (ADR-0061).
+	row, err := s.store.Thread(ctx, thread)
+	if err != nil {
+		return err
 	}
-	if !merged {
+	if merged, sinceOpen, open := mergedOf(pulls, row); open || !team.MergedOut(0, merged, sinceOpen, row.Reopened > 0) {
 		return nil
 	}
 	rechecked := map[int64]bool{}
@@ -314,6 +335,9 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 			s.stopWorker(ctx, worker)
 		}
 	}()
+	if s.beforeMergeClose != nil {
+		s.beforeMergeClose(thread)
+	}
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	s.workMu.Lock()
@@ -331,6 +355,14 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 		if p.State == store.PullOpen || (p.State == store.PullClosed && !rechecked[p.ID]) {
 			return nil
 		}
+	}
+	// So does a thread a close and a reopen moved past these merges since
+	// they were counted: read again under the locks, before anything is
+	// withdrawn (Codex review of #121, round 3).
+	if current, err := s.store.Thread(ctx, thread); err != nil {
+		return err
+	} else if merged, sinceOpen, _ := mergedOf(now, current); current.State == store.ThreadClosed || !team.MergedOut(0, merged, sinceOpen, current.Reopened > 0) {
+		return nil
 	}
 	// Its worker's replies still queued are withdrawn before the close
 	// commits; a withdrawal that fails leaves it for the next round.

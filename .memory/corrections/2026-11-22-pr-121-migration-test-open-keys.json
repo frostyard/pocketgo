@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The migration test's open thread holds keys of every retired prefix, so it fails if the closed-thread filter goes.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 4 (codex-cli 0.169.0) of head e29cfb3: [P3] Test migration 24 with matching keys on an open thread",
+  "promoted_to": "service/internal/store/reopen_migration_test.go"
+}

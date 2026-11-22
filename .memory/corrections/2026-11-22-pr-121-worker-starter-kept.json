@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A reopened thread's worker still names its starter, the thread's specialist session.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 6 (codex-cli 0.169.0) of head 72e8eec: [P2] Preserve the starter of a retired worker",
+  "promoted_to": "service/internal/api/reopen_round6_test.go"
+}

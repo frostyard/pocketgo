@@ -391,6 +391,21 @@ type Server struct {
 	// itself noted its message delivered; tests make the store fail there.
 	// Nil does nothing.
 	afterSendNoted func()
+	// afterOwnerSend runs in the owner's message right after PiG took it,
+	// before its record, and beforeOwnerSend before it takes outboxMu;
+	// afterCleanState in a cleanup right after it read the thread;
+	// beforeMergeClose in a merge's close before it takes the team's
+	// locks; failRead, when it returns an error, fails the read it names
+	// (readThreadNow, readPullsOf, readThreadOfWorker) as a work database
+	// that cannot be read would. Tests set them (ADR-0061); nil does
+	// nothing.
+	afterOwnerSend   func()
+	beforeOwnerSend  func()
+	afterStopRead    func(worker int64)
+	afterCleanState  func(thread int64)
+	beforeMergeClose func(thread int64)
+	afterPullLocks   func()
+	failRead         func(what string, id int64) error
 	// failSendNote, when set, fails team_send's answer's own noting of its
 	// message, as a work database that refuses the write would; tests set
 	// it. Nil in production.
@@ -448,6 +463,9 @@ type Server struct {
 	workerScanDue bool
 	// workerStartMu starts one worker at a time (Server.workerOf).
 	workerStartMu sync.Mutex
+	// workerStops hold one worker each (stopWorker), from the look at its
+	// thread to the note that its stop is done (ADR-0061).
+	workerStops keyLocks
 	// standingDue says a delivery pass looks after every standing session
 	// (standingPass): the first after start, as a run's end may have gone
 	// unseen while pocketd stopped. standingMu guards it.
@@ -470,14 +488,23 @@ type Server struct {
 	// pull request and its answer.
 	afterConfirmRead func()
 	cleanMu          sync.Mutex
-	// cleanQueue holds closed threads to clean, under cleanMu.
-	cleanQueue map[int64]bool
-	// cleanDone holds threads decided in this run, under cleanMu.
-	cleanDone map[int64]bool
+	// cleanQueue holds closed threads to clean, each with the close to
+	// clean by the thread's reopen count (ADR-0061), under cleanMu.
+	cleanQueue map[int64]int
+	// cleanDone holds threads decided in this run, each with the close it
+	// decided, by the thread's reopen count then (ADR-0061), under cleanMu.
+	cleanDone map[int64]int
 	// cleansDue holds cleanup retries, under reviewMu.
 	cleansDue map[int64]bool
-	// cleanNotes holds kept-worktree notes not yet written, under reviewMu.
-	cleanNotes map[int64]string
+	// cleanNotes holds kept-worktree notes not yet written, each with the
+	// close it is of, under reviewMu.
+	cleanNotes map[int64]keptNote
+	// cleanLocks hold one closed thread each (lockClean): its worktree's
+	// removal, and a message that would reopen it (ADR-0061).
+	cleanLocks keyLocks
+	// pullsRetry are the reopened threads whose pull requests could not be
+	// read to publish (publishReopened), under threadRetryMu.
+	pullsRetry map[int64]bool
 	reviewMu   sync.Mutex
 	// abortsDue are the ended reviews' sessions whose run a stop did not
 	// end, or could not tell; each review pass tries again. reviewMu
@@ -1994,6 +2021,51 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if shift != 0 {
 		defer s.lockShift(shift)()
 	}
+	// A message to a thread's specialist is followed until PiG places it:
+	// one that reaches a closed thread reopens it (ADR-0061). A closed
+	// thread takes a new one only when it may reopen, checked under its
+	// cleanup lock, held until the message is followed, so its worktree
+	// does not go from under it.
+	follow, unlockClean, checkedClosed := int64(0), func() {}, false
+	defer func() { unlockClean() }()
+	if thread, err := s.store.ThreadOfSession(ctx, id); err == nil && thread.Session == id && thread.ReviewPull == 0 {
+		follow, unlockClean = thread.ID, s.lockClean(thread.ID)
+		if !went {
+			if thread, err = s.store.Thread(ctx, thread.ID); err != nil {
+				s.internal(w, "read the session's thread", err)
+				return
+			}
+			// A closed thread's messages already in the transcript are
+			// noted first: one may have reopened it, and an open thread
+			// takes the message as any (Codex review of #121, round 4).
+			if thread.State == store.ThreadClosed {
+				if thread, err = s.noteClosed(ctx, thread); err != nil {
+					s.internal(w, "note the thread's messages", err)
+					return
+				}
+			}
+			if thread.State == store.ThreadClosed {
+				checkedClosed = true
+				refusal, failure := s.reopenRefused(ctx, thread, team.FromOwner)
+				if failure != nil {
+					s.internal(w, "check the closed thread", failure)
+					return
+				}
+				if refusal != nil {
+					// A claim an earlier try left, whose message PiG never
+					// took, is freed, as the refusals above free it.
+					if existed {
+						s.releaseSend(ctx, id, key, kind)
+					}
+					writeError(w, http.StatusConflict, proto.ErrorCodeConflict, refusal.Error())
+					return
+				}
+			}
+		}
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.internal(w, "read the session's thread", err)
+		return
+	}
 	// This request's own claim, which a failed release left for a delivery
 	// pass to free, is this request's again: this try frees it if it fails
 	// too, and puts it back if it cannot even claim it (Codex review of
@@ -2034,16 +2106,67 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "watch session", err)
 		return
 	}
+	// The request completes, and a message this try sends to a thread's
+	// specialist is followed, in one step: one that went before, which an
+	// earlier try followed if it got so far, is not followed again, so no
+	// noting reopens the thread twice for it (ADR-0061). A followed message
+	// goes, is recorded and is noted under outboxMu, which every close holds
+	// as it notes the thread's messages: a close comes before the message
+	// goes, which then reopens the thread it closed, or after the record,
+	// and notes the message first (Codex review of #121, round 1).
+	followed := follow
+	if went {
+		followed = 0
+	}
+	unlockOutbox := func() {}
+	if followed != 0 {
+		if s.beforeOwnerSend != nil {
+			s.beforeOwnerSend()
+		}
+		s.outboxMu.Lock()
+		unlockOutbox = s.outboxMu.Unlock
+		// A thread that closed since its look above, which the cleanup lock
+		// does not hold off, takes the message only if it may reopen it:
+		// read again under outboxMu, which every close holds (Codex review
+		// of #121, round 2). Its folder is as it was: the cleanup lock is
+		// held.
+		if refusal, err := s.closedSince(ctx, followed, checkedClosed); err != nil || refusal != nil {
+			unlockOutbox()
+			release()
+			if err != nil {
+				s.internal(w, "read the session's thread", err)
+			} else {
+				writeError(w, http.StatusConflict, proto.ErrorCodeConflict, refusal.Error())
+			}
+			return
+		}
+	}
 	submission, err := s.engine.Send(ctx, id, key, text, files...)
 	if err != nil {
+		unlockOutbox()
 		release()
 		s.internal(w, "send message", err)
 		return
 	}
-	if err := s.store.CompleteRequest(ctx, key, strconv.FormatInt(submission, 10)); err != nil {
+	if s.afterOwnerSend != nil {
+		s.afterOwnerSend()
+	}
+	if err := s.store.CompleteOwnerMessage(ctx, key, strconv.FormatInt(submission, 10), followed, id); err != nil {
+		unlockOutbox()
 		s.internal(w, "record request", err)
 		return
 	}
+	if followed != 0 {
+		// Noted at once when it is in the transcript already, as an idle
+		// specialist's message is; else the delivery pass notes it.
+		if noted, err := s.noteOwnerMessages(ctx, followed); err != nil || !noted {
+			if err != nil {
+				s.log.Warn("note the owner's message", "thread", followed, "err", err)
+			}
+			s.deliverLater()
+		}
+	}
+	unlockOutbox()
 	writeJSON(w, http.StatusOK, proto.SentMessage{SubmissionID: submission})
 }
 

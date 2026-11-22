@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The owner's message to a thread's specialist reads the thread again under outboxMu before it goes: one that closed since its first look takes the message only if it may reopen (team.CheckReopen), so no plan task's thread gets work it cannot report.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 2 (codex-cli 0.169.0) of head b5739da: [P1] Recheck thread eligibility under the outbox lock before sending",
+  "promoted_to": "service/internal/api/reopen_round2_test.go"
+}

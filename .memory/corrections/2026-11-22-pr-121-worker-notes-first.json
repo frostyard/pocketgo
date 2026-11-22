@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "team_worker on a closed thread notes the thread's placed messages first, as team_message does, before it refuses a closed thread.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 1 (codex-cli 0.169.0) of head a8a4cac: [P2] Note placed messages before refusing a specialist its worker",
+  "promoted_to": "service/internal/api/reopen_round1_test.go"
+}

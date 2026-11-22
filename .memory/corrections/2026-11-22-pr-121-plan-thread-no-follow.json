@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "pocketd stops following the owner's messages to a closed plan's thread, which never reopens, so they hold neither a delivery pass nor its worktree.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 4 (codex-cli 0.169.0) of head e29cfb3: [P2] Stop following queued messages that cannot reopen a plan thread",
+  "promoted_to": "service/internal/api/reopen_round4_test.go"
+}

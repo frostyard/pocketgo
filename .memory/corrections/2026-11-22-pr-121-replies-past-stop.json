@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A worker reply read before a close and kept after a reopen is dropped: the close's stop moved the worker's cursor past it before the reopen.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 6 (codex-cli 0.169.0) of head 72e8eec: [P2] Bind worker replies and cursor writes to their source session",
+  "promoted_to": "service/internal/api/reopen_round3_test.go"
+}

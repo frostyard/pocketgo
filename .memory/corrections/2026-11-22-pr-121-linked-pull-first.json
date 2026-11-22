@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A report that names a pull request another thread links is refused before GitHub is read, with report again without it, so a repository successor gets the instruction rather than a branch mismatch.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 1 (codex-cli 0.169.0) of head a8a4cac: [P3] Give repository successors the linked-pull recovery instruction",
+  "promoted_to": "service/internal/api/reopen_round1_test.go"
+}

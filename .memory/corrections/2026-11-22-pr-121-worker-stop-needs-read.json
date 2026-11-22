@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A worker's stop aborts only after a read finds its thread closed or gone; a read that fails leaves the stop to the delivery pass.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 3 (codex-cli 0.169.0) of head 6cc6235: [P2] Defer worker aborts when the thread-state lookup fails",
+  "promoted_to": "service/internal/api/reopen_round3_test.go"
+}

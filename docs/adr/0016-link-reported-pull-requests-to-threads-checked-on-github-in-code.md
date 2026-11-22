@@ -1,6 +1,6 @@
 # 0016 — Link reported pull requests to their threads, checked on GitHub in code
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 5's close of a thread whose pull requests merged amended by [ADR-0061](0061-reopen-a-closed-thread-when-a-message-reaches-its-specialist.md) for a reopened thread, closed so only by a merge after its reopen
 - **Date:** 2026-11-19
 
 ## Context

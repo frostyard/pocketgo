@@ -39,13 +39,17 @@ func TestCheckSend(t *testing.T) {
 }
 
 // A message goes to an open, a done or a blocked thread the caller's
-// profile delegated; never to a cross-review, another supervisor's thread,
-// a closed one, or one whose specialist has no session yet (ADR-0032).
+// profile delegated, and to a closed one it reopens (ADR-0061); never to a
+// cross-review, another supervisor's thread, a closed one it could not
+// reopen, or one whose specialist has no session yet (ADR-0032).
 func TestCheckSendTarget(t *testing.T) {
 	for _, state := range []string{"open", "done", "blocked"} {
 		if err := CheckSendTarget(SendTarget{ID: 5, State: state, Own: true}); err != nil {
 			t.Errorf("a %s thread: %v", state, err)
 		}
+	}
+	if err := CheckSendTarget(SendTarget{ID: 5, State: "closed", Own: true, Reopen: ReopenTarget{ID: 5, Briefed: true}}); err != nil {
+		t.Errorf("a closed thread it reopens: %v", err)
 	}
 	for name, tc := range map[string]struct {
 		target SendTarget
@@ -55,7 +59,8 @@ func TestCheckSendTarget(t *testing.T) {
 		"another's review":       {SendTarget{ID: 5, State: "open", Review: true}, "cross-review"},
 		"another's thread":       {SendTarget{ID: 5, State: "open"}, "another supervisor"},
 		"another's closed one":   {SendTarget{ID: 5, State: "closed"}, "another supervisor"},
-		"a closed thread":        {SendTarget{ID: 5, State: "closed", Own: true}, "T5 is closed"},
+		"a closed unbriefed one": {SendTarget{ID: 5, State: "closed", Own: true, Reopen: ReopenTarget{ID: 5}}, "before its specialist had its brief"},
+		"a closed plan task":     {SendTarget{ID: 5, State: "closed", Own: true, Reopen: ReopenTarget{ID: 5, Plan: 2, PlanTask: "t1", Briefed: true}}, "stays closed"},
 		"a thread that starts":   {SendTarget{ID: 5, State: "starting", Own: true}, "still starting"},
 		"another's starting one": {SendTarget{ID: 5, State: "starting"}, "another supervisor"},
 	} {

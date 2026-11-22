@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The desktop's fake pocketd reopens a closed thread when a message reaches its specialist, refuses one to a closed plan's thread, and answers a close run again with the thread as it is.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 6 (codex-cli 0.169.0) of head 72e8eec: [P2] Update the desktop fake to exercise reopen-on-delivery",
+  "promoted_to": "desktop/internal/pocketdtest/pocketdtest_test.go"
+}

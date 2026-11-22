@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A close drops its thread's messages that go only while it is open (team.DroppedAtClose) in the transaction that closes it, so a stop after the close leaves none for a reopen to send.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 1 (codex-cli 0.169.0) of head a8a4cac: [P1] Persist outbox cancellations with the close that caused them",
+  "promoted_to": "service/internal/store/reopen_test.go"
+}

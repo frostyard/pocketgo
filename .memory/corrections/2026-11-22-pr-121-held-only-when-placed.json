@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "team_message answers that a report is held only for a message already in the specialist's transcript; a message still queued leaves the closed thread's refusal.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 8 (codex-cli 0.169.0) of head 03dba74: [P2] Distinguish a placed reopen from a queued message in report refusals",
+  "promoted_to": "service/internal/api/reopen_round8_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The index test runs the held-plan query freedPlace runs, with a desk count bound.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 5 (codex-cli 0.169.0) of head 220dc87: [P3] Test the held-plan query that production actually executes",
+  "promoted_to": "service/internal/store/plans_test.go"
+}

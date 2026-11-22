@@ -53,34 +53,15 @@ func (s *Server) TeamSend(ctx context.Context, call TeamCall, m team.Send) (stri
 	} else if err != nil {
 		return "", err
 	}
-	target, err := s.sendTarget(ctx, caller.ID, thread)
-	if err != nil {
-		return "", err
-	}
-	if err := team.CheckSendTarget(target); err != nil {
-		return "", err
-	}
 	supervisor := caller.Name
 	if supervisor == "" {
 		supervisor = caller.ID
 	}
-	// Kept under outboxMu, which every close holds as it withdraws and
-	// drops its thread's messages: the store keeps it only while the
-	// thread is open, done or blocked, so none is kept after a close.
-	s.outboxMu.Lock()
-	_, err = s.store.FileSend(ctx, store.ReportRow{Key: key, ThreadID: thread.ID, SessionID: thread.Session,
-		Text: team.SendText(thread.ID, supervisor, m.Text)})
-	s.outboxMu.Unlock()
-	if errors.Is(err, store.ErrConflict) {
-		// The thread moved since it was read: refused as it is now.
-		if now, rerr := s.store.Thread(ctx, thread.ID); rerr == nil {
-			target.State = now.State
-			if cerr := team.CheckSendTarget(target); cerr != nil {
-				return "", cerr
-			}
-		}
-		return "", fmt.Errorf("thread T%d takes no message now", thread.ID)
-	} else if err != nil {
+	// A closed thread takes one that reopens it (ADR-0061), checked under
+	// its cleanup lock, held until the message is kept, so its worktree
+	// does not go from under it. A thread that moved between the read and
+	// the keeping is read and checked again, once.
+	if err := s.fileSend(ctx, caller.ID, supervisor, key, thread, m.Text); err != nil {
 		return "", err
 	}
 	// Sending it is the outbox's, in the order the thread's messages to
@@ -93,6 +74,80 @@ func (s *Server) TeamSend(ctx context.Context, call TeamCall, m team.Send) (stri
 		s.deliverLater()
 	}
 	return s.sentText(ctx, call.Session, key)
+}
+
+// fileSend checks thread for a message of the supervisor's text from a
+// session of profile caller, and keeps it under key, written for the
+// thread's state: a closed thread's reopens it (ADR-0061). It holds a
+// closed thread's cleanup lock from the look at its folder to the keeping,
+// and outboxMu, which every close holds as it withdraws and drops its
+// thread's messages, over the keeping: a message kept for a thread not
+// closed is withdrawn and dropped by a close after it. A thread that moved
+// between the read and the keeping is read and checked again, once.
+func (s *Server) fileSend(ctx context.Context, caller, supervisor, key string, thread store.ThreadRow, text string) error {
+	for try := 1; ; try++ {
+		err := s.fileSendOnce(ctx, caller, supervisor, key, thread, text)
+		if !errors.Is(err, store.ErrConflict) {
+			return err
+		}
+		now, rerr := s.store.Thread(ctx, thread.ID)
+		if rerr != nil || try == 2 || now.State == thread.State {
+			return fmt.Errorf("thread T%d takes no message now", thread.ID)
+		}
+		thread = now
+	}
+}
+
+// fileSendOnce is one try of fileSend, for thread as read.
+func (s *Server) fileSendOnce(ctx context.Context, caller, supervisor, key string, thread store.ThreadRow, text string) error {
+	closed := thread.State == store.ThreadClosed
+	if closed {
+		defer s.lockClean(thread.ID)()
+		// Read again under the lock, its messages already in the transcript
+		// noted first: a close or a reopen may have come (Codex review of
+		// #121, round 4).
+		var err error
+		if thread, err = s.noteClosed(ctx, thread); err != nil {
+			return err
+		}
+		if thread.State != store.ThreadClosed {
+			return store.ErrConflict
+		}
+	}
+	target, err := s.sendTarget(ctx, caller, thread)
+	if err != nil {
+		return err
+	}
+	if closed && target.Own && !target.Review {
+		if target.Reopen, err = s.reopenTarget(ctx, thread); err != nil {
+			return err
+		}
+	}
+	if err := team.CheckSendTarget(target); err != nil {
+		return err
+	}
+	row := store.ReportRow{Key: key, ThreadID: thread.ID, SessionID: thread.Session, Text: team.SendText(thread.ID, supervisor, text)}
+	if closed {
+		refusal, failure := s.reopenRefused(ctx, thread, team.FromSupervisor)
+		if failure != nil {
+			return failure
+		}
+		if refusal != nil {
+			return refusal
+		}
+		row.Text = team.SendTextToClosed(thread.ID, supervisor, text)
+	}
+	// The thread's messages already in the transcript are noted first,
+	// under outboxMu held through the keeping: one may have reopened it,
+	// and the text written for a closed thread is then refused as written
+	// for another state, and written again (Codex review of #121, round 2).
+	s.outboxMu.Lock()
+	defer s.outboxMu.Unlock()
+	if err := s.noteSendsPlaced(ctx, thread.ID); err != nil {
+		return err
+	}
+	_, err = s.store.FileSendTo(ctx, row, closed)
+	return err
 }
 
 // sendTarget is what team.CheckSendTarget reads of thread for a message
@@ -131,9 +186,15 @@ func (s *Server) sentText(ctx context.Context, caller int64, key string) (string
 		s.log.Warn("read a supervisor's message", "err", err)
 		return team.SentText(team.SentReceipt{State: team.SendUnconfirmed}), nil
 	}
+	// The owner's messages already in the transcript are noted first: one
+	// may have reopened the thread the answer names (ADR-0061; Codex review
+	// of #121, round 7). A failure leaves the answer as the thread is.
+	if _, err := s.noteOwnerMessages(ctx, row.ThreadID); err != nil {
+		s.log.Warn("note the owner's messages", "thread", row.ThreadID, "err", err)
+	}
 	// What the message's delivery may do is what it was kept to do: one kept
 	// before migration 20 unblocks nothing (Codex review of #62, round 2).
-	receipt := team.SentReceipt{Thread: row.ThreadID, Agent: "the specialist", State: team.SendUnconfirmed, Unblocks: row.Unblocks}
+	receipt := team.SentReceipt{Thread: row.ThreadID, Agent: "the specialist", State: team.SendUnconfirmed, Unblocks: row.Unblocks, Reopens: row.Reopens != 0}
 	// noted is what this answer's own noting committed, with the thread as
 	// it left it: the answer is built from it, never from a read after it,
 	// which may fail (Codex review of #62, round 1).
@@ -196,7 +257,7 @@ func (s *Server) sentText(ctx context.Context, caller int64, key string) (string
 				receipt.Withdrawn = append(receipt.Withdrawn, team.WithdrawnAsk{ID: a.ID, Question: a.Question})
 			}
 		}
-	case row.SentAt != nil || thread.State == store.ThreadClosed:
+	case row.SentAt != nil || (thread.State == store.ThreadClosed && !reopensNow(row, thread)):
 		return "", fmt.Errorf("thread T%d closed before the message reached its specialist: it went to no one", thread.ID)
 	default:
 		receipt.State = team.SendQueued
@@ -243,7 +304,10 @@ func (s *Server) sendDeliveredLocked(ctx context.Context, row store.ReportRow) (
 	for _, ask := range change.Withdrawn {
 		s.emitAsk(ask)
 	}
-	if change.Reopened {
+	switch {
+	case change.FromClosed:
+		s.publishReopened(ctx, thread)
+	case change.Reopened:
 		s.publishThread(thread)
 	}
 	if len(change.Withdrawn) > 0 && thread.IsPlanThread() {
@@ -259,13 +323,22 @@ func (s *Server) sendDeliveredLocked(ctx context.Context, row store.ReportRow) (
 // a done thread they reopen takes the report's state, never the other way
 // round, and a message placed after the report reopens it once noted
 // (ADR-0032).
+//
+// The owner's messages to the thread's specialist are noted first the same
+// way (noteOwnerMessages): one placed reopens a closed thread (ADR-0061).
 func (s *Server) noteSendsPlaced(ctx context.Context, thread int64) error {
+	if _, err := s.noteOwnerMessages(ctx, thread); err != nil {
+		return err
+	}
 	return s.noteSends(ctx, thread, s.sendDelivered)
 }
 
 // noteSendsPlacedLocked is noteSendsPlaced with workMu held, as a close
 // holds it.
 func (s *Server) noteSendsPlacedLocked(ctx context.Context, thread int64) error {
+	if _, err := s.noteOwnerMessagesLocked(ctx, thread); err != nil {
+		return err
+	}
 	return s.noteSends(ctx, thread, s.sendDeliveredLocked)
 }
 
@@ -287,7 +360,8 @@ func (s *Server) noteSends(ctx context.Context, thread int64, note func(context.
 		if !placed {
 			continue
 		}
-		if _, _, err := note(ctx, row); err != nil {
+		// A reopen the close's worker stop holds back waits for it.
+		if _, _, err := note(ctx, row); err != nil && !errors.Is(err, store.ErrWorkerStopping) {
 			return err
 		}
 	}
@@ -392,11 +466,20 @@ func (s *Server) briefFirst(ctx context.Context, id int64) error {
 	return errNoBriefYet
 }
 
+// reopensNow says whether row, a supervisor's message kept while its
+// thread was closed, still reopens thread, which is closed: no reopen came
+// since it was kept, so no close after one dropped it (ADR-0061).
+func reopensNow(row store.ReportRow, thread store.ThreadRow) bool {
+	return row.Reopens != 0 && row.Reopens == thread.Reopened+1
+}
+
 // droppedAtClose says whether the outbox message of key goes only while
 // its thread is open: a worker's reply or a message to the worker
 // (ADR-0021), a shift's own message (ADR-0024), and a supervisor's message
-// (ADR-0032). A close withdraws each still queued before it commits, and
-// drops each not placed after it.
+// (ADR-0032), by team.DroppedAtClose. A close withdraws each still queued
+// before it commits, and drops each not placed in the transaction that
+// closes the thread (store.threadClosed), so none goes after it, also once
+// a message reopens the thread (ADR-0061).
 func droppedAtClose(key string) bool {
-	return isWorkerReport(key) || isShiftMessage(key) || team.IsSendKey(key)
+	return team.DroppedAtClose(key)
 }
