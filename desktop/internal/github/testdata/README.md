@@ -48,7 +48,10 @@ test that needs the owner's view sets those fields itself.
     activity is the branch's deletion, and the base has moved on. The tests
     set the open state themselves. `baseRefName` and `baseRefOid`, which
     the query asks since 2026-11-19, were added by hand from the PR's own
-    answer; the fake answers them from the PR as it is then.
+    answer; the fake answers them from the PR as it is then. So it does
+    `reviewDecision`, which the query asks since 2026-11-22 ([pocketgo
+    ADR-0059](../../../../docs/adr/0059-count-the-extra-approval-for-an-unattributed-change-as-githubs-review-decision-shows-it.md)),
+    and which the recorded answers lack.
   - `queue-exit-<number>.json`: the `PocketQueueExit` answer of a PR that
     left the merge queue: the owner's enqueue and the removal's `reason`
     and `actor.login`. Recorded on 2026-11-15.

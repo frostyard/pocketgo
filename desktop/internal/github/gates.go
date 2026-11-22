@@ -147,15 +147,17 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage, cr CrossReview) string {
 }
 
 // approvalCount is gate 11's count of approvals at the head: what the rules
-// the owner can bypass need; GitHub's own, by others and by the owner (at
-// the preview the owner's comes before the merge; after it, it counts only
-// when GitHub shows it at the head); and whether pocketd's ready
-// cross-review counts on top, once (pocketgo ADR-0031). It never counts
-// where a ruleset the owner cannot bypass asks for reviews: GitHub enforces
-// that rule at the merge, with GitHub's reviews alone.
+// the owner can bypass need, the extra approval for an unattributed change
+// as GitHub counts it (extraCounts, pocketgo ADR-0059); GitHub's own, by
+// others and by the owner (at the preview the owner's comes before the
+// merge; after it, it counts only when GitHub shows it at the head); and
+// whether pocketd's ready cross-review counts on top, once (pocketgo
+// ADR-0031). It never counts where a ruleset the owner cannot bypass asks
+// for reviews: GitHub enforces that rule at the merge, with GitHub's
+// reviews alone.
 func approvalCount(f PRFacts, r RepoRules, stage Stage, cr CrossReview) (need, gh int, verdict bool) {
 	b := f.Bypass
-	need = approvalsNeeded(r.Proof, b.AuthorType)
+	need = approvalsNeeded(r.Proof, extraCounts(f, stage))
 	for _, a := range b.Approvers {
 		if a != f.Viewer {
 			gh++
@@ -183,10 +185,10 @@ func verdictFills(f PRFacts, r RepoRules, stage Stage, cr CrossReview) bool {
 }
 
 // approvalsNeeded is the most approvals any one pull_request rule needs:
-// its count, and one more for an author that is not a User when it asks
-// for the extra approval. A rule needing none adds none (pocketgo
-// ADR-0018). Rules built without ApprovalRules count as one rule.
-func approvalsNeeded(p BypassRules, authorType string) int {
+// its count, and one more when it asks for the extra approval and extra
+// says the extra counts (extraCounts). A rule needing none adds none
+// (pocketgo ADR-0018). Rules built without ApprovalRules count as one rule.
+func approvalsNeeded(p BypassRules, extra bool) int {
 	rules := p.ApprovalRules
 	if len(rules) == 0 && p.Approvals > 0 {
 		rules = []ApprovalRule{{Count: p.Approvals, Extra: p.ExtraUnattributed}}
@@ -197,12 +199,54 @@ func approvalsNeeded(p BypassRules, authorType string) int {
 			continue
 		}
 		n := r.Count
-		if r.Extra && authorType != "User" {
+		if r.Extra && extra {
 			n++
 		}
 		need = max(need, n)
 	}
 	return need
+}
+
+// extraCounts says gate 11 counts the one more approval a pull_request rule
+// with require_extra_approval_for_unattributed_changes asks, for the pull
+// request f read at stage. It counts as GitHub counts it, by GitHub's own
+// review decision (pocketgo ADR-0059): GitHub documents the extra for a
+// pull request Copilot opens under its own identity, not attributed to a
+// person, as a preview that may change, and no read of PocketGo's shows
+// that attribution. So:
+//
+//   - a User's pull request never needs it, as before;
+//   - APPROVED: GitHub counts its review rules met, the extra among them,
+//     with its own reviews alone, so the extra does not count;
+//   - REVIEW_REQUIRED at the preview, before the owner's approval is at the
+//     head: GitHub's answer cannot count the approval to come, so the read
+//     after the approval decides, where only APPROVED drops it;
+//   - any other answer counts it: REVIEW_REQUIRED after the owner's
+//     approval, null or missing (no review required, which a rule asking
+//     for approvals contradicts), and a value PocketGo does not know. A
+//     review asking for changes is refused by gate 8 and gate 11 first.
+//
+// The decision is the bypass read's, whose approvals gate 11 counts, and
+// the PR query's must be the same: two reads that differ, as when a review
+// came or went between them, prove nothing, and count it.
+//
+// Only the extra is GitHub's to count: each rule's own count stays
+// PocketGo's, of approvals at the head by accounts that can push.
+func extraCounts(f PRFacts, stage Stage) bool {
+	b := f.Bypass
+	if b.AuthorType == "User" {
+		return false
+	}
+	if f.ReviewDecision != b.ReviewDecision {
+		return true
+	}
+	switch b.ReviewDecision {
+	case "APPROVED":
+		return false
+	case "REVIEW_REQUIRED":
+		return stage != AtPreview || has(b.Approvers, f.Viewer)
+	}
+	return true
 }
 
 // has says the list holds want.

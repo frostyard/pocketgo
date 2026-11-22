@@ -24,6 +24,7 @@ const bypassQuery = `query PocketBypass($owner: String!, $name: String!, $number
       headRefOid
       headRefName
       isCrossRepository
+      reviewDecision
       author {
         __typename
         login
@@ -58,13 +59,19 @@ const bypassQuery = `query PocketBypass($owner: String!, $name: String!, $number
 
 // BypassFacts is what PocketGo reads to prove the rules a bypass would skip
 // (ADR-0011): the head, who wrote the PR, its unresolved review threads, the
-// approvals at the head, who pushed last, and how far the base is ahead.
+// approvals at the head, GitHub's review decision with them, who pushed
+// last, and how far the base is ahead.
 type BypassFacts struct {
 	Head, HeadRef string
 	CrossRepo     bool
-	AuthorType    string   // __typename of the PR's author; "" when author is null
-	Unresolved    int      // review threads not resolved
-	Approvers     []string // distinct logins: latest opinionated review APPROVED, at Head, authorCanPushToRepository true
+	AuthorType    string // __typename of the PR's author; "" when author is null
+	// ReviewDecision is GitHub's review decision in this read, the one whose
+	// approvals Approvers holds; "" when null. The extra approval for an
+	// unattributed change counts as it and the PR query's agree
+	// (extraCounts, pocketgo ADR-0059).
+	ReviewDecision string
+	Unresolved     int      // review threads not resolved
+	Approvers      []string // distinct logins: latest opinionated review APPROVED, at Head, authorCanPushToRepository true
 	// ChangesRequested: a latest opinionated review asks for changes, at
 	// any commit, as this read, after the pull request's, saw it.
 	ChangesRequested bool
@@ -95,6 +102,7 @@ type (
 		HeadRefOid        *string `json:"headRefOid"`
 		HeadRefName       *string `json:"headRefName"`
 		IsCrossRepository *bool   `json:"isCrossRepository"`
+		ReviewDecision    *string `json:"reviewDecision"`
 		Author            *struct {
 			Typename *string `json:"__typename"`
 			Login    *string `json:"login"`
@@ -157,6 +165,11 @@ func (c *Client) bypassFacts(ctx context.Context, ref Ref, f PRFacts, r RepoRule
 		return BypassFacts{}, incomplete("isCrossRepository is null")
 	}
 	out.Head, out.HeadRef, out.CrossRepo = *pr.HeadRefOid, *pr.HeadRefName, *pr.IsCrossRepository
+	// GitHub's review decision may be null: no review is required. A null
+	// one counts the extra approval (extraCounts, pocketgo ADR-0059).
+	if pr.ReviewDecision != nil {
+		out.ReviewDecision = *pr.ReviewDecision
+	}
 
 	// Every open PR of the repository, and those at this head: another 1 of
 	// them can block the merge on a review PocketGo does not read. Only open
