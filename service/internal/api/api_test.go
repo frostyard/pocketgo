@@ -99,6 +99,11 @@ type fakeEngine struct {
 	// githubLate those that had been sent a message when it was called.
 	githubTool map[int64]bool
 	githubLate map[int64]bool
+	// starters are the request keys of the submissions that started each
+	// session's run, as RunStarter reads them (ADR-0047); starterErr
+	// fails it.
+	starters   map[int64]string
+	starterErr error
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
 	// before it reads.
@@ -372,6 +377,18 @@ func (f *fakeEngine) RunIdentity(context.Context, int64) (int64, bool, error) {
 	defer f.mu.Unlock()
 	f.identities++
 	return f.runFirst, f.runFirst != 0, nil
+}
+
+// RunStarter answers starters' key for a session at work: a session with
+// a key there has a run, which that key started.
+func (f *fakeEngine) RunStarter(_ context.Context, id int64) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.starterErr != nil {
+		return "", false, f.starterErr
+	}
+	key, busy := f.starters[id]
+	return key, busy, nil
 }
 
 func (f *fakeEngine) WaitIdle(context.Context, int64) error { return nil }

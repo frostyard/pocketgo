@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -154,6 +155,12 @@ type fakeTeam struct {
 	// asked about, in order.
 	refuse  error
 	allowed []int64
+	// questions are the question calls, in order, under mu: a call that
+	// waits runs beside the test.
+	mu             sync.Mutex
+	questions      []team.Question
+	questionResult string
+	questionWait   chan struct{}
 }
 
 func (f *fakeTeam) TeamAllows(_ context.Context, session int64) error {
@@ -198,6 +205,27 @@ func (f *fakeTeam) TeamLaunch(_ context.Context, call api.TeamCall, c team.Launc
 	f.calls = append(f.calls, call)
 	f.launches = append(f.launches, c)
 	return "launched", f.fail
+}
+
+// Question records the question calls and answers questionResult, `{"answer":"yes"}`
+// when empty; questionWait, when set, holds the call until it closes or
+// ctx ends, as a question that waits for the owner (ADR-0047).
+func (f *fakeTeam) Question(ctx context.Context, call api.TeamCall, q team.Question) (string, error) {
+	f.mu.Lock()
+	f.calls, f.questions = append(f.calls, call), append(f.questions, q)
+	wait := f.questionWait
+	f.mu.Unlock()
+	if wait != nil {
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	if f.questionResult != "" {
+		return f.questionResult, f.fail
+	}
+	return `{"answer":"yes"}`, f.fail
 }
 
 func (f *fakeTeam) TeamPropose(_ context.Context, call api.TeamCall, c team.ProposeCall) (string, error) {

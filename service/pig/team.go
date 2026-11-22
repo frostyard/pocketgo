@@ -49,6 +49,11 @@ type Team interface {
 	TeamPropose(ctx context.Context, call api.TeamCall, c team.ProposeCall) (string, error)
 	TeamGitHub(ctx context.Context, call api.TeamCall, r team.GitHubRead) (string, error)
 	TeamLaunch(ctx context.Context, call api.TeamCall, c team.LaunchCall) (string, error)
+	// Question puts a question to the owner and waits for the answer
+	// (ADR-0047). It is no team tool: TeamAllows does not run before it,
+	// and it checks its caller itself. ctx ending ends the wait with
+	// ctx's error.
+	Question(ctx context.Context, call api.TeamCall, q team.Question) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
