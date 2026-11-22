@@ -430,7 +430,9 @@ type Server struct {
 	cleanDone map[int64]bool
 	// cleansDue holds cleanup retries, under reviewMu.
 	cleansDue map[int64]bool
-	reviewMu  sync.Mutex
+	// cleanNotes holds kept-worktree notes not yet written, under reviewMu.
+	cleanNotes map[int64]string
+	reviewMu   sync.Mutex
 	// abortsDue are the ended reviews' sessions whose run a stop did not
 	// end, or could not tell; each review pass tries again. reviewMu
 	// guards it.

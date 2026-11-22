@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -164,6 +165,51 @@ func TestALockedWorktreeIsKept(t *testing.T) {
 	thread := veraThread(t, h)
 	branchBaseGit(t, h.checkout, "worktree", "lock", thread.Cwd)
 	cleanupKept(t, h, cleanupClose(t, h, thread), "locked")
+}
+
+// A kept worktree's note whose report write fails is written at the next
+// pass, exactly once, and only then is the thread decided.
+func TestAKeptWorktreesNoteThatFailedToWriteIsWrittenAtTheNextPass(t *testing.T) {
+	h := newTeamHarness(t)
+	thread := veraThread(t, h)
+	branchBaseGit(t, h.checkout, "worktree", "lock", thread.Cwd)
+	db, err := sql.Open("sqlite", h.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TRIGGER cleanup_note_fails BEFORE UPDATE OF report ON threads
+		WHEN instr(NEW.report, 'pocketd kept the worktree') > 0 BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`); err != nil {
+		t.Fatal(err)
+	}
+	row := cleanupClose(t, h, thread)
+	if strings.Contains(row.Report, row.Cwd) {
+		t.Fatalf("failed write was noted: %q", row.Report)
+	}
+	h.server.cleanMu.Lock()
+	decided := h.server.cleanDone[thread.ID]
+	h.server.cleanMu.Unlock()
+	if decided {
+		t.Fatal("thread decided before its note was written")
+	}
+	if _, err := db.Exec(`DROP TRIGGER cleanup_note_fails`); err != nil {
+		t.Fatal(err)
+	}
+	h.server.reviewPass(context.Background())
+	after, err := h.store.Thread(context.Background(), thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupKept(t, h, after, "locked")
+	if n := strings.Count(after.Report, "pocketd kept the worktree"); n != 1 {
+		t.Fatalf("report has %d notes, want 1: %q", n, after.Report)
+	}
+	h.server.reviewPass(context.Background())
+	again, err := h.store.Thread(context.Background(), thread.ID)
+	if err != nil || again.Report != after.Report {
+		t.Fatalf("third pass = %+v, %v", again, err)
+	}
 }
 
 // cleanupReviewHarness starts a real detached review worktree at a real

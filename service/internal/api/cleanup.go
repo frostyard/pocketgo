@@ -39,10 +39,24 @@ func (s *Server) cleanPass(ctx context.Context) {
 	s.cleanQueue = nil
 	s.cleanMu.Unlock()
 	for id := range s.cleansDue {
-		done, note := s.cleanThread(ctx, id)
-		if !done {
+		note, pending := s.cleanNotes[id]
+		if !pending {
+			done, kept := s.cleanThread(ctx, id)
+			if !done {
+				continue
+			}
+			note = kept
+		}
+		// A kept worktree's note must reach the report before the thread is
+		// decided: a failed write keeps the note for the next pass.
+		if note != "" && !s.noteKept(ctx, id, note) {
+			if s.cleanNotes == nil {
+				s.cleanNotes = map[int64]string{}
+			}
+			s.cleanNotes[id] = note
 			continue
 		}
+		delete(s.cleanNotes, id)
 		s.cleanMu.Lock()
 		if s.cleanDone == nil {
 			s.cleanDone = map[int64]bool{}
@@ -51,17 +65,26 @@ func (s *Server) cleanPass(ctx context.Context) {
 		delete(s.cleanQueue, id)
 		s.cleanMu.Unlock()
 		delete(s.cleansDue, id)
-		if note != "" {
-			s.workMu.Lock()
-			row, changed, err := s.store.NoteClosedThread(ctx, id, note)
-			if err != nil {
-				s.log.Warn("note a kept closed thread's worktree", "thread", id, "err", err)
-			} else if changed {
-				s.publishThread(row)
-			}
-			s.workMu.Unlock()
-		}
 	}
+}
+
+// noteKept adds a kept worktree's line to a closed thread's report under
+// workMu. It reports false only when the write failed and should be retried.
+func (s *Server) noteKept(ctx context.Context, id int64, note string) bool {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	row, changed, err := s.store.NoteClosedThread(ctx, id, note)
+	if errors.Is(err, store.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		s.log.Warn("note a kept closed thread's worktree", "thread", id, "err", err)
+		return false
+	}
+	if changed {
+		s.publishThread(row)
+	}
+	return true
 }
 
 // cleanThread checks a closed thread's ownership and idle sessions before
