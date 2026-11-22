@@ -63,7 +63,7 @@ runuser -u "$u" -- env -i HOME="$(getent passwd "$u" | cut -d: -f6)" PATH=/usr/b
   TERM="$TERM" INPUTRC=/dev/null HISTFILE=/dev/null XDG_RUNTIME_DIR="/run/user/$(id -u "$u")" bash --noprofile --norc
 ```
 
-Add `XDG_CONFIG_HOME=…` to that `env` when `pocketd.env` sets it, so gh signs in where the service looks. `INPUTRC=/dev/null` and `HISTFILE=/dev/null` keep the user's `~/.inputrc` and `~/.bash_history` out too. Keep `~/.local/bin` off the `PATH`: agents can put programs there. "As the service user" below means this shell. The program is `~/.local/bin/pocketd`, which agents cannot change. These commands must use the service's folders. The `pocketd serving` line of the service's log names its data folder (`data=…`); when that is not your shell's default, or `~/.config/pocketd.env` sets `POCKETD_DATA`, `POCKETD_PROFILES` or `POCKETD_SKILLS`, pass the same folders with `-data`, `-profiles` and `-skills`, and when it sets `TZ`, run `~/.local/bin/pocketd profiles` with the same `TZ=…` before it, so its report of the schedules uses the service's zone. A device added to another data folder gets a token the service does not know.
+Add `XDG_CONFIG_HOME=…` to that `env` when `pocketd.env` sets it, so gh signs in where the service looks. `INPUTRC=/dev/null` and `HISTFILE=/dev/null` keep the user's `~/.inputrc` and `~/.bash_history` out too. Keep `~/.local/bin` off the `PATH`: agents can put programs there. Once agents have run, use gh and git there, and copy files into the user's folders, with pocketd stopped (`systemctl --user stop pocketd`, then `start`): the stop ends every command the agents run, which could otherwise change, as the same user, what those programs read while they work, and their tasks resume at the next start. "As the service user" below means this shell. The program is `~/.local/bin/pocketd`, which agents cannot change. These commands must use the service's folders. The `pocketd serving` line of the service's log names its data folder (`data=…`); when that is not your shell's default, or `~/.config/pocketd.env` sets `POCKETD_DATA`, `POCKETD_PROFILES` or `POCKETD_SKILLS`, pass the same folders with `-data`, `-profiles` and `-skills`, and when it sets `TZ`, run `~/.local/bin/pocketd profiles` with the same `TZ=…` before it, so its report of the schedules uses the service's zone. A device added to another data folder gets a token the service does not know.
 
 ```sh
 systemctl --user status pocketd          # active (running)
@@ -152,13 +152,14 @@ As the service user on the host:
 ```sh
 d=$(mktemp -d)
 GH_CONFIG_DIR="$d" gh auth login --hostname github.com --git-protocol https --scopes workflow --insecure-storage
-mkdir -p ~/.config/gh && install -m 0600 "$d/hosts.yml" ~/.config/gh/hosts.yml && rm -rf "$d"
+g="${XDG_CONFIG_HOME:-$HOME/.config}/gh"
+mkdir -p "$g" && install -m 0600 "$d/hosts.yml" "$g/hosts.yml" && rm -rf "$d"
 gh auth setup-git                                    # git pushes over HTTPS with gh's token
 git config --global user.name "<the account's name>"
 git config --global user.email "<the account's email>"
 ```
 
-The login runs with a configuration folder of its own, made just now: gh's settings in the user's `~/.config/gh`, which agents can change, could name a browser or a pager it would start outside the sandbox. Only the sign-in, `hosts.yml`, is installed where the agents' gh and pocketd read it (under `$XDG_CONFIG_HOME/gh` instead when the service sets `XDG_CONFIG_HOME`). Sign in again the same way.
+The login runs with a configuration folder of its own, made just now: gh's settings in the user's `~/.config/gh`, which agents can change, could name a browser or a pager it would start outside the sandbox. Only the sign-in, `hosts.yml`, is installed where the agents' gh and pocketd read it. The temporary folder is one agents could reach while they run, so sign in again the same way with pocketd stopped.
 
 `gh auth login` asks for `repo`, `read:org` and `gist` by default; `workflow` lets an agent push changes to `.github/workflows`. The token must be in gh's own file, `~/.config/gh/hosts.yml`, not a keyring: the sandbox hides `/run/user`, where a keyring's D-Bus socket is, and passes no `GH_TOKEN`. `--insecure-storage` keeps it in the file; a gh whose `gh auth login --help` does not list that flag is old enough to keep it there anyway, so leave the flag out. Check it with the environment pocketd gives a command, which prints nothing of the token: `env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/local/bin gh auth token --hostname github.com >/dev/null && echo ok`, the `PATH` in the order pocketd looks for gh, with `XDG_CONFIG_HOME=…` added as in the shell.
 
@@ -217,7 +218,7 @@ GIT_CONFIG_GLOBAL=/dev/null git -c credential.helper='!gh auth git-credential' \
   clone https://github.com/your-org/your-repo ~/src/your-repo
 ```
 
-Agents can change the user's git configuration, and a credential helper, a filter or a hook it names would run outside the sandbox: `GIT_CONFIG_GLOBAL=/dev/null` reads none of it, and the one helper named is gh, from the shell's `PATH`, which holds no folder of the user's.
+Agents can change the user's git configuration, and a credential helper, a filter or a hook it names would run outside the sandbox: `GIT_CONFIG_GLOBAL=/dev/null` reads none of it, and the one helper named is gh, from the shell's `PATH`, which holds no folder of the user's. Add a checkout to a running team with pocketd stopped, so no agent can change the new checkout's `.git` while git fills it.
 
 **`providers.json`** names servers of your own, which speak the OpenAI completions API or Anthropic's messages API. Keep its addresses in your private copy, never in this repository:
 
@@ -317,7 +318,7 @@ Restore it the same way. Stop pocketd, and while the current data folder is stil
 
 ### Starting over
 
-To wipe the work and keep the sign-ins: stop pocketd, move `durable.sqlite` and `work.sqlite`, and any `-wal` and `-shm` files beside them, out of the data folder together, to a place the agents cannot read, and start it. pocketd makes both databases anew, seeded by their migrations, and you add each device again. Worktrees, branches and uploads stay where they are. The desktop keeps its pins, seen marks and notified asks by the service URL, and the new databases number sessions and asks from 1 again: for a clean start there too, quit the desktop and move its `settings.json`, in its config folder, aside before you sign in again.
+To wipe the work and keep the sign-ins, first note the open pull requests that carry `ready-for-human`: the new databases link none of them, so pocketd will never take a label off again, and you remove those yourself on GitHub. Then stop pocketd, move `durable.sqlite` and `work.sqlite`, and any `-wal` and `-shm` files beside them, out of the data folder together, to a place the agents cannot read, and start it. pocketd makes both databases anew, seeded by their migrations, and you add each device again. Worktrees, branches and uploads stay where they are. The desktop keeps its pins, seen marks and notified asks by the service URL, and the new databases number sessions and asks from 1 again: for a clean start there too, quit the desktop and move its `settings.json`, in its config folder, aside before you sign in again.
 
 Do not empty tables by hand: move the databases whole. Both seed rows that must stay. `work.sqlite` holds `schema_version` and the one row of `pull_reads`, without which a report that names a pull request fails (`service/internal/store/store.go`). `durable.sqlite` holds PiG's `durable_metadata`, without which PiG's store does not open.
 
