@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/changes"
@@ -45,7 +44,11 @@ type fileMissing struct{ error }
 // its HEAD and the base its changes are counted from.
 type changesSpot struct {
 	top, branch, head string
-	base              changes.Base
+	// id is the top's identity as the read began (Engine.DirID): a new
+	// file is read below that folder alone, and a top that is another
+	// folder by the read's end refuses its answer.
+	id   string
+	base changes.Base
 	// mergeBase is the commit the changes are counted from, and since
 	// the commit the folder is compared with for what is not committed:
 	// HEAD, or the empty tree before the first commit.
@@ -99,11 +102,17 @@ func (s *Server) readChanges(w http.ResponseWriter, r *http.Request, read func(c
 	out, err := read(ctx, row)
 	var refused refusal
 	var missing fileMissing
+	var exit *worktree.GitExit
 	switch {
 	case errors.As(err, &missing):
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, missing.Error())
 	case errors.As(err, &refused) && !worktree.Unsure(err):
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, refused.Error())
+	case errors.As(err, &exit):
+		// git ran and refused the checkout, as a partial clone that lacks
+		// what a diff needs: the owner reads git's words. git that did not
+		// run, or a sandbox that failed, stays internal.
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "git cannot read this checkout: "+gitWords(err))
 	case err != nil:
 		s.internal(w, "read the session's changes", err)
 	default:
@@ -135,6 +144,41 @@ func (s *Server) isolated(ctx context.Context, top string) error {
 		return refusal{fmt.Errorf("git cannot read this checkout isolated, so pocketd shows none of its changes: %w", err)}
 	}
 	return nil
+}
+
+// stillThere checks, once a read is done, that git still reads the
+// checkout isolated and that its top is the folder the read began in: an
+// attributes file, or a top swapped for another folder, that came while
+// git read refuses the answer.
+func (s *Server) stillThere(ctx context.Context, spot changesSpot) error {
+	if err := s.isolated(ctx, spot.top); err != nil {
+		return err
+	}
+	id, ok, err := s.engine.DirID(ctx, spot.top)
+	if err != nil {
+		return err
+	}
+	if !ok || id != spot.id {
+		return errMoved
+	}
+	return nil
+}
+
+// errMoved is a checkout whose top became another folder during a read.
+var errMoved = refusal{errors.New("the checkout's top became another folder while pocketd read it: read the changes again")}
+
+// readNew reads the new file at path below the top the read began in
+// (Engine.ReadIn), through no link: a top that became another folder
+// refuses the read.
+func (s *Server) readNew(ctx context.Context, spot changesSpot, path string, limit int) (string, []byte, error) {
+	kind, data, err := s.engine.ReadIn(ctx, spot.top, spot.id, path, limit)
+	if err != nil {
+		return "", nil, err
+	}
+	if kind == changes.KindMoved {
+		return "", nil, errMoved
+	}
+	return kind, data, nil
 }
 
 // inCheckout says whether a folder at or above dir holds a .git, as a
@@ -174,7 +218,7 @@ func (s *Server) spotOf(ctx context.Context, session store.SessionRow) (changesS
 		return changesSpot{}, refusal{fmt.Errorf("git cannot read the checkout of %s: %s", session.Cwd, gitWords(err))}
 	case err != nil:
 		return changesSpot{}, err
-	case !filepath.IsAbs(top) || strings.ContainsAny(top, "\n\x00"):
+	case !filepath.IsAbs(top) || strings.ContainsRune(top, 0):
 		return changesSpot{}, fmt.Errorf("git named the checkout's top %q, not an absolute path", top)
 	}
 	// Every later git takes --no-lazy-fetch, which an older git refuses.
@@ -191,7 +235,13 @@ func (s *Server) spotOf(ctx context.Context, session store.SessionRow) (changesS
 	if err := s.isolated(ctx, top); err != nil {
 		return changesSpot{}, err
 	}
-	spot := changesSpot{top: top}
+	id, ok, err := s.engine.DirID(ctx, top)
+	if err != nil {
+		return changesSpot{}, err
+	} else if !ok {
+		return changesSpot{}, refusal{fmt.Errorf("the checkout's top %s is no folder", top)}
+	}
+	spot := changesSpot{top: top, id: id}
 	head, err := s.engine.Git(ctx, top, changes.HeadArgs()...)
 	switch {
 	case errors.As(err, &exit) && exit.Status == 1:
@@ -327,7 +377,8 @@ func (s *Server) changesOf(ctx context.Context, session store.SessionRow) (proto
 			return nil
 		}
 		i := len(out.Files)
-		out.Files = append(out.Files, proto.ChangedFile{Path: f.Path, OldPath: f.OldPath, Added: f.Added, Removed: f.Removed, Binary: f.Binary})
+		out.Files = append(out.Files, proto.ChangedFile{Path: f.Path, OldPath: f.OldPath, Added: f.Added, Removed: f.Removed, Binary: f.Binary,
+			NoDiff: !utf8.ValidString(f.Path)})
 		rows[f.Path] = i
 		ends[f.Path] = append(ends[f.Path], i)
 		if f.OldPath != "" && f.OldPath != f.Path {
@@ -372,17 +423,19 @@ func (s *Server) changesOf(ctx context.Context, session store.SessionRow) (proto
 		if _, tracked := rows[path]; path == "" || tracked {
 			return nil
 		}
+		// A repository inside the checkout git lists as its folder, with
+		// a slash at its end: no file, so no line of it is counted, nor is
+		// one whose path is no UTF-8, which no request can name.
+		readable := !strings.HasSuffix(path, "/") && utf8.ValidString(path)
 		row := -1
 		if len(out.Files) < proto.MaxChangedFiles {
 			row = len(out.Files)
 			rows[path] = row
-			out.Files = append(out.Files, proto.ChangedFile{Path: path, New: true, Uncommitted: true, Uncounted: true})
+			out.Files = append(out.Files, proto.ChangedFile{Path: path, New: true, Uncommitted: true, Uncounted: true, NoDiff: !readable})
 		} else {
 			out.More++
 		}
-		// A repository inside the checkout git lists as its folder, with
-		// a slash at its end: no file, so no line of it is counted.
-		if len(count) < proto.MaxCountedNew && !strings.HasSuffix(path, "/") {
+		if len(count) < proto.MaxCountedNew && readable {
 			count = append(count, candidate{path, row})
 		}
 		return nil
@@ -394,7 +447,7 @@ func (s *Server) changesOf(ctx context.Context, session store.SessionRow) (proto
 		// Read by pocketd's own read in the sandbox, below the top and
 		// through no link (Engine.ReadIn): a folder swapped for a link
 		// since git listed the file leads the read nowhere.
-		kind, data, err := s.engine.ReadIn(ctx, spot.top, c.path, changes.MaxCountBytes)
+		kind, data, err := s.readNew(ctx, spot, c.path, changes.MaxCountBytes)
 		if err != nil {
 			return proto.Changes{}, err
 		}
@@ -408,8 +461,9 @@ func (s *Server) changesOf(ctx context.Context, session store.SessionRow) (proto
 			f.Added, f.Binary, f.Uncounted = added, binary, false
 		}
 	}
-	// An attributes file that came while git read refuses the answer.
-	if err := s.isolated(ctx, spot.top); err != nil {
+	// An attributes file, or another top, that came while git read refuses
+	// the answer.
+	if err := s.stillThere(ctx, spot); err != nil {
 		return proto.Changes{}, err
 	}
 	return out, nil
@@ -440,34 +494,29 @@ func (s *Server) fileDiffOf(ctx context.Context, session store.SessionRow, path 
 	out := proto.FileDiff{SessionID: session.ID, Path: path, MergeBase: spot.mergeBase}
 	switch {
 	case record != nil:
-		// The ends of the change below which another change lies: a file
-		// that became a folder, or the other way, whose folder's changes
-		// its patch leaves out.
-		folders := map[string]bool{}
-		err := s.eachChange(ctx, spot.top, changes.NumstatArgs(spot.mergeBase), func(f changes.File) error {
-			for _, p := range changes.Under(f, record.Path, record.OldPath) {
-				folders[p] = true
-			}
-			return nil
-		})
-		if err != nil {
-			return proto.FileDiff{}, err
-		}
-		below := slices.Sorted(maps.Keys(folders))
-		page, more, err := s.engine.GitPage(ctx, spot.top, 0, proto.MaxFileDiff, changes.PatchArgs(spot.mergeBase, record.OldPath, record.Path, below...)...)
+		page, more, err := s.engine.GitPage(ctx, spot.top, 0, proto.MaxFileDiff, changes.PatchArgs(spot.mergeBase, record.OldPath, record.Path)...)
 		if err != nil {
 			return proto.FileDiff{}, err
 		}
 		out.Diff, out.Cut = changes.Fit(page, more, proto.MaxFileDiff)
 	default:
-		listed, err := s.engine.Git(ctx, spot.top, changes.NewArgs(path)...)
-		if err != nil {
+		// The listing is read record by record: a folder of the path's name
+		// may hold any number of new files.
+		listed := false
+		err := s.engine.GitEach(ctx, spot.top, 0, func(p string) error {
+			if p == path {
+				listed = true
+				return found
+			}
+			return nil
+		}, changes.NewArgs(path)...)
+		if err != nil && !errors.Is(err, found) {
 			return proto.FileDiff{}, err
 		}
-		if !strings.Contains("\x00"+listed+"\x00", "\x00"+path+"\x00") {
+		if !listed {
 			return proto.FileDiff{}, fileMissing{fmt.Errorf("no change of session %d's checkout names %s", session.ID, path)}
 		}
-		kind, data, err := s.engine.ReadIn(ctx, spot.top, path, proto.MaxFileDiff)
+		kind, data, err := s.readNew(ctx, spot, path, proto.MaxFileDiff)
 		if err != nil {
 			return proto.FileDiff{}, err
 		}
@@ -476,7 +525,7 @@ func (s *Server) fileDiffOf(ctx context.Context, session store.SessionRow, path 
 		}
 		out.Diff, out.Cut = changes.NewFileDiff(path, kind, data, proto.MaxFileDiff)
 	}
-	if err := s.isolated(ctx, spot.top); err != nil {
+	if err := s.stillThere(ctx, spot); err != nil {
 		return proto.FileDiff{}, err
 	}
 	return out, nil

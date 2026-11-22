@@ -1226,6 +1226,10 @@ type ChangedFile struct {
 	Committed   bool `json:"committed,omitempty"`
 	Uncommitted bool `json:"uncommitted,omitempty"`
 	New         bool `json:"new,omitempty"`
+	// NoDiff says pocketd shows no diff of the entry: a repository inside
+	// the checkout, which git lists as its folder, or a path that is no
+	// UTF-8, which Path spells with U+FFFD and no request can name.
+	NoDiff bool `json:"noDiff,omitempty"`
 }
 
 // FileDiff is one file's unified diff in a session's changes (rule 64).

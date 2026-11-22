@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The Changes pane says nothing changed only after a read that succeeded: after a failure, what the folder holds is not known.",
+  "evidence": "frostyard/pocketgo#109, Codex CLI review round 2 (codex-cli 0.169.0) of head ddd640c: [P2] Suppress the empty-state message after a failed refresh",
+  "promoted_to": "desktop/internal/app/changes_test.go"
+}

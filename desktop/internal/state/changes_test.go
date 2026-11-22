@@ -70,6 +70,13 @@ func TestChangesLabels(t *testing.T) {
 	if CanDiff(inner) || !CanDiff(files[0]) || FileState(inner) != "a repository inside the checkout, not tracked" {
 		t.Errorf("a repository inside: %v, %q", CanDiff(inner), FileState(inner))
 	}
+	// An entry pocketd shows no diff of, as a path that is no UTF-8, whose
+	// spelling with U+FFFD names no file, is never asked for (Codex review
+	// of #109, round 2).
+	latin := proto.ChangedFile{Path: "caf�.txt", New: true, Uncommitted: true, Uncounted: true, NoDiff: true}
+	if CanDiff(latin) || FileState(latin) != "a name pocketd cannot show, no diff" {
+		t.Errorf("a name that is no UTF-8: %v, %q", CanDiff(latin), FileState(latin))
+	}
 	if got := FileName(proto.ChangedFile{Path: "b.go", OldPath: "a.go"}); got != "a.go → b.go" {
 		t.Errorf("rename %q", got)
 	}

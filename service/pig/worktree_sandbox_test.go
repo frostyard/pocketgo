@@ -52,6 +52,11 @@ func TestAChangesReadRunsInTheSandbox(t *testing.T) {
 	if err := worktree.AttributesIsolated(ctx, tools, checkout); err != nil {
 		t.Skipf("this git cannot read a checkout isolated: %v", err)
 	}
+	// A read runs git 2.45 or later, which takes --no-lazy-fetch (Codex
+	// review of #109, round 2).
+	if version, err := e.Git(ctx, checkout, changes.VersionArgs()...); err != nil || !changes.GitVersionOK(version) {
+		t.Skipf("%s: a read of a session's changes needs git %s or later (%v)", version, changes.MinGit, err)
+	}
 	head, err := e.Git(ctx, checkout, changes.HeadArgs()...)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +72,11 @@ func TestAChangesReadRunsInTheSandbox(t *testing.T) {
 	if len(numstat) != 0 || !slices.Equal(fresh, []string{"new.txt"}) {
 		t.Fatalf("numstat %q, new %q", numstat, fresh)
 	}
-	kind, data, err := e.ReadIn(ctx, checkout, "new.txt", 4096)
+	id, ok, err := e.DirID(ctx, checkout)
+	if err != nil || !ok {
+		t.Fatalf("the top's identity %q %v %v", id, ok, err)
+	}
+	kind, data, err := e.ReadIn(ctx, checkout, id, "new.txt", 4096)
 	if err != nil || kind != changes.KindFile || string(data) != "one\ntwo\n" {
 		t.Fatalf("the new file read %q %q %v", kind, data, err)
 	}
@@ -78,8 +87,12 @@ func TestAChangesReadRunsInTheSandbox(t *testing.T) {
 	if err := os.Symlink(filepath.Join(l.data, "auth.json"), filepath.Join(checkout, "keys")); err != nil {
 		t.Fatal(err)
 	}
-	if kind, data, err := e.ReadIn(ctx, checkout, "keys", 4096); err != nil || kind != changes.KindLink || strings.Contains(string(data), "sk-secret") {
+	if kind, data, err := e.ReadIn(ctx, checkout, id, "keys", 4096); err != nil || kind != changes.KindLink || strings.Contains(string(data), "sk-secret") {
 		t.Fatalf("a link to the sign-ins read %q %q %v", kind, data, err)
+	}
+	// Another folder at the top's path is not the one the read began in.
+	if kind, _, err := e.ReadIn(ctx, l.home, id, "new.txt", 4096); err != nil || kind != changes.KindMoved {
+		t.Fatalf("another top read %q %v", kind, err)
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the checkout's fsmonitor ran")
@@ -88,14 +101,18 @@ func TestAChangesReadRunsInTheSandbox(t *testing.T) {
 
 // pocketd's read of a checkout's file goes below its root through no link,
 // whichever part a link is, never waits on a named pipe, reads no folder,
-// and gives a link's target, as git shows a link (ADR-0053; Codex review
-// of #109, round 1).
+// gives a link's target, as git shows a link, and says whether its owner
+// may run the file; and it reads only below the folder the read began in,
+// never another one at the root's path (ADR-0053; Codex review of #109,
+// rounds 1 and 2).
 func TestReadBeneathFollowsNoLink(t *testing.T) {
-	root, outside := t.TempDir(), t.TempDir()
+	base := t.TempDir()
+	root, outside := filepath.Join(base, "root"), filepath.Join(base, "outside")
 	for path, text := range map[string]string{
 		filepath.Join(root, "a", "b.txt"):       "in\n",
 		filepath.Join(outside, "b.txt"):         "outside\n",
 		filepath.Join(root, "dir", "inner.txt"): "x",
+		filepath.Join(root, "run.sh"):           "#!/bin/sh\n",
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
@@ -103,6 +120,9 @@ func TestReadBeneathFollowsNoLink(t *testing.T) {
 		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.Chmod(filepath.Join(root, "run.sh"), 0o700); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
 		t.Fatal(err)
@@ -112,32 +132,57 @@ func TestReadBeneathFollowsNoLink(t *testing.T) {
 	}
 	pipe := filepath.Join(root, "pipe")
 	havePipe := mkfifo(pipe) == nil
-	run := func(rel string, max string) (string, int) {
+	var idOut strings.Builder
+	if code := RunReadBeneathHelper([]string{root}, &idOut); code != 0 || !strings.HasPrefix(idOut.String(), "dir ") {
+		t.Fatalf("the root's identity: %q %d", idOut.String(), code)
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(idOut.String(), "dir "), "\n")
+	run := func(top, rel, max string) (string, int) {
 		var out strings.Builder
-		code := RunReadBeneathHelper([]string{root, rel, max}, &out)
+		code := RunReadBeneathHelper([]string{top, id, rel, max}, &out)
 		return out.String(), code
 	}
 	for rel, want := range map[string]string{
 		"a/b.txt":    "file\nin\n",
+		"run.sh":     "exec\n#!/bin/sh\n",
 		"link/b.txt": "none\n",
 		"a/ln":       "link\n../target",
 		"dir":        "none\n",
 		"missing":    "none\n",
 		"a/b.txt/x":  "none\n",
 	} {
-		if got, code := run(rel, "100"); got != want || code != 0 {
+		if got, code := run(root, rel, "100"); got != want || code != 0 {
 			t.Errorf("%s: %q, status %d", rel, got, code)
 		}
 	}
-	if got, code := run("a/b.txt", "2"); got != "file\nin" || code != 0 {
+	if got, code := run(root, "a/b.txt", "2"); got != "file\nin" || code != 0 {
 		t.Errorf("a bounded read: %q %d", got, code)
 	}
 	if havePipe {
-		if got, code := run("pipe", "100"); got != "none\n" || code != 0 {
+		if got, code := run(root, "pipe", "100"); got != "none\n" || code != 0 {
 			t.Errorf("a named pipe: %q %d", got, code)
 		}
 	}
-	for _, bad := range [][]string{{root, "../x", "1"}, {root, "/etc/passwd", "1"}, {"", "a", "1"}, {root, "a", "-1"}, {root, "a"}} {
+	// The root swapped for a link to another folder is not the root the
+	// read began in.
+	if err := os.Rename(root, root+".real"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+	if got, code := run(root, "b.txt", "100"); got != "moved\n" || code != 0 {
+		t.Errorf("a swapped root: %q %d", got, code)
+	}
+	if got, code := run(filepath.Join(base, "gone"), "b.txt", "100"); got != "moved\n" || code != 0 {
+		t.Errorf("a root gone: %q %d", got, code)
+	}
+	var none strings.Builder
+	if code := RunReadBeneathHelper([]string{filepath.Join(base, "gone")}, &none); code != 0 || none.String() != "none\n" {
+		t.Errorf("no root's identity: %q %d", none.String(), code)
+	}
+	for _, bad := range [][]string{{root, id, "../x", "1"}, {root, id, "/etc/passwd", "1"}, {"", id, "a", "1"}, {root, id, "a", "-1"},
+		{root, "notanid", "a", "1"}, {root, "a", "1"}, {""}} {
 		if code := RunReadBeneathHelper(bad, io.Discard); code != 2 {
 			t.Errorf("%q: status %d", bad, code)
 		}

@@ -305,7 +305,7 @@ func TestTheEmptyTreeIsTheObjectFormats(t *testing.T) {
 func TestEveryReadRunsGitIsolated(t *testing.T) {
 	prefix := append(slices.Clone(team.ReviewGitOptions), "--no-optional-locks", "--no-lazy-fetch", "--no-pager")
 	all := [][]string{ObjectFormatArgs(), HeadArgs(), BranchArgs(), RefsArgs(Candidates("main")), MergeBaseArgs(shaMain, shaDev),
-		NumstatArgs(shaMain), CommittedArgs(shaMain, shaDev), NewArgs(), NewArgs("a"), PatchArgs(shaMain, "old", "a", "a")}
+		NumstatArgs(shaMain), CommittedArgs(shaMain, shaDev), NewArgs(), NewArgs("a"), PatchArgs(shaMain, "old", "a")}
 	for _, args := range all {
 		if !slices.Equal(args[:len(prefix)], prefix) {
 			t.Errorf("%q does not start with the isolation options", args)
@@ -335,21 +335,15 @@ func TestEveryReadRunsGitIsolated(t *testing.T) {
 			t.Errorf("%q names a path unliterally or before --", args)
 		}
 	}
+	// Each end leaves out what a folder of its name holds, as git runs,
+	// with no glob of its own name: never the end itself, a submodule's
+	// gitlink included (Codex review of #109, round 2).
 	got := PatchArgs(shaMain, "old", "new")
-	if want := []string{"--", ":(top,literal)old", ":(top,literal)new"}; !slices.Equal(got[len(got)-3:], want) {
+	if want := []string{"--", ":(top,literal)old", ":(exclude,top,glob)old/**", ":(top,literal)new", ":(exclude,top,glob)new/**"}; !slices.Equal(got[len(got)-5:], want) {
 		t.Errorf("a rename's patch names %q", got)
 	}
-	got = PatchArgs(shaMain, "", "config", "config")
-	if want := []string{"--", ":(top,literal)config", ":(exclude,top,literal)config/"}; !slices.Equal(got[len(got)-3:], want) {
-		t.Errorf("a file that became a folder's patch names %q", got)
-	}
-	// Only an end another change lies below leaves out a folder: a
-	// submodule's pathspec names it as a folder's would.
-	if got := Under(File{Path: "config/settings"}, "config", ""); !slices.Equal(got, []string{"config"}) {
-		t.Errorf("under %q", got)
-	}
-	if got := Under(File{Path: "configs/x", OldPath: "a/b"}, "config", "a"); !slices.Equal(got, []string{"a"}) {
-		t.Errorf("under %q", got)
+	if got := Below(`a*b?[c]\d`); got != `:(exclude,top,glob)a\*b\?\[c]\\d/**` {
+		t.Errorf("a glob's own characters below %q", got)
 	}
 }
 
@@ -358,5 +352,50 @@ func TestAChangeNamesBothEnds(t *testing.T) {
 	f := File{Path: "new.go", OldPath: "old.go"}
 	if !f.Names("new.go") || !f.Names("old.go") || f.Names("other.go") || (File{Path: "a"}).Names("") {
 		t.Fatal("ends")
+	}
+}
+
+// A new file's diff says what git would record of it: an executable is
+// 100755, and a path git quotes is quoted as git quotes it, a newline in it
+// part of the name, never a line of its own (Codex review of #109, round
+// 2).
+func TestANewFilesHeaderIsGits(t *testing.T) {
+	got, _ := NewFileDiff("run.sh", KindExec, []byte("#!/bin/sh\n"), 4096)
+	if !strings.HasPrefix(got, "diff --git a/run.sh b/run.sh\nnew file mode 100755\n") {
+		t.Fatalf("an executable: %q", got)
+	}
+	if got, _ := NewFileDiff("tool", KindExec, []byte("\x7fELF\x00"), 4096); !strings.Contains(got, "new file mode 100755\nBinary files /dev/null and b/tool differ\n") {
+		t.Fatalf("an executable binary: %q", got)
+	}
+	if added, binary, counted := CountNew(KindExec, []byte("a\nb\n")); added != 2 || binary || !counted {
+		t.Fatalf("an executable's lines: %d %v %v", added, binary, counted)
+	}
+	got, _ = NewFileDiff("a\nb \"c\"\\é.txt", KindFile, []byte("x\n"), 4096)
+	want := "diff --git \"a/a\\nb \\\"c\\\"\\\\\\303\\251.txt\" \"b/a\\nb \\\"c\\\"\\\\\\303\\251.txt\"\nnew file mode 100644\n" +
+		"--- /dev/null\n+++ \"b/a\\nb \\\"c\\\"\\\\\\303\\251.txt\"\t\n@@ -0,0 +1 @@\n+x\n"
+	if got != want {
+		t.Fatalf("a path git quotes:\n%q\nwant\n%q", got, want)
+	}
+	if got := Quote("plain/path.go"); got != "plain/path.go" {
+		t.Fatalf("a plain path: %q", got)
+	}
+	if got, _ := NewFileDiff("a b.txt", KindFile, []byte("x\n"), 4096); !strings.Contains(got, "+++ b/a b.txt\t\n") {
+		t.Fatalf("a path with a space: %q", got)
+	}
+}
+
+// Each byte that is no UTF-8 is a U+FFFD of its own, as the client's JSON
+// decoder makes it, before a diff's bound applies (Codex review of #109,
+// round 2).
+func TestEachByteThatIsNoUTF8IsAReplacement(t *testing.T) {
+	if got := ValidUTF8("a\xe9\xe8b"); got != "a��b" {
+		t.Fatalf("%q", got)
+	}
+	if got := ValidUTF8("café"); got != "café" {
+		t.Fatalf("%q", got)
+	}
+	got, cut := Fit(strings.Repeat("+\xe9\xe9\n", 10), false, 40)
+	if !cut || len(got) > 40 || got != strings.Repeat("+��\n", 5) {
+		t.Fatalf("a page of Latin-1: %q %v", got, cut)
 	}
 }

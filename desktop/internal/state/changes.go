@@ -229,8 +229,10 @@ func FileCounts(f proto.ChangedFile) string {
 // both, or new to git.
 func FileState(f proto.ChangedFile) string {
 	switch {
-	case !CanDiff(f):
+	case strings.HasSuffix(f.Path, "/"):
 		return "a repository inside the checkout, not tracked"
+	case f.NoDiff:
+		return "a name pocketd cannot show, no diff"
 	case f.New:
 		return "new, not committed"
 	case f.Committed && f.Uncommitted:
@@ -241,10 +243,12 @@ func FileState(f proto.ChangedFile) string {
 	return "not committed"
 }
 
-// CanDiff says whether a changed file has a diff pocketd shows: not a
-// repository inside the checkout, which git lists as its folder, with a
-// slash at its end (rule 63), and pocketd refuses as a file's path.
-func CanDiff(f proto.ChangedFile) bool { return !strings.HasSuffix(f.Path, "/") }
+// CanDiff says whether a changed file has a diff pocketd shows: none for
+// an entry pocketd marks so (NoDiff), as a path that is no UTF-8, whose
+// spelling with U+FFFD names no file, nor for a repository inside the
+// checkout, which git lists as its folder, with a slash at its end (rule
+// 63).
+func CanDiff(f proto.ChangedFile) bool { return !f.NoDiff && !strings.HasSuffix(f.Path, "/") }
 
 // FileName is a changed file's path as its row shows it, a rename's old
 // path first.

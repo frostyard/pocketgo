@@ -180,13 +180,17 @@ type Engine interface {
 	// there. A gather's skill is read so (ADR-0033). A file with more
 	// than one name is ErrManyNames, never read.
 	ReadUpTo(ctx context.Context, path string, max int) (data []byte, ok bool, err error)
-	// ReadIn is the file at rel below the folder root as a command in the
-	// sandbox reads it, each folder of rel opened from the one above it
-	// and none through a link (ADR-0053): kind "file" with at most max+1
-	// bytes, "link" with a symbolic link's target, or "none" for neither,
-	// a path through a link included. rel is a path
-	// proto.CheckChangedPath takes.
-	ReadIn(ctx context.Context, root, rel string, max int) (kind string, data []byte, err error)
+	// DirID is the identity of the folder root as a command in the sandbox
+	// opens it; ok is false for no folder there (ADR-0053).
+	DirID(ctx context.Context, root string) (id string, ok bool, err error)
+	// ReadIn is the file at rel below the folder root, which DirID named
+	// id, as a command in the sandbox reads it, each folder of rel opened
+	// from the one above it and none through a link (ADR-0053): kind
+	// "file", or "exec" for one its owner may run, with at most max+1
+	// bytes, "link" with a symbolic link's target, "moved" when root is no
+	// longer the folder id names, or "none" for neither, a path through a
+	// link included. rel is a path proto.CheckChangedPath takes.
+	ReadIn(ctx context.Context, root, id, rel string, max int) (kind string, data []byte, err error)
 	Same(ctx context.Context, a, b string) (bool, error)
 	// Dir says whether path is a folder, a link to one included, as a
 	// command in the sandbox sees it.

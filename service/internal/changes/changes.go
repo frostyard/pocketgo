@@ -75,9 +75,11 @@ func Args(args ...string) []string {
 // no glob: the path and, if it is a folder, what it holds.
 func Literal(path string) string { return ":(top,literal)" + path }
 
-// Below is a pathspec that leaves out what a folder at path holds: a file
-// that became a folder, or the other way, names its own change alone.
-func Below(path string) string { return ":(exclude,top,literal)" + path + "/" }
+// Below is a pathspec that leaves out what a folder at path holds, never
+// path itself: a file that became a folder, or the other way, names its own
+// change alone, and a submodule at path, which a pathspec of path/ would
+// leave out too, stays in.
+func Below(path string) string { return ":(exclude,top,glob)" + globEscape(path) + "/**" }
 
 // diffOptions are the options of every git diff a read runs: no external
 // diff or text conversion, no color, paths from the top whatever
@@ -239,35 +241,27 @@ func NewArgs(paths ...string) []string {
 
 // PatchArgs are the unified diff of the tracked file at path from the
 // merge base to the folder, from oldPath for a renamed one ("" for none):
-// that file's change alone. A pathspec of a path names what a folder of
-// that name holds too, so each of folders, the ends of the change where
-// another change lies below (Below), leaves that out; a submodule, which a
-// folder's pathspec names too, is never one.
-func PatchArgs(mergeBase, oldPath, path string, folders ...string) []string {
+// that file's change alone, whatever the folder holds as git runs. A
+// pathspec of a path names what a folder of that name holds too, so each
+// end leaves that out (Below), never the end itself, a submodule included.
+func PatchArgs(mergeBase, oldPath, path string) []string {
 	args := append(append([]string{"diff", "--src-prefix=a/", "--dst-prefix=b/"}, diffOptions...), mergeBase, "--")
 	if oldPath != "" && oldPath != path {
-		args = append(args, Literal(oldPath))
+		args = append(args, Literal(oldPath), Below(oldPath))
 	}
-	args = append(args, Literal(path))
-	for _, f := range folders {
-		args = append(args, Below(f))
-	}
-	return Args(args...)
+	return Args(append(args, Literal(path), Below(path))...)
 }
 
-// Under are those of paths another change f lies below, as in a folder of
-// its name: f's path, or its old one, is under each.
-func Under(f File, paths ...string) []string {
-	var out []string
-	for _, p := range paths {
-		if p == "" {
-			continue
+// globEscape is path with each character glob magic reads escaped.
+func globEscape(path string) string {
+	var b strings.Builder
+	for _, r := range path {
+		if strings.ContainsRune(`*?[\`, r) {
+			b.WriteByte('\\')
 		}
-		if strings.HasPrefix(f.Path, p+"/") || (f.OldPath != "" && strings.HasPrefix(f.OldPath, p+"/")) {
-			out = append(out, p)
-		}
+		b.WriteRune(r)
 	}
-	return out
+	return b.String()
 }
 
 // File is a file of git's numstat: its lines added and removed, none for
@@ -341,12 +335,19 @@ func (n *Numstat) Done() error {
 	return nil
 }
 
-// The kinds of entry a read of a new file finds (Engine.ReadIn).
+// The kinds of entry a read of a new file finds (Engine.ReadIn): a regular
+// file, one its owner may run, a symbolic link, nothing it may read, and a
+// checkout's top that is no longer the folder the read began in.
 const (
-	KindFile = "file"
-	KindLink = "link"
-	KindNone = "none"
+	KindFile  = "file"
+	KindExec  = "exec"
+	KindLink  = "link"
+	KindNone  = "none"
+	KindMoved = "moved"
 )
+
+// regular says a read found a regular file, one its owner may run or not.
+func regular(kind string) bool { return kind == KindFile || kind == KindExec }
 
 // MaxCountBytes is the most bytes of a new file whose lines pocketd counts.
 const MaxCountBytes = 1 << 20
@@ -366,7 +367,7 @@ func CountNew(kind string, data []byte) (added int, isBinary, counted bool) {
 	switch {
 	case kind == KindLink:
 		return 1, false, true
-	case kind != KindFile || len(data) > MaxCountBytes:
+	case !regular(kind) || len(data) > MaxCountBytes:
 		return 0, false, false
 	case binary(data):
 		return 0, true, true
@@ -383,34 +384,97 @@ func lines(data []byte) int {
 	return n
 }
 
+// Quote is a path as git writes it in a patch's header (core.quotePath): as
+// it is, or, when it holds a byte that is a control, a quote, a backslash
+// or not ASCII, in double quotes, with C's escapes and the rest in octal.
+func Quote(path string) string {
+	needs := false
+	for i := 0; i < len(path); i++ {
+		if c := path[i]; c < 0x20 || c == '"' || c == '\\' || c >= 0x7f {
+			needs = true
+			break
+		}
+	}
+	if !needs {
+		return path
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(path); i++ {
+		switch c := path[i]; c {
+		case '\a':
+			b.WriteString(`\a`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\v':
+			b.WriteString(`\v`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		default:
+			if c < 0x20 || c >= 0x7f {
+				fmt.Fprintf(&b, `\%03o`, c)
+			} else {
+				b.WriteByte(c)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// side is a path as a patch's ---/+++ line names it, with its prefix: git
+// ends one that holds a space with a tab, for GNU patch.
+func side(prefix, path string) string {
+	name := Quote(prefix + path)
+	if strings.Contains(name, " ") {
+		name += "\t"
+	}
+	return name
+}
+
 // NewFileDiff is the unified diff of the new file at path against nothing,
 // as git writes one, from what a read found (kind and data, at most
 // limit+1 bytes), at most limit bytes: the whole lines that fit, cut when
 // some did not. pocketd writes it from the file's bytes, which no filter
 // or attribute of the checkout changes.
 func NewFileDiff(path, kind string, data []byte, limit int) (diff string, cut bool) {
-	var b strings.Builder
-	fmt.Fprintf(&b, "diff --git a/%s b/%s\n", path, path)
+	mode := "100644"
 	switch {
+	case kind == KindExec:
+		mode = "100755"
 	case kind == KindLink:
-		fmt.Fprintf(&b, "new file mode 120000\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1 @@\n+%s\n\\ No newline at end of file\n", path, data)
-		return Fit(b.String(), false, limit)
+		mode = "120000"
 	case kind != KindFile:
 		return "", false
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "diff --git %s %s\nnew file mode %s\n", Quote("a/"+path), Quote("b/"+path), mode)
+	switch {
+	case kind == KindLink:
+		fmt.Fprintf(&b, "--- /dev/null\n+++ %s\n@@ -0,0 +1 @@\n+%s\n\\ No newline at end of file\n", side("b/", path), data)
+		return Fit(b.String(), false, limit)
 	case binary(data):
-		fmt.Fprintf(&b, "new file mode 100644\nBinary files /dev/null and b/%s differ\n", path)
+		fmt.Fprintf(&b, "Binary files /dev/null and %s differ\n", Quote("b/"+path))
+		return Fit(b.String(), false, limit)
+	case len(data) == 0:
 		return Fit(b.String(), false, limit)
 	}
-	b.WriteString("new file mode 100644\n")
-	if len(data) == 0 {
-		return Fit(b.String(), false, limit)
-	}
-	head := b.String() + fmt.Sprintf("--- /dev/null\n+++ b/%s\n", path)
+	head := b.String() + fmt.Sprintf("--- /dev/null\n+++ %s\n", side("b/", path))
 	whole := len(data) <= limit
 	if !whole {
 		data = data[:limit]
 	}
-	text := strings.ToValidUTF8(string(data), "�")
+	text := ValidUTF8(string(data))
 	all := strings.SplitAfter(text, "\n")
 	if all[len(all)-1] == "" {
 		all = all[:len(all)-1]
@@ -449,13 +513,32 @@ func NewFileDiff(path, kind string, data []byte, limit int) (diff string, cut bo
 	return Fit(head+hunk+body.String(), cut || !whole, limit)
 }
 
+// ValidUTF8 is text with each byte that is no UTF-8 replaced by U+FFFD, one
+// each, as a JSON encoder replaces them: what the client decodes.
+func ValidUTF8(text string) string {
+	if utf8.ValidString(text) {
+		return text
+	}
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteString("�")
+		} else {
+			b.WriteString(text[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
+}
+
 // Fit is a diff page as an answer carries it: valid UTF-8, each byte git
-// printed that is not replaced by U+FFFD, at most limit bytes, and, cut
-// when git printed more (more) or the replacements took it past limit,
-// ending after its last whole line: a line cut halfway would read as
-// another change. A page of no whole line keeps what fits.
+// printed that is not a U+FFFD of its own (ValidUTF8), at most limit bytes,
+// and, cut when git printed more (more) or the replacements took it past
+// limit, ending after its last whole line: a line cut halfway would read
+// as another change. A page of no whole line keeps what fits.
 func Fit(page string, more bool, limit int) (string, bool) {
-	text := strings.ToValidUTF8(page, "�")
+	text := ValidUTF8(page)
 	cut := more
 	if len(text) > limit {
 		end := limit

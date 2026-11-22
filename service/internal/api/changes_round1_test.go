@@ -91,9 +91,9 @@ func TestANewFileIsReadThroughNoLink(t *testing.T) {
 		}
 		listed = listed || slices.Contains(args, "ls-files")
 	}
-	h.server.SetEngine(engineWith{fakeEngine: h.engine, readIn: func(ctx context.Context, root, rel string, max int) (string, []byte, error) {
+	h.server.SetEngine(engineWith{fakeEngine: h.engine, readIn: func(ctx context.Context, root, id, rel string, max int) (string, []byte, error) {
 		swap()
-		return h.engine.ReadIn(ctx, root, rel, max)
+		return h.engine.ReadIn(ctx, root, id, rel, max)
 	}})
 	got, err := h.client.Changes(ctx, id)
 	if err != nil {

@@ -194,3 +194,32 @@ func TestAFailedChangesReadSaysWhy(t *testing.T) {
 	x.until(t, func() bool { c, ok := x.a.st.Data.Changes(11); return ok && c.Status == state.ListLoaded })
 	x.hasAll(t, "4 files +54 −9", ".github/workflows/ci.yml")
 }
+
+// After a read that found no change, a read that failed says nothing of no
+// change: what the folder holds is not known (Codex review of #109, round
+// 2).
+func TestAFailedRefreshSaysNothingOfNoChange(t *testing.T) {
+	x := newTestApp(t)
+	x.seedTeam()
+	x.srv.SetChanges(proto.Changes{SessionID: 11, Repository: true, Branch: "vera/fix", Head: "9f3c2a1b7e6d5c4b3a291807f6e5d4c3b2a19087",
+		Base: "origin/main", BaseRule: proto.ChangesBaseDefault, MergeBase: "9f3c2a1b7e6d5c4b3a291807f6e5d4c3b2a19087", Files: []proto.ChangedFile{}})
+	x.connect(t)
+	x.a.openSession(11)
+	x.until(t, func() bool {
+		c, ok := x.a.st.Data.Changes(11)
+		return ok && c.Status == state.ListLoaded && x.a.st.InFlight() == 0
+	})
+	x.click(t, "Changes: No changes")
+	x.until(t, func() bool { return x.a.st.InFlight() == 0 })
+	x.hasAll(t, "Nothing changed since then.")
+	x.srv.FailOnce("GET", "/v1/sessions/11/changes", http.StatusInternalServerError)
+	x.click(t, "Refresh the changes")
+	x.until(t, func() bool {
+		c, _ := x.a.st.Data.Changes(11)
+		return c.Status == state.ListFailed && x.a.st.InFlight() == 0
+	})
+	x.hasAll(t, "Reading the changes failed: internal: made to fail")
+	if x.tt.HasText("Nothing changed since then.") {
+		t.Fatal("a failed read says nothing changed")
+	}
+}

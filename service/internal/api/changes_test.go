@@ -77,7 +77,7 @@ func needsChangesGit(t *testing.T) {
 type engineWith struct {
 	*fakeEngine
 	git    func(ctx context.Context, dir string, args ...string) (string, error)
-	readIn func(ctx context.Context, root, rel string, max int) (string, []byte, error)
+	readIn func(ctx context.Context, root, id, rel string, max int) (string, []byte, error)
 }
 
 func (e engineWith) Git(ctx context.Context, dir string, args ...string) (string, error) {
@@ -87,11 +87,11 @@ func (e engineWith) Git(ctx context.Context, dir string, args ...string) (string
 	return e.fakeEngine.Git(ctx, dir, args...)
 }
 
-func (e engineWith) ReadIn(ctx context.Context, root, rel string, max int) (string, []byte, error) {
+func (e engineWith) ReadIn(ctx context.Context, root, id, rel string, max int) (string, []byte, error) {
 	if e.readIn != nil {
-		return e.readIn(ctx, root, rel, max)
+		return e.readIn(ctx, root, id, rel, max)
 	}
-	return e.fakeEngine.ReadIn(ctx, root, rel, max)
+	return e.fakeEngine.ReadIn(ctx, root, id, rel, max)
 }
 
 // A thread's session lists what it changed in its worktree since it left
@@ -148,8 +148,9 @@ func TestAThreadsChangesListWhatItChangedAndEachFilesDiff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// pocketd writes a new file's diff from its bytes (changes.NewFileDiff).
-	if fresh.Diff != "diff --git a/new file.md b/new file.md\nnew file mode 100644\n--- /dev/null\n+++ b/new file.md\n@@ -0,0 +1,4 @@\n+# New\n+\n+not\n+tracked\n" {
+	// pocketd writes a new file's diff from its bytes (changes.NewFileDiff), a
+	// name with a space ended by a tab, as git ends one.
+	if fresh.Diff != "diff --git a/new file.md b/new file.md\nnew file mode 100644\n--- /dev/null\n+++ b/new file.md\t\n@@ -0,0 +1,4 @@\n+# New\n+\n+not\n+tracked\n" {
 		t.Fatalf("the new file's diff %+v", fresh)
 	}
 	if bin, err := h.client.ChangesFile(ctx, thread.Session, "logo.png"); err != nil || !strings.Contains(bin.Diff, "Binary files") {
@@ -267,7 +268,7 @@ func TestARepositoryInsideTheCheckoutIsListedUncounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []proto.ChangedFile{{Path: "vendor/inner/", New: true, Uncommitted: true, Uncounted: true}, {Path: "z.txt", Added: 1, New: true, Uncommitted: true}}
+	want := []proto.ChangedFile{{Path: "vendor/inner/", New: true, Uncommitted: true, Uncounted: true, NoDiff: true}, {Path: "z.txt", Added: 1, New: true, Uncommitted: true}}
 	if !slices.Equal(got.Files, want) || got.Added != 1 {
 		t.Fatalf("files %+v, +%d", got.Files, got.Added)
 	}

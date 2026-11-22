@@ -132,7 +132,9 @@ func (a *App) changesFiles(c *ui.Context, id int64, maxHeight float32) {
 			if !ch.Repository {
 				return
 			}
-			if len(ch.Files) == 0 {
+			// No change is said of a read that succeeded alone: after a
+			// failure, what the folder holds is not known.
+			if len(ch.Files) == 0 && sc.Status == state.ListLoaded {
 				frostui.Muted(c, "Nothing changed since then.").Padding(frostui.SpaceXS, frostui.SpaceL)
 			}
 			for _, f := range ch.Files {
