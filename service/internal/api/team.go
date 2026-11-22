@@ -1938,6 +1938,9 @@ func (s *Server) deliverPass() {
 // task the desk's cap held back): a delivery pass brings it, whichever
 // path closed the thread (Codex review of #25, round 4).
 func (s *Server) publishThread(row store.ThreadRow) {
+	if row.State == store.ThreadClosed && row.Repository != "" {
+		s.cleanLater(row.ID)
+	}
 	// A shift that cannot be read now holds the thread's event back, as a
 	// plan's does: one with no shift would tell a client it has none. A
 	// delivery pass publishes it as it is then (Codex review of #36).

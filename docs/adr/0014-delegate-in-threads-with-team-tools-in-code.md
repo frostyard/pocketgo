@@ -1,6 +1,6 @@
 # 0014 — Delegate in threads, with team tools in code
 
-- **Status:** Accepted; decision 3's new branch "from the checkout's `HEAD`" superseded by [ADR-0051](0051-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md), which starts it at the tip of `origin`'s default branch, fetched first, and at `HEAD` with the reason in the brief when the fetch fails
+- **Status:** Accepted; decision 3's new branch "from the checkout's `HEAD`" superseded by [ADR-0051](0051-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md), which starts it at the tip of `origin`'s default branch, fetched first, and at `HEAD` with the reason in the brief when the fetch fails; a closed thread's worktree and local branch removed in code by [ADR-0054](0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md)
 - **Date:** 2026-11-19
 
 ## Context
