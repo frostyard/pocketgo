@@ -1,6 +1,6 @@
 # 0018 — Approve and merge as the owner from the desktop, with Pocket's gates
 
-- **Status:** Accepted; decision 3's backing extended to the base branch by [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md); the approval gate counts pocketd's ready cross-review, and Merge All Ready added, by [ADR-0031](0031-count-pocketds-ready-cross-review-as-an-approval-and-merge-all-ready-at-once.md)
+- **Status:** Accepted; decision 3's backing extended to the base branch by [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md); the approval gate counts pocketd's ready cross-review, and Merge All Ready added, by [ADR-0031](0031-count-pocketds-ready-cross-review-as-an-approval-and-merge-all-ready-at-once.md); the approval gate counts the extra approval for an unattributed change as GitHub's review decision shows it, a deliberate difference from frostyard/pocket's port, by [ADR-0059](0059-count-the-extra-approval-for-an-unattributed-change-as-githubs-review-decision-shows-it.md)
 - **Date:** 2026-11-19
 
 ## Context
