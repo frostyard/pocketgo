@@ -125,7 +125,9 @@ func (f Folder) Prompts() (Prompts, error) {
 }
 
 // promptFiles are the names of the prompt files of the prompts folder dir,
-// sorted: those that end in .md and start with no dot.
+// those that end in .md and start with no dot, sorted by the prompts'
+// names, without .md: review before review-ci, as the list and its bound
+// go (Codex review of #108, round 1).
 func promptFiles(dir *os.Root) ([]string, error) {
 	d, err := dir.Open(".")
 	if err != nil {
@@ -142,7 +144,9 @@ func promptFiles(dir *os.Root) ([]string, error) {
 			names = append(names, name)
 		}
 	}
-	slices.Sort(names)
+	slices.SortFunc(names, func(a, b string) int {
+		return strings.Compare(strings.TrimSuffix(a, ".md"), strings.TrimSuffix(b, ".md"))
+	})
 	return names, nil
 }
 

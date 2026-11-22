@@ -194,6 +194,26 @@ func TestThePromptsFolderListsAtMostItsBound(t *testing.T) {
 	}
 }
 
+// The prompts are listed by their names, without .md, before the bound
+// cuts the list: review comes before review-ci, though review-ci.md sorts
+// before review.md (Codex review of #108, round 1).
+func TestPromptsAreListedByTheirNames(t *testing.T) {
+	dir := t.TempDir()
+	writePrompt(t, dir, "review-ci.md", "Review the CI.")
+	writePrompt(t, dir, "review.md", "Review it.")
+	writePrompt(t, dir, "review0.md", "Review zero.")
+	got, err := LoadPrompts(dir)
+	if err != nil || len(got.List) != 3 || got.List[0].Name != "review" || got.List[1].Name != "review-ci" || got.List[2].Name != "review0" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	for i := range MaxPrompts - 1 {
+		writePrompt(t, dir, fmt.Sprintf("review-%03d.md", i), "Review.")
+	}
+	if got, err := LoadPrompts(dir); err != nil || len(got.List) != MaxPrompts || got.List[0].Name != "review" || got.List[MaxPrompts-1].Name != "review-098" {
+		t.Fatalf("at the bound: %d listed, first %q, last %q, %v", len(got.List), got.List[0].Name, got.List[len(got.List)-1].Name, err)
+	}
+}
+
 // The prompts are read through the folder pocketd pinned at start: one
 // replaced since is refused, gone or not, as its other files are.
 func TestPromptsAreReadFromThePinnedFolder(t *testing.T) {

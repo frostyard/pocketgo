@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The prompt drawn highlighted is recorded by name for the name typed, so a list that changes under the same query keeps it, and Enter takes the one shown.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 1 (codex-cli 0.169.0) of head 64d76d4: [P2] Preserve the initially highlighted prompt across a refresh",
+  "promoted_to": "desktop/internal/state/prompts_review_test.go"
+}

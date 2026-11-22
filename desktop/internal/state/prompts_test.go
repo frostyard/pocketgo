@@ -112,7 +112,7 @@ func TestInsertPrompt(t *testing.T) {
 		{"The CI is red.", "Review pull request  and fix what you find.\n\nThe CI is red.", 43},
 		{"/review-pr «ünïcode»", "Review pull request «ünïcode» and fix what you find.", 52},
 	} {
-		if got, caret := InsertPrompt(tc.draft, review); got != tc.want || caret != tc.caret {
+		if got, caret, err := InsertPrompt(tc.draft, review); err != nil || got != tc.want || caret != tc.caret {
 			t.Errorf("%q: %q at %d, want %q at %d", tc.draft, got, caret, tc.want, tc.caret)
 		}
 	}

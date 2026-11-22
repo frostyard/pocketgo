@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The phone's sheet puts a prompt in with the picker's caret, and the field takes the keys once the modal sheet is gone.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 1 (codex-cli 0.169.0) of head 64d76d4: [P2] Apply the insertion caret when choosing from the phone sheet",
+  "promoted_to": "desktop/internal/app/prompts_review_test.go"
+}

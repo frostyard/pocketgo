@@ -34,9 +34,12 @@ type phoneNav struct {
 	// address, and the form is new at each opening.
 	newSession bool
 	// prompts is the saved prompts' sheet's flag, and promptsFor the
-	// session whose composer a prompt chosen there goes into (ADR-0051).
-	prompts    bool
-	promptsFor int64
+	// session whose composer a prompt chosen there goes into (ADR-0051);
+	// promptsShown says the last frame drew the sheet, open or sliding
+	// away, which keeps the keys while it shows.
+	prompts      bool
+	promptsFor   int64
+	promptsShown bool
 }
 
 // tabIcons are the tabs' icons, of the window's set.
@@ -219,12 +222,24 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
 	mobile.Sheet(c, &a.shell.Console.Open, mobile.SheetOptions{Detents: []float32{activityDetent}, Label: "Activity"}, func() { a.phoneActivity(c) })
-	// The saved prompts' sheet belongs to the session it was opened for:
-	// it closes when another shows (ADR-0051).
-	if o := a.shownSession(); a.phone.prompts && (o == nil || o.ID != a.phone.promptsFor) {
+	// The saved prompts' sheet belongs to the composer it was opened for:
+	// it closes when another session shows, or that composer no longer
+	// writes a message, as when a question comes (ADR-0051, Codex review
+	// of #108, round 1).
+	if id, ok := a.promptsComposer(); a.phone.prompts && (!ok || id != a.phone.promptsFor) {
 		a.phone.prompts = false
 	}
-	mobile.Sheet(c, &a.phone.prompts, mobile.SheetOptions{Detents: []float32{promptsDetent}, Label: "Saved Prompts"}, func() { a.phonePrompts(c) })
+	shown := false
+	mobile.Sheet(c, &a.phone.prompts, mobile.SheetOptions{Detents: []float32{promptsDetent}, Label: "Saved Prompts"}, func() {
+		shown = true
+		a.phonePrompts(c)
+	})
+	// Once it is gone, the composer takes the keys a prompt chosen there
+	// gave it, on the next frame.
+	if a.phone.promptsShown && !shown {
+		c.AnimationFrame()
+	}
+	a.phone.promptsShown = shown
 	mobile.Sheet(c, &a.shell.Info.Open, mobile.SheetOptions{Detents: []float32{0.5}, Label: "About PocketGo"}, func() {
 		ui.Column(c).Padding(frostui.SpaceS, frostui.SpaceL).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 			frostui.AboutBody(a.about())(c)

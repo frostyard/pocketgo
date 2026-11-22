@@ -608,7 +608,11 @@ func promptReport(w io.Writer, dir string) {
 	_, _ = fmt.Fprintf(w, "\nPrompts (%s/):\n", profiles.PromptsFolder)
 	for _, p := range list.List {
 		if p.Problem != "" {
-			_, _ = fmt.Fprintf(w, "  /%s: invalid: %s\n", p.Name, p.Problem)
+			// An invalid name is the file's as it is, which may hold a line
+			// break or a terminal's control: quoted, it stays on its line
+			// (Codex review of #108, round 1). The problem quotes what it
+			// names.
+			_, _ = fmt.Fprintf(w, "  %q: invalid: %s\n", "/"+p.Name, p.Problem)
 			continue
 		}
 		line := "/" + p.Name

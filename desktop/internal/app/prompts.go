@@ -17,11 +17,23 @@ import (
 // (state.PromptPicker, state.InsertPrompt, state.PromptNote); this file
 // draws them.
 
-// fieldCaret puts the caret of the composer's field key at an offset, in
-// characters, on the next frame: after a prompt that went in.
-type fieldCaret struct {
-	key any
-	at  int
+// fieldEdit is a text a prompt put in the composer's field key: the next
+// frame that draws the field replaces its text with it, as a step of undo
+// of its own, and puts the caret at an offset, in characters, after the
+// prompt (Codex review of #108, round 1).
+type fieldEdit struct {
+	key   any
+	text  string
+	caret int
+}
+
+// hidePicker says to session id's picker that its composer left the
+// window (state.PromptPicker.Hide), so it asks pocketd again as it shows
+// (Codex review of #108, round 1).
+func (cp *composer) hidePicker(id int64) {
+	if p := cp.pickers[id]; p != nil {
+		p.Hide()
+	}
 }
 
 // picker is session id's / picker, made when missing.
@@ -97,8 +109,7 @@ func (a *App) promptMenu(c *ui.Context, id int64, draft *string, picker *state.P
 					}
 					if row.Clicked() {
 						if text, caret, ok := picker.Choose(p.Name, *draft, a.st.Data.Prompts()); ok {
-							*draft = text
-							cp.caret = &fieldCaret{key: id, at: caret}
+							cp.edit = &fieldEdit{key: id, text: text, caret: caret}
 							cp.refocus = true
 						}
 					}
@@ -161,13 +172,13 @@ func (a *App) summonPrompts() {
 	cp := &a.composer
 	draft := cp.draft(id)
 	text, caret := cp.picker(id).Summon(*draft)
-	*draft = text
-	cp.caret = &fieldCaret{key: id, at: caret}
+	cp.edit = &fieldEdit{key: id, text: text, caret: caret}
 	cp.refocus = true
 }
 
 // promptsComposer is the session whose composer takes a saved prompt now:
-// the one shown, whose composer writes a message, and why there is none.
+// the one shown, whose composer writes a message; none while it shows no
+// session, or one whose composer is read only or answers a question.
 func (a *App) promptsComposer() (int64, bool) {
 	o := a.st.Data.Open()
 	if a.place != placeSession || o == nil {
@@ -194,11 +205,12 @@ func (a *App) phonePrompts(c *ui.Context) {
 	t := c.Theme()
 	id := a.phone.promptsFor
 	draft := a.composer.draft(id)
+	picker := a.composer.picker(id)
 	prompts := a.st.Data.Prompts()
 	status, err := a.st.Data.PromptsStatus()
 	usable, broken := state.PromptList(*draft, prompts.Prompts)
 	menu := state.PromptMenu{Open: true, Items: usable, Broken: broken, Status: status, Err: err, Problem: prompts.Problem,
-		None: state.NoPrompts(prompts)}
+		None: state.NoPrompts(prompts), Refused: picker.Refused(*draft)}
 	ui.Column(c).Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 		ui.Row(c).Gap(frostui.SpaceXS).AlignItems(ui.Center).Padding(0, frostui.SpaceS, 0, frostui.SpaceL).Shrink(0).Children(func() {
 			ui.Text(c, "Saved Prompts").FontSize(17).FontWeight(600).Grow(1)
@@ -227,10 +239,19 @@ func (a *App) phonePrompts(c *ui.Context) {
 							subtitle := joinNonEmpty(p.ArgumentHint, p.Description)
 							if mobile.ListRow(c.Key("prompt:"+p.Name), mobile.RowOptions{Title: "/" + p.Name, Subtitle: subtitle,
 								Leading: func() { frostui.Icon(c, "pocket-prompt").FontSize(20).TextColor(t.Accent) }}).Focusable().Clicked() {
-								if text, _, ok := a.composer.picker(id).Choose(p.Name, *draft, prompts); ok {
-									*draft = text
+								// Only into the composer shown, while it writes a
+								// message (Codex review of #108, round 1).
+								if shown, ok := a.promptsComposer(); !ok || shown != id {
+									a.phone.prompts = false
+									return
 								}
-								a.phone.prompts = false
+								// With its caret after it, as the picker's; one too
+								// long stays out, and the sheet says why.
+								if text, caret, ok := picker.Choose(p.Name, *draft, prompts); ok {
+									a.composer.edit = &fieldEdit{key: id, text: text, caret: caret}
+									a.composer.refocus = true
+									a.phone.prompts = false
+								}
 							}
 						}
 					})

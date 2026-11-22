@@ -1,6 +1,7 @@
 package app
 
 import (
+	"math"
 	"strings"
 
 	"github.com/egoist/mygo/transfer"
@@ -38,13 +39,14 @@ type composer struct {
 	focus bool
 	// picking says the file chooser is open (pickAttachments).
 	picking bool
-	// pickers are the fields' / pickers, by session (ADR-0051); caret
-	// puts a field's caret after the prompt that went in, on the next
-	// frame; refocus gives the field shown the keyboard focus then, which
-	// focus asks of a new field only; shownHighlight is the prompt the
-	// picker last brought into view.
+	// pickers are the fields' / pickers, by session (ADR-0051); edit is
+	// the text a prompt put in a field, which the next frame applies as a
+	// step of undo of its own, with its caret; refocus gives the field
+	// shown the keyboard focus then, which focus asks of a new field
+	// only; shownHighlight is the prompt the picker last brought into
+	// view.
 	pickers        map[int64]*state.PromptPicker
-	caret          *fieldCaret
+	edit           *fieldEdit
 	refocus        bool
 	shownHighlight string
 }
@@ -506,9 +508,23 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			// message opens the picker over the field, which asks pocketd
 			// for them again as it opens.
 			picker := cp.picker(id)
-			if composing.TakesPrompts() {
+			if !composing.TakesPrompts() {
+				// The field answers a question: the picker is not shown,
+				// and asks pocketd again when it is (Codex review of #108,
+				// round 1).
+				picker.Hide()
+			} else {
+				// An Enter that put a prompt in holds until it is let go.
+				if !c.KeyDown(ui.KeyEnter) {
+					picker.EnterReleased()
+				}
+				// A prompt on its way in is the text the picker reads.
+				text := *draft
+				if cp.edit != nil && cp.edit.key == any(id) {
+					text = cp.edit.text
+				}
 				status, err := a.st.Data.PromptsStatus()
-				menu := picker.View(*draft, a.st.Data.Prompts(), status, err)
+				menu := picker.View(text, a.st.Data.Prompts(), status, err)
 				if menu.Opened {
 					a.st.LoadPrompts()
 				}
@@ -546,8 +562,9 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						if key, ok := pickerKey(k); ok && composing.TakesPrompts() {
 							r := picker.Key(key, k.Text(), a.st.Data.Prompts())
 							if r.Insert {
-								k.SetText(r.Text)
-								cp.caret = &fieldCaret{key: fieldKey, at: r.Caret}
+								// The next frame puts it in as an edit of
+								// its own, which one Undo takes back.
+								cp.edit = &fieldEdit{key: fieldKey, text: r.Text, caret: r.Caret}
 							}
 							if r.Took {
 								return true
@@ -580,16 +597,22 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 					}
 					cp.focus = false
 				}
-				// After a prompt went in, the caret follows it, and the palette's
-				// Insert Prompt gives the field the focus.
-				if cp.caret != nil && cp.caret.key == fieldKey {
-					input.SetTextSelection(cp.caret.at, cp.caret.at)
-					cp.caret = nil
+				// A prompt goes in as a step of undo of its own, the caret
+				// after it, and the field takes the keys, on a phone too:
+				// the owner chose the prompt to write on (Codex review of
+				// #108, round 1).
+				if e := cp.edit; e != nil && e.key == fieldKey {
+					input.ReplaceText(0, math.MaxInt, e.text)
+					input.SetTextSelection(e.caret, e.caret)
+					cp.edit = nil
+				} else if e != nil {
+					// It was for a field this frame does not show.
+					cp.edit = nil
 				}
-				if cp.refocus {
-					if !a.compact {
-						input.Focus()
-					}
+				// The phone's sheet keeps the keys while it shows: the field
+				// takes them once it is gone.
+				if cp.refocus && !(a.compact && a.phone.promptsShown) {
+					input.Focus()
 					cp.refocus = false
 				}
 				// A phone's width holds the model's chip or the buttons, not
