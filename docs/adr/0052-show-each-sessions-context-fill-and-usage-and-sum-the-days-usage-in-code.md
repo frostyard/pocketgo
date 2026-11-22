@@ -56,7 +56,7 @@
 8. **The client fetches the report in code.**
    - It asks from 8 days before its own today, so the report covers the service's week whichever day it is there (`state.UsageSince`).
    - It fetches the report on sign-in and refresh, and on a reconnect when the last fetch failed or the report's day ended by its clock.
-   - It fetches it again at a `session` event whose `usage` changed, or that follows an answer's entry that used something, whatever summary a list brought meanwhile. Not at the entry's own event: the session's time is written after it (rule 16b).
+   - It fetches it again at a `session` event whose `usage` changed, or that follows an answer's entry that used something, whatever summary a list brought meanwhile. The session event follows the entry (rule 16b), so the entry and the summary it changed ask for one fetch.
    - It fetches it again when a session's model changed, whatever brought the change first, an event, a list, a detail or an action's answer: an answer that names no model counts under its session's model now.
    - Changes that come while a fetch runs share one more fetch after it. The answer of a fetch that a change came after is not shown; the next one is.
    - The totals are computed from the report as of the client's clock (`state.Totals`). A report whose day ended is still the newest only when nothing was used since. Today then has no usage, and the week moves on by the days that ended. So no timer waits for midnight.
@@ -64,7 +64,7 @@
 ## Consequences
 
 - The owner sees, without leaving the app, how near a session is to compaction, what each session and thread used, and what today and the week cost by provider.
-- The first report after a start reads the last week's answers of every session updated in it. Later reports read only what is new, but the sums stay in memory, a map of days and models for each session read.
+- The first report after a start reads every session updated in the last 92 days, newest first, down to its first answer before `since`. Later reports read only what is new, but the sums stay in memory, a map of days and models for each session read.
 - The days count answers only. A compaction's summarizing request, which PiG puts in the session's ledger, is in no day, so a standing session's day can read lower than its `usage` grew.
 - A clock that moves back can put an answer before an older one. The newest-first read then stops early, and a few answers count nowhere.
 - A report the client keeps across a midnight moves its week on by 24-hour days, so on a daylight-saving day it can be an hour off until the next fetch. A client clock ahead of the service's shows today empty for the minutes between the two midnights.

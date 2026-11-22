@@ -455,10 +455,8 @@ func (d *Data) UsageTotals(now time.Time) (today, week UsageTotal, shown bool) {
 }
 
 // oweUsage notes an answer's entry that used something: its session's
-// event, which follows it once the entry's time is written (protocol rule
-// 16b), fetches the totals again. Not the entry's own event: pocketd reads
-// no session whose time is before the report's first day, so a session
-// idle until this answer would be left out until its time was written.
+// event, which follows it (protocol rule 16b), fetches the totals again,
+// once for the entry and the summary it changed.
 func (d *Data) oweUsage(e proto.Entry) {
 	if e.Kind != proto.EntryAssistant || e.Usage == nil || UsageLine(*e.Usage) == "" {
 		return
