@@ -2402,3 +2402,39 @@ func TestAFailedCloseSaysItsRequestIDIsKept(t *testing.T) {
 		t.Fatalf("the client was not told: %v", err)
 	}
 }
+
+// #97: ordinary threads also reuse an open ask rather than filing a duplicate.
+func TestARepeatedAskInAPlainThreadIsFiledAsTheOpenOne(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "d1"}, team.Delegation{Agent: "vera", Task: "Fix CI", Repository: "frostyard/example"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.Thread(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := func(key, question string) string {
+		t.Helper()
+		text, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: key}, team.Report{Status: team.StatusBlocked, Message: "Question", Asks: []team.Ask{{Question: question}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return text
+	}
+	report("r1", "Squash?")
+	first, err := h.store.OpenAsks(ctx)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first asks %+v: %v", first, err)
+	}
+	text := report("r2", "squash?")
+	second, err := h.store.OpenAsks(ctx)
+	if err != nil || len(second) != 1 || second[0].ID != first[0].ID || !strings.Contains(text, "no new ask") {
+		t.Fatalf("repeat %+v, %q: %v", second, text, err)
+	}
+	report("r3", "Rebase?")
+	third, err := h.store.OpenAsks(ctx)
+	if err != nil || len(third) != 2 || third[1].Question != "Rebase?" || third[1].ID == first[0].ID {
+		t.Fatalf("new asks %+v: %v", third, err)
+	}
+}

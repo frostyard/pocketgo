@@ -1111,19 +1111,23 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		}
 		s.reviewAfterRead(ids...)
 	}
-	ids := make([]int64, len(filed))
-	for i, row := range filed {
-		ids[i] = row.ID
+	var names, repeats []string
+	for _, row := range filed {
+		name := "A" + strconv.FormatInt(row.ID, 10)
+		if strings.HasPrefix(row.Key, key+":ask:") {
+			names = append(names, name)
+		} else {
+			repeats = append(repeats, name)
+		}
 	}
-	if len(ids) == 0 {
-		return fmt.Sprintf("Reported on thread T%d to the supervisor.", thread.ID), nil
+	result := fmt.Sprintf("Reported on thread T%d to the supervisor.", thread.ID)
+	if len(names) > 0 {
+		result += fmt.Sprintf(" %s wait for the owner; each answer comes to this session as a message.", strings.Join(names, ", "))
 	}
-	names := make([]string, len(ids))
-	for i, id := range ids {
-		names[i] = "A" + strconv.FormatInt(id, 10)
+	if len(repeats) > 0 {
+		result += fmt.Sprintf(" %s already waited for the owner with the same question, so no new ask was filed; its answer comes to this session as a message.", strings.Join(repeats, ", "))
 	}
-	return fmt.Sprintf("Reported on thread T%d to the supervisor. %s wait for the owner; each answer comes to this session as a message.",
-		thread.ID, strings.Join(names, ", ")), nil
+	return result, nil
 }
 
 // TeamClose runs team_close for session call.Session: a supervisor closes

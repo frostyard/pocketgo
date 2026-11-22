@@ -61,7 +61,7 @@ func TestAShiftRunsRoundByRound(t *testing.T) {
 		t.Fatalf("a failing check %+v, %v", next, err)
 	}
 	why := team.ShiftWhy(team.ShiftMaxRounds, "", 3, 3)
-	sum, err := s.SummarizeShift(ctx, thread.ID, 3, team.VerdictContinue, "", 0, "", team.ShiftMaxRounds, why, nil, ReportRow{Key: "shift-summary:" + thread.Owner, ThreadID: thread.ID, SessionID: 60, Text: "summary"})
+	sum, err := s.SummarizeShift(ctx, thread.ID, 3, team.VerdictContinue, "", 0, "", team.ShiftMaxRounds, why, nil, ReportRow{Key: "shift-summary:" + thread.Owner, ThreadID: thread.ID, SessionID: 60, Text: "summary"}, nil)
 	if err != nil || sum.State != team.ShiftSummary || sum.Reason != team.ShiftMaxRounds || sum.Why != why || len(sum.Rounds) != 3 || sum.Failures != 0 {
 		t.Fatalf("the summary %+v, %v", sum, err)
 	}
@@ -93,7 +93,7 @@ func TestASummaryKeepsItsFailureStreak(t *testing.T) {
 	if _, err := s.NextShiftRound(ctx, thread.ID, 1, team.VerdictDone, "", 2, "lint", roundMessage(thread, 2)); err != nil {
 		t.Fatal(err)
 	}
-	sum, err := s.SummarizeShift(ctx, thread.ID, 2, team.VerdictDone, "", 3, "lint", team.ShiftFailedCheck, "why", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"})
+	sum, err := s.SummarizeShift(ctx, thread.ID, 2, team.VerdictDone, "", 3, "lint", team.ShiftFailedCheck, "why", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}, nil)
 	if err != nil || sum.Failures != 3 || sum.Fingerprint != "lint" {
 		t.Fatalf("the summary %+v, %v", sum, err)
 	}
@@ -184,7 +184,7 @@ func TestAShiftTakesOnlyItsSummarysReport(t *testing.T) {
 	if _, _, _, err := s.FileReport(ctx, "r2", thread.ID, ThreadOpen, "a question", nil, text); err != nil {
 		t.Fatalf("a working report mid-shift: %v", err)
 	}
-	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no access", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}); err != nil {
+	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no access", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := s.FileReport(ctx, "r3", thread.ID, ThreadDone, "done", nil, text); !errors.Is(err, ErrShiftReport) {
@@ -375,7 +375,7 @@ func TestAClosedShiftTellsItsSupervisor(t *testing.T) {
 func TestASummaryReportOvertakenByAStopIsRefused(t *testing.T) {
 	s, _ := open(t)
 	thread := newShift(t, s, "d1", 9)
-	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictDone, "", 0, "", team.ShiftDone, "done", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}); err != nil {
+	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictDone, "", 0, "", team.ShiftDone, "done", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	seen := ShiftSeen{State: team.ShiftSummary, Round: 1}
@@ -450,7 +450,7 @@ func TestARoundMovesOnlyWhileItsSessionsAreOwedNothing(t *testing.T) {
 	if _, err := s.NextShiftRound(ctx, thread.ID, 1, team.VerdictContinue, "", 0, "", roundMessage(thread, 2), 60); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a round moved with a message owed: %v", err)
 	}
-	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictDone, "", 0, "", team.ShiftDone, "done", nil, roundMessage(thread, 2), 60); !errors.Is(err, ErrConflict) {
+	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictDone, "", 0, "", team.ShiftDone, "done", nil, roundMessage(thread, 2), nil, 60); !errors.Is(err, ErrConflict) {
 		t.Fatalf("a summary with a message owed: %v", err)
 	}
 	if _, _, _, _, err := s.EndShift(ctx, thread.ID, ShiftEnd{Reason: team.ShiftFailed, Why: "failed", From: []string{team.ShiftRunning}, Round: 1, Quiet: []int64{60},
@@ -470,7 +470,7 @@ func TestARoundMovesOnlyWhileItsSessionsAreOwedNothing(t *testing.T) {
 func TestTheSummarysRunFilesOneFinalReport(t *testing.T) {
 	s, _ := open(t)
 	thread := newShift(t, s, "d1", 9)
-	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no key", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}); err != nil {
+	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no key", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	text := func([]int64, []PullRow) string { return "report" }
@@ -491,7 +491,7 @@ func TestTheSummarysRunFilesOneFinalReport(t *testing.T) {
 func TestAWorkingReportOvertakenByTheSummarysIsRefused(t *testing.T) {
 	s, _ := open(t)
 	thread := newShift(t, s, "d1", 9)
-	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no key", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}); err != nil {
+	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no key", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	text := func([]int64, []PullRow) string { return "report" }
@@ -519,7 +519,7 @@ func TestAWorkingReportOvertakenByTheSummarysIsRefused(t *testing.T) {
 func TestTheSummarysRunReportsNoMoreAfterAResume(t *testing.T) {
 	s, _ := open(t)
 	thread := newShift(t, s, "d1", 9)
-	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no key", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}); err != nil {
+	if _, err := s.SummarizeShift(ctx, thread.ID, 1, team.VerdictBlocked, "no key", 0, "", team.ShiftBlocked, "blocked", nil, ReportRow{Key: "sum", ThreadID: thread.ID, SessionID: 60, Text: "summary"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	text := func([]int64, []PullRow) string { return "report" }
