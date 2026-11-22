@@ -154,9 +154,10 @@ func (a *App) askCard(c *ui.Context, ask proto.Ask) {
 	// The draft is the state's, which keeps it if a supervisor's message
 	// withdraws the question (state.Store.AnswerDraft).
 	text := a.st.AnswerDraft(ask.ID)
-	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+	card := ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
-		Role(ui.RoleGroup).Label("Ask A" + itoa(int(ask.ID))).Children(func() {
+		Role(ui.RoleGroup).Label("Ask A" + itoa(int(ask.ID)))
+	a.revealed(card, state.AskCard(ask.ID)).Children(func() {
 		title := "Thread T" + itoa(int(ask.Thread))
 		if th, ok := a.st.Data.Thread(ask.Thread); ok {
 			title = "T" + itoa(int(th.ID)) + " · " + th.Title
@@ -281,9 +282,10 @@ func (a *App) lessonCard(c *ui.Context, lesson proto.Lesson) {
 	default:
 		title = "New text for " + name + " of " + agent + " waits for your approval"
 	}
-	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+	card := ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
-		Role(ui.RoleGroup).Label("Lesson " + name).Children(func() {
+		Role(ui.RoleGroup).Label("Lesson " + name)
+	a.revealed(card, state.LessonCard(lesson.ID)).Children(func() {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			frostui.Icon(c, "accessories-text-editor").TextColor(frostui.ToneColor(t, frostui.Accent))
 			a.headTitle(c, title)
@@ -370,9 +372,10 @@ func (a *App) approvalCard(c *ui.Context, ap proto.Approval, inInbox bool) {
 		a.reasons[ap.ID] = reason
 	}
 	summary := state.ToolSummary(ap.Tool, ap.Arguments)
-	ui.Column(c.Key(ap.ID)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+	card := ui.Column(c.Key(ap.ID)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
 		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Warning)).
-		Role(ui.RoleGroup).Label("Approval: " + ap.Tool).Children(func() {
+		Role(ui.RoleGroup).Label("Approval: " + ap.Tool)
+	a.revealed(card, state.ApprovalCard(ap.ID)).Children(func() {
 		title := "Session"
 		if s, ok := a.st.Data.Session(ap.SessionID); ok {
 			title = s.Title
