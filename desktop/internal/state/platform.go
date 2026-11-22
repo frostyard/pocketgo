@@ -32,3 +32,19 @@ func QuitsItself(goos string) bool { return goos != platformIOS }
 // the computer sleeps, and goes on after it with its window open: it saves
 // as its window closes, as it did.
 func SavesOnSuspend(goos string) bool { return goos == platformIOS }
+
+// CompactBelow is the desktop's smallest window width in DIPs, at 100%
+// (cmd/pocket's MinWidth): a window narrower than it takes the compact
+// layout.
+const CompactBelow = 760
+
+// Compact reports whether a window width DIPs wide at 100% on goos takes
+// the compact layout (the phone client's Phase 3): one view at a time, full
+// width, under a compact top bar, in place of the sidebar beside the main
+// pane. On iOS a window narrower than the desktop's smallest does: an
+// iPhone's, and an iPad's in Split View or Slide Over. An iPad's full
+// window keeps the desktop's layout, and a desktop's window never gets
+// that narrow. A width not known yet is not compact.
+func Compact(goos string, width float32) bool {
+	return goos == platformIOS && width > 0 && width < CompactBelow
+}

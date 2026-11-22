@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Every card head row with a caption and a button uses headCaption, the withdrawn draft's included, so a compact window puts the caption under the title",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 2 (codex-cli 0.169.0) of head aefc48b: [P3] Move the withdrawn draft's thread caption below its phone header",
+  "promoted_to": "desktop/internal/app/compact_review2_test.go"
+}

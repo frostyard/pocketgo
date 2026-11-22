@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A phone view test sets every option the program sets (PickFiles) and the busy state, so the widest row of a view is the one tested: the composer's model chip takes a row of its own on a compact window, and Attach files is an icon, so Send stays on screen",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 2 (codex-cli 0.169.0) of head aefc48b: [P1] Keep Send reachable with the production composer controls",
+  "promoted_to": "desktop/internal/app/compact_review2_test.go"
+}

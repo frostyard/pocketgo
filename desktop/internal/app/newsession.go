@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/mobile"
 	"github.com/frostyard/frostui"
 
 	"github.com/frostyard/pocketgo/desktop/internal/state"
@@ -268,9 +269,37 @@ func (f *newSessionForm) thinkingChoices() []string {
 
 func (a *App) newSessionDialog(c *ui.Context) {
 	f := a.newSession
+	if a.compact {
+		// A sheet keeps what it holds above a phone's keyboard as it comes
+		// up, the buttons too; a modal covers the whole window, under the
+		// keyboard as well (Codex review of #85, round 2). It opens on the
+		// window's own flag: mobile.Sheet keeps its state on the window's
+		// root by the flag's address, and the form is new at each opening
+		// (round 3). It goes on drawing the form as it slides away.
+		a.phone.newSession = f != nil && f.open
+		mobile.Sheet(c, &a.phone.newSession, mobile.SheetOptions{Detents: []float32{0.92}, Label: "New session"}, func() {
+			if f == nil {
+				return
+			}
+			ui.Column(c).Grow(1).Basis(0).MinHeight(0).Gap(frostui.SpaceM).AlignItems(ui.Stretch).
+				Padding(0, frostui.SpaceL, frostui.SpaceM, frostui.SpaceL).Children(a.newSessionForm(c, f))
+		})
+		if f != nil && !a.phone.newSession {
+			f.open = false
+		}
+		return
+	}
 	if f == nil || !f.open {
 		return
 	}
+	form := a.newSessionForm(c, f)
+	ui.Modal(c, &f.open, func() {
+		ui.Column(c).Width(540).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Children(form)
+	})
+}
+
+// newSessionForm reads what form f offers, and returns what draws it.
+func (a *App) newSessionForm(c *ui.Context, f *newSessionForm) func() {
 	profiles, profilesErr := a.st.Profiles()
 	// A standing session the desktop knows opens whatever its profile's
 	// problem (ADR-0026).
@@ -280,24 +309,22 @@ func (a *App) newSessionDialog(c *ui.Context) {
 	models, modelsErr := a.st.Models()
 	f.modelChoices(models)
 	busy := a.st.Creating().Busy
-	ui.Modal(c, &f.open, func() {
-		// The fields scroll when the window is too short for them, and the
-		// buttons, with what went wrong, stay at the bottom at every size
-		// (the owner's choice, 2026-11-20).
+	// The fields scroll when the window is too short for them, and the
+	// buttons, with what went wrong, stay at the bottom at every size (the
+	// owner's choice, 2026-11-20).
+	return func() {
 		label, working, submitted := "Start Session", "Starting…", false
-		ui.Column(c).Width(540).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Shrink(1).MinHeight(0).Children(func() {
-			ui.Text(c, "New session").FontSize(18).Bold()
-			ui.Scroll(c).Grow(1).Shrink(1).MinHeight(0).Label("New session's fields").Children(func() {
-				ui.Column(c).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
-					label, working, submitted = a.newSessionFields(c, f, profiles, profilesErr, models, modelsErr, busy)
-				})
+		ui.Text(c, "New session").FontSize(18).Bold()
+		ui.Scroll(c).Grow(1).Shrink(1).MinHeight(0).Label("New session's fields").Children(func() {
+			ui.Column(c).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
+				label, working, submitted = a.newSessionFields(c, f, profiles, profilesErr, models, modelsErr, busy)
 			})
-			if f.err != "" {
-				frostui.Problem(c, f.err).Wrap()
-			}
-			a.newSessionButtons(c, f, busy, label, working, submitted)
 		})
-	})
+		if f.err != "" {
+			frostui.Problem(c, f.err).Wrap()
+		}
+		a.newSessionButtons(c, f, busy, label, working, submitted)
+	}
 }
 
 // newSessionFields are the form's fields, in its scrolling part: the
@@ -342,7 +369,12 @@ func (a *App) newSessionFields(c *ui.Context, f *newSessionForm, profiles []prot
 		frostui.Body(c, path).Wrap()
 		frostui.Muted(c, state.WorktreeLine(branch)).Wrap()
 	} else {
-		cwd := ui.TextInput(c, &f.folder.Cwd).Label("Working directory").Placeholder("/home/team/projects/…").AutoFocus().Disabled(busy)
+		cwd := ui.TextInput(c, &f.folder.Cwd).Label("Working directory").Placeholder("/home/team/projects/…").Disabled(busy)
+		// A phone's keyboard would come up over the dialog before the
+		// owner chose a profile or a repository, which fill the field in.
+		if !a.compact {
+			cwd.AutoFocus()
+		}
 		submitted = cwd.Submitted()
 	}
 	frostui.Label(c, "Model")
@@ -385,7 +417,15 @@ func (a *App) newSessionFields(c *ui.Context, f *newSessionForm, profiles []prot
 // does.
 func (a *App) newSessionButtons(c *ui.Context, f *newSessionForm, busy bool, label, working string, submitted bool) {
 	ui.Row(c).Gap(frostui.SpaceS).Justify(ui.End).Children(func() {
-		if ui.Button(c, "Cancel").Disabled(busy).Clicked() {
+		cancel := ui.Button(c, "Cancel").Disabled(busy)
+		// The dialog gives its first control the focus as it opens, and
+		// with no profile to choose that is the folder's field: a phone's
+		// keyboard would come up before the owner asked for it (Codex
+		// review of #85, round 1).
+		if a.compact {
+			cancel.AutoFocus()
+		}
+		if cancel.Clicked() {
 			f.open = false
 		}
 		if busy {

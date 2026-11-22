@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A layout that does not draw the pane shell takes the commands the shell provided to the command table away (the palette's), and closes what they opened, since their keys would do nothing there",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 1 (codex-cli 0.169.0) of head 35133e5: [P3] Rebind shell shortcuts when switching to compact layout",
+  "promoted_to": "desktop/internal/app/compact_review_test.go"
+}

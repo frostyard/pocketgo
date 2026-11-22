@@ -281,7 +281,7 @@ func (a *App) githubSignInView(c *ui.Context) {
 	}
 	open := true
 	ui.Modal(c, &open, func() {
-		ui.Column(c).Width(460).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Role(ui.RoleAlertDialog).Label("Sign in to GitHub").Children(func() {
+		ui.Column(c).Width(a.fitWidth(c, 460)).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Role(ui.RoleAlertDialog).Label("Sign in to GitHub").Children(func() {
 			ui.Text(c, "Sign in to GitHub").FontSize(18).Bold().Wrap()
 			frostui.Muted(c, "PocketGo approves and merges as "+github.Login+" through the GitHub App "+github.AppName+". "+
 				"Enter the code at GitHub's device page, and check that GitHub names that App.").Wrap()

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A warning the desktop's status bar shows on every view, as an unsaved GitHub sign-in with Save Again, shows on every view of a compact window too, which has no status bar",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 1 (codex-cli 0.169.0) of head 35133e5: [P2] Expose Save Again for an unsaved GitHub sign-in",
+  "promoted_to": "desktop/internal/app/compact_review_test.go"
+}

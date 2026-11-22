@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "The tab a session goes back to is recorded as the session opens, whatever the window's width, not while a compact window draws, so an iPad window that narrows after a session opened goes back to the right tab",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 1 (codex-cli 0.169.0) of head 35133e5: [P3] Record a session's source tab when navigating to it",
+  "promoted_to": "desktop/internal/app/compact_review_test.go"
+}

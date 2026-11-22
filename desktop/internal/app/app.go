@@ -21,7 +21,6 @@ import (
 
 	"github.com/frostyard/pocketgo/desktop/internal/config"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
-	"github.com/frostyard/pocketgo/proto"
 )
 
 // Options are what the program gives the app.
@@ -70,7 +69,36 @@ const (
 	placeBoard
 	// placeTerminal is the owner's shells on the service host (ADR-0025).
 	placeTerminal
+	// placeSessions and placeMore are a compact window's Sessions and
+	// More tabs (ADR-0044): the sidebar's sessions, and what a desktop's
+	// main menu and status bar hold. A desktop's window shows the Inbox
+	// for them.
+	placeSessions
+	placeMore
 )
+
+// placeNames are the places' names, as state names them; a session's is
+// none.
+var placeNames = map[place]string{
+	placeInbox:    state.PlaceInbox,
+	placeBoard:    state.PlaceBoard,
+	placeTerminal: state.PlaceTerminal,
+	placeSessions: state.PlaceSessions,
+	placeMore:     state.PlaceMore,
+}
+
+// name is the place's name, as state names it: "" for a session.
+func (p place) name() string { return placeNames[p] }
+
+// placeNamed is the place named so, the Inbox for a name of none.
+func placeNamed(name string) place {
+	for p, n := range placeNames {
+		if n == name {
+			return p
+		}
+	}
+	return placeInbox
+}
 
 // App is the window's state.
 type App struct {
@@ -80,8 +108,12 @@ type App struct {
 
 	shell   frostui.PaneShell
 	table   *frostui.CommandTable
-	dialogs frostui.Dialogs
+	dialogs confirms
 	console *frostui.Console
+	// compact says the window draws as a phone's in this frame
+	// (state.Compact), and phone is that layout's navigation.
+	compact bool
+	phone   phoneNav
 	md      markdown.Options
 
 	// sidebar is the sidebar's list, filter what its filter holds, and sb
@@ -174,7 +206,7 @@ func New(opts Options) (*App, error) {
 	})
 	a.loadLib = loadEmulatorLibrary
 	a.goLoad = func(f func()) { go f() }
-	a.shell.Dialogs = &a.dialogs
+	a.shell.Dialogs = &a.dialogs.shown
 	a.shell.Console.Title = "Activity"
 	a.shell.Console.Subtitle = "what PocketGo and pocketd did"
 	a.shell.Console.EmptyNote = "The connection and every command PocketGo sends show here."
@@ -296,7 +328,8 @@ func (a *App) resetViews() {
 	a.newSession = nil
 	// A confirmation belongs to the sign-in it was asked under: one left
 	// open would act on the next sign-in's service.
-	a.dialogs = frostui.Dialogs{}
+	a.dialogs = confirms{}
+	a.phone = phoneNav{}
 	// So do the sidebar's open groups and its filter.
 	a.setUpSidebar()
 	// So does a shell: its connection keeps the sign-in it was opened with.
@@ -323,7 +356,8 @@ func (a *App) goBoard() {
 }
 
 // openSession shows session id, with the keyboard focus in its message
-// field.
+// field, except on a compact window, which the composer decides as it
+// draws.
 func (a *App) openSession(id int64) {
 	a.showSession(id)
 	a.composer.focus = true
@@ -333,6 +367,12 @@ func (a *App) openSession(id int64) {
 // and leaves the keyboard focus where it is: the sidebar's arrow keys go
 // on to the next session (Codex review of #40, round 1).
 func (a *App) showSession(id int64) {
+	// The tab of the place it is opened from, whatever the window's width:
+	// a compact window's back goes there, as after an iPad's window
+	// narrows (state.BackTo, Codex review of #85, round 1).
+	if tab, ok := state.TabOf(a.place.name()); ok {
+		a.phone.tab = tab
+	}
 	if a.place != placeSession || a.st.Data.OpenID() != id {
 		a.leaveSession()
 		a.tr = transcriptView{}
@@ -360,6 +400,9 @@ func (a *App) View(c *ui.Context) {
 		c.Toast(msg)
 	}
 	a.pendingToasts = nil
+	// The window's width at 100% is its size at the zoom the last frame
+	// set (applyZoom).
+	a.compact = state.Compact(a.opts.Platform, a.widthAtFull(c))
 	a.applyZoom(c)
 	if !a.st.SignedIn() {
 		// The zoom keys work before signing in too, so a zoom saved
@@ -370,9 +413,18 @@ func (a *App) View(c *ui.Context) {
 		// GitHub's sign-out asks here too (Codex review of #24, round 7),
 		// and a device flow begun before pocketd signed out stays in view
 		// (round 9).
-		a.dialogs.View(c)
+		a.dialogs.View(c, a.compact)
 		a.githubSignInView(c)
 		return
+	}
+	if a.compact {
+		a.compactView(c)
+		return
+	}
+	// A compact window's own places show the Inbox on a desktop's.
+	if a.place == placeSessions || a.place == placeMore {
+		a.place = placeInbox
+		a.showInSidebar()
 	}
 	conn := a.connection()
 	// A terminal takes keys as an editor does, and guardShellKeys keeps
@@ -483,17 +535,21 @@ func (a *App) status() []frostui.StatusItem {
 	// round 4).
 	if a.gh.CanSaveAgain() {
 		items = append(items, frostui.StatusItem{Icon: "dialog-warning", Text: "GitHub sign-in not saved", Tone: frostui.Danger,
-			Tooltip: "Save the GitHub sign-in again", OnClick: func() {
-				a.gh.SaveAgain(func(err error) {
-					if err != nil {
-						a.toast("Saving the GitHub sign-in: " + err.Error())
-						return
-					}
-					a.toast("Saved the GitHub sign-in")
-				})
-			}})
+			Tooltip: "Save the GitHub sign-in again", OnClick: a.saveGitHubAgain})
 	}
 	return items
+}
+
+// saveGitHubAgain saves a refreshed GitHub sign-in the keyring did not
+// keep, and says how it went.
+func (a *App) saveGitHubAgain() {
+	a.gh.SaveAgain(func(err error) {
+		if err != nil {
+			a.toast("Saving the GitHub sign-in: " + err.Error())
+			return
+		}
+		a.toast("Saved the GitHub sign-in")
+	})
 }
 
 func (a *App) statusEnd() []frostui.StatusItem {
@@ -574,9 +630,5 @@ func (a *App) confirmSignOut() {
 }
 
 func (a *App) showAbout() {
-	a.shell.Info.Show("About PocketGo", frostui.AboutBody(frostui.About{
-		Name: "PocketGo", Version: a.opts.Version,
-		Summary: "The desktop client of pocketd, protocol version " + itoa(proto.Version) + ".",
-		Website: "https://github.com/frostyard/pocketgo", License: "MIT",
-	}))
+	a.shell.Info.Show("About PocketGo", frostui.AboutBody(a.about()))
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A compact window that draws its own connecting screen keeps a way to sign out on it: a saved service that never answers keeps the first connection there, and More, the compact window's only Sign Out, never shows",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 1 (codex-cli 0.169.0) of head 35133e5: [P1] Keep Sign Out reachable while the first connection is pending",
+  "promoted_to": "desktop/internal/app/compact_review_test.go"
+}

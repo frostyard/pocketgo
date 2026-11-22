@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A key the pane shell brings to the command table is bound by the compact window itself while the table lacks it, so a window that starts compact has it as one that was wide first does",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 2 (codex-cli 0.169.0) of head aefc48b: [P3] Bind the Activity shortcut on a compact cold start",
+  "promoted_to": "desktop/internal/app/compact_review2_test.go"
+}

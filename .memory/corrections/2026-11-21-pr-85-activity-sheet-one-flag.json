@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A sheet that stands in for a frostui pane shows on the pane's own visibility flag (PaneShell.Console.Open), so the pane's Close, the connecting screen's Details and its key all open and close it",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 1 (codex-cli 0.169.0) of head 35133e5: [P2] Use one visibility flag for the Activity sheet and its controls",
+  "promoted_to": "desktop/internal/app/compact_review_test.go"
+}

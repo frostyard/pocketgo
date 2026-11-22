@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A compact window's screen with text fields scrolls, from its top, rather than centering in a column that does not: a phone's keyboard leaves it less room than it takes, on the smallest iPhone above all",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 3 (codex-cli 0.169.0) of head 1cddfb9: [P2] Keep the compact sign-in form usable above the keyboard",
+  "promoted_to": "desktop/internal/app/compact_review3_test.go"
+}

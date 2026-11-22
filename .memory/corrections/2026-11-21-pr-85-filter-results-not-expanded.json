@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A view of state.Sidebar draws the filter's results as the section lists them, never with their children, which the state layer left out when they did not match",
+  "evidence": "frostyard/pocketgo#85, Codex CLI review round 2 (codex-cli 0.169.0) of head aefc48b: [P3] Show only matching sessions in compact search results",
+  "promoted_to": "desktop/internal/app/compact_review2_test.go"
+}
