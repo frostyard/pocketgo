@@ -60,10 +60,24 @@ func run() error {
 		GitHubClient: githubClient,
 		// The native chooser of Attach files (ADR-0029).
 		PickFiles: pickFiles,
+		// The notifications and the icon's badge (ADR-0049).
+		Notify:   notifier(p.post, showNotification),
+		SetBadge: mygo.App.SetBadgeCount,
 	})
 	if err != nil {
 		return err
 	}
+	// A click on a notification, also one of an earlier run that launched
+	// the app, which is why it is registered before Run (ADR-0049).
+	mygo.App.OnNotificationClick(func(id string) {
+		p.post(func() {
+			var w raiser
+			if win != nil {
+				w = win
+			}
+			clicked(w, a, id)
+		})
+	})
 	mygo.App.WhenReady(func() {
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title: "PocketGo", Width: 1280, Height: 820, MinWidth: 760, MinHeight: 480,
@@ -74,6 +88,11 @@ func run() error {
 			a.Close()
 			auth.Close()
 		})
+		// Notifications show only while the window does not have the
+		// keyboard (ADR-0049); MyGo calls these on the window's thread.
+		win.OnFocus(func() { a.SetFocused(true) })
+		win.OnBlur(func() { a.SetFocused(false) })
+		a.SetFocused(win.IsFocused())
 		p.attach(win)
 		a.Start()
 		// iOS may end the app in the background without closing its window

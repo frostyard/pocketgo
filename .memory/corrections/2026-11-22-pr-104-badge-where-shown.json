@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The desktop promises the icon's badge only on a platform whose MyGo backend shows it (state.BadgesIcon: macOS and Linux); MyGo v0.10.0 keeps it in memory alone on Windows and drops it on iOS.",
+  "evidence": "frostyard/pocketgo#104, Codex CLI review round 1 (codex-cli 0.169.0) of head b4eb6cd: [P3] Advertise the icon badge only on platforms that display it",
+  "promoted_to": "desktop/internal/app/notify_test.go"
+}
