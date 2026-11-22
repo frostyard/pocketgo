@@ -66,6 +66,41 @@ func (u Usage) Add(v Usage) Usage {
 	}
 }
 
+// UsageDayLayout is how a day of GET /v1/usage is written: its date, in
+// the service's time zone (ADR-0052).
+const UsageDayLayout = "2006-01-02"
+
+// UsageReport is the answer to GET /v1/usage (ADR-0052, rule 63): the usage
+// of the sessions' answers from a day on, summed by day in the service's
+// time zone and by model.
+type UsageReport struct {
+	// Zone is the service's time zone; Today the day it was there when the
+	// service answered, and TodayEnds when that day ends: a client asks
+	// again then, for the day that begins.
+	Zone      string    `json:"zone"`
+	Today     string    `json:"today"`
+	TodayEnds time.Time `json:"todayEnds"`
+	// Since is the first day the report sums, as asked.
+	Since string `json:"since"`
+	// Days are the days from Since through Today that have usage, oldest
+	// first.
+	Days []UsageDay `json:"days"`
+}
+
+// UsageDay is one day's usage, by model.
+type UsageDay struct {
+	// Day is the date, as UsageDayLayout writes it.
+	Day string `json:"day"`
+	// Models are its models' usage, by provider, then by model id.
+	Models []ModelUsage `json:"models"`
+}
+
+// ModelUsage is one model's usage.
+type ModelUsage struct {
+	Model ModelRef `json:"model"`
+	Usage Usage    `json:"usage"`
+}
+
 // SessionState is what a session is doing.
 type SessionState string
 

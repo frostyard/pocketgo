@@ -210,6 +210,9 @@ The owner's shifts from pi-pocket-team, started by the supervisor first, with no
 
 - **Events:** GitHub webhooks, and the NATS events bridge.
 - **Records:** run records, the metrics views and scheduled follow-ups.
+- [ ] **Usage at a glance** ([ADR-0052](../adr/0052-show-each-sessions-context-fill-and-usage-and-sum-the-days-usage-in-code.md), [architecture: usage by day](../design/architecture.md#service), [architecture: desktop client](../design/architecture.md#desktop-client), [specs: protocol rules 1 and 63](../specs/protocol.md)). Asked for in frostyard/pocketgo#101, filed on 2026-11-21: each session's context fill, tokens and cost, and today's total, without leaving the app.
+  - Built: `GET /v1/usage?since=<day>`, the answers' usage summed by day in the service's zone and by model, read from PiG's transcripts and kept in memory; the context fill, the meter's thresholds, the number formats and the hidden zero cost in `desktop/internal/state`; the meter, tokens and cost in a session's header, the thread's usage on its board card, today's and the last 7 days' totals in the status bar, and a Usage section in More on a phone. Protocol version 27: the desktop must be rebuilt.
+  - Still to see, through the desktop: a running session's header showing its context fill and its tokens or cost, updating as the run goes; the status bar showing today's total.
 - **Done when:** a signed GitHub webhook wakes the responsible agent, and the metrics view compares outcomes by model and by way of working.
 
 ## Later / ideas

@@ -1163,6 +1163,59 @@ func (e *Engine) Usage(ctx context.Context, id int64) (proto.Usage, error) {
 	return wireUsageState(state), nil
 }
 
+// UsageEntries are session id's answers with usage after entry after, read
+// newest first down to the first one before since, which is left out with
+// every older one, and the session's newest entry (ADR-0052): a session's
+// answers are written in the order of their times, so no older one is
+// read. Each page of records is converted, and let go, before the next is
+// read, as entriesBetween does.
+func (e *Engine) UsageEntries(ctx context.Context, id, after int64, since time.Time) ([]api.UsageEntry, int64, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	watch, err := conversation.Watch(ctx, viewWindow())
+	if err != nil {
+		return nil, 0, err
+	}
+	view := watch.Value()
+	_, _ = watch.Stop()
+	var newest int64
+	for _, record := range view.Entries {
+		newest = max(newest, int64(record.Id))
+	}
+	if newest <= after {
+		return nil, newest, nil
+	}
+	minID, maxID, order := durable.EntryId(after+1), durable.EntryId(newest), durable.ScanDescending
+	var out []api.UsageEntry
+	var cursor durable.Cursor
+	for {
+		page, err := conversation.Entries(ctx, durable.EntryQuery{MinEntryId: &minID, MaxEntryId: &maxID, Order: &order}, recordsAtOnce, cursor)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, record := range page.Items {
+			entry := wireEntry(record)
+			if entry.Kind != proto.EntryAssistant || entry.Usage == nil {
+				continue
+			}
+			if entry.At.Before(since) {
+				return out, newest, nil
+			}
+			u := api.UsageEntry{ID: entry.ID, At: entry.At, Usage: *entry.Usage}
+			if entry.Model != nil {
+				u.Model = *entry.Model
+			}
+			out = append(out, u)
+		}
+		if page.Next == nil {
+			return out, newest, nil
+		}
+		cursor = *page.Next
+	}
+}
+
 type watcher struct {
 	handle       harness.ConversationWatch
 	conversation harness.Conversation

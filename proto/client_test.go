@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPathReplacesTheID(t *testing.T) {
@@ -32,7 +33,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "26" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "27" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -551,5 +552,23 @@ func TestARedirectNotFollowedClosesItsFile(t *testing.T) {
 		if files.opened != 2 || files.closed != files.opened {
 			t.Errorf("%s: %d opened, %d closed", c.name, files.opened, files.closed)
 		}
+	}
+}
+
+// Usage asks for the days from its since on, a day in the query string,
+// and reads the days back by model (ADR-0052).
+func TestClientReadsUsage(t *testing.T) {
+	ends := time.Date(2026, 11, 22, 5, 0, 0, 0, time.UTC)
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "GET "+PathUsage || r.URL.Query().Get("since") != "2026-11-15" {
+			t.Errorf("request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(UsageReport{Zone: "America/New_York", Today: "2026-11-21", TodayEnds: ends, Since: "2026-11-15",
+			Days: []UsageDay{{Day: "2026-11-21", Models: []ModelUsage{{Model: ModelRef{Provider: "deepseek", ID: "deepseek-v4"}, Usage: Usage{Input: 10, Total: 12, Cost: 0.25}}}}}})
+	}))
+	r, err := client.Usage(context.Background(), "2026-11-15")
+	if err != nil || r.Today != "2026-11-21" || !r.TodayEnds.Equal(ends) || len(r.Days) != 1 || r.Days[0].Models[0].Usage.Cost != 0.25 ||
+		r.Days[0].Models[0].Model.Provider != "deepseek" {
+		t.Fatalf("Usage = %+v, %v", r, err)
 	}
 }

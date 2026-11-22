@@ -71,6 +71,8 @@ type Server struct {
 	schedules      proto.Schedules
 	launches       []proto.Launch
 	launchRequests []proto.CreateLaunch
+	// usage is what GET /v1/usage answers (usage.go).
+	usage proto.UsageReport
 	// shells are the owner's terminals, oldest first (terminals.go), and
 	// nextShell numbers the next one.
 	shells     []*fakeShell
@@ -786,6 +788,7 @@ func (s *Server) routes() http.Handler {
 	s.terminalRoutes(mux)
 	s.nightShiftRoutes(mux)
 	s.uploadRoutes(mux)
+	s.usageRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// An upload's body is the file, up to proto.MaxUpload, as
 		// pocketd takes it; every other is JSON (Codex review of #49,

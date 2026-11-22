@@ -59,12 +59,15 @@ package proto
 // Version 26 adds the question tool (ADR-0048): a session's question, POST
 // /v1/sessions/{id}/question/{qid}, and a session that waits for its
 // question's answer.
-const Version = 26
+// Version 27 adds usage at a glance (ADR-0052): GET /v1/usage, the
+// sessions' answers' usage summed by day in the service's time zone and
+// by model.
+const Version = 27
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 26. A path with {id} takes a session,
+// The request paths of protocol version 27. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment;
 // PathQuestion takes its session's id there, and the question's in {qid}.
 // PathUploads takes a file the owner attaches to a message to the session
@@ -104,6 +107,10 @@ const (
 	PathDropProposal = "/v1/proposals/{id}/drop"
 	PathLaunches     = "/v1/launches"
 	PathEvents       = "/v1/events"
+	// PathUsage sums the sessions' answers' usage by day and model
+	// (ADR-0052): its since, a day (UsageDayLayout), is in the query
+	// string.
+	PathUsage = "/v1/usage"
 	// The owner's terminals (ADR-0025): the list and a start, one shell
 	// (DELETE ends it), its output by a long poll, its keys and its size.
 	PathTerminals      = "/v1/terminals"
@@ -129,6 +136,9 @@ const (
 	MaxAnswer = 2000
 	// MaxLesson is the most characters a lesson's text has.
 	MaxLesson = 300
+	// MaxUsageDays is the most days GET /v1/usage sums (rule 63): its
+	// since is at most MaxUsageDays-1 days before the service's today.
+	MaxUsageDays = 92
 	// MaxTerminals is the most shells that run at once (rule 56): a start
 	// past it is refused.
 	MaxTerminals = 4

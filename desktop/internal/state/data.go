@@ -49,6 +49,10 @@ type Data struct {
 	droppedProposals map[int64]bool
 	schedules        proto.Schedules
 	schedulesList    list
+	// usage is the newest usage report (GET /v1/usage, ADR-0052), fetched
+	// whole (usage.go).
+	usage     proto.UsageReport
+	usageList list
 
 	open *OpenSession
 	// terminals are the owner's shells, oldest first, replaced whole by
@@ -642,11 +646,15 @@ const (
 	// RefetchSchedules: the schedules changed (EventSchedules), and the
 	// event carries no list (protocol rule 57).
 	RefetchSchedules
+	// RefetchUsage: a session's usage changed (EventSession), so the
+	// day's totals did (ADR-0052).
+	RefetchUsage
 )
 
 // Apply applies one event of the stream, and reports what it asks the
 // client to fetch again: everything after EventResync, the schedules after
-// EventSchedules. An event of a type this client does not know changes
+// EventSchedules, the usage totals after a session event that changes what
+// the session used. An event of a type this client does not know changes
 // nothing.
 func (d *Data) Apply(ev proto.Event) Refetch {
 	d.rev++
@@ -661,8 +669,12 @@ func (d *Data) Apply(ev proto.Event) Refetch {
 		}
 	case proto.EventSession:
 		if ev.Session != nil {
+			changed := d.usageChanged(*ev.Session)
 			d.touchSession(ev.Session.ID)
 			d.putSession(*ev.Session)
+			if changed {
+				return RefetchUsage
+			}
 		}
 	case proto.EventEntry:
 		if ev.Entry != nil {
