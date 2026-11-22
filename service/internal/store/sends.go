@@ -152,6 +152,8 @@ func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now int64) (Se
 		if reopens == 0 || reopens != reopened+1 {
 			return SendNoted{}, nil
 		}
+		// One the close's worker stop holds back is not noted: its
+		// transaction rolls back, and it is noted once the stop is done.
 		ok, err := reopenThread(ctx, tx, id, now)
 		return SendNoted{Reopened: ok, FromClosed: ok}, err
 	}

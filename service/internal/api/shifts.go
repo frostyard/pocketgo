@@ -1132,7 +1132,19 @@ func (s *Server) ownerShift(w http.ResponseWriter, r *http.Request, kind string,
 
 // writeThreadWithShift answers with thread id and its shift as one
 // transaction has them (Codex review of #36).
+//
+// The thread's messages already in its specialist's transcript are noted
+// first, under outboxMu, as any read of its state does: one may have
+// reopened it, also when the change was none, or a run again (ADR-0061;
+// Codex review of #121, round 6).
 func (s *Server) writeThreadWithShift(ctx context.Context, w http.ResponseWriter, id int64) {
+	s.outboxMu.Lock()
+	err := s.noteSendsPlaced(ctx, id)
+	s.outboxMu.Unlock()
+	if err != nil {
+		s.internal(w, "note the thread's messages", err)
+		return
+	}
 	thread, sh, err := s.store.ThreadWithShift(ctx, id)
 	if err != nil {
 		s.internal(w, "change a shift", err)

@@ -319,8 +319,12 @@ func (d *Data) applyThread(t proto.Thread) {
 		// An event of a later lifetime than the reply's, or its lifetime's
 		// close, applies whatever the clocks say (ADR-0061; Codex review of
 		// #121, round 5).
+		// An event of an earlier lifetime than the reply's copy, or of its
+		// lifetime before its close, is dropped whatever the clocks say
+		// (round 6).
 		cur, _ := d.Thread(t.ID)
-		if newer, decided := lifetimeNewer(t, cur); (!decided || !newer) && cur.UpdatedAt.Equal(at) && at.After(t.UpdatedAt) && !t.UpdatedAt.IsZero() {
+		newer, decided := lifetimeNewer(t, cur)
+		if cur.UpdatedAt.Equal(at) && (decided && !newer || !decided && at.After(t.UpdatedAt) && !t.UpdatedAt.IsZero()) {
 			return
 		}
 		delete(d.threadReplied, t.ID)

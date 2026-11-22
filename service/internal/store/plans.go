@@ -699,8 +699,12 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 	// Its messages that go only while it is open, and are not placed, go
 	// to no one, dropped in the transaction that closes it: a stop of
 	// pocketd right after the close leaves none to go once a message
-	// reopens the thread (ADR-0061).
+	// reopens the thread (ADR-0061). Its worker is owed a stop, which no
+	// reopen overtakes (Codex review of #121, round 6).
 	if err := dropAtClose(ctx, tx, before.ID, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET worker_stop_due = 1 WHERE id = ? AND worker_session != 0`, before.ID); err != nil {
 		return err
 	}
 	// A thread's close ends its shift, whatever closed it (ADR-0024).

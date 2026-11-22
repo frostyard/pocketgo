@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A reopened thread keeps its worker session, so the owner's requests to it are still refused, its starter stays, and a team_worker call run again answers with it.",
+  "evidence": "frostyard/pocketgo#121, Codex CLI review round 6 (codex-cli 0.169.0) of head 72e8eec: [P1] Keep retired worker sessions closed to owner requests",
+  "promoted_to": "service/internal/api/reopen_round6_test.go"
+}

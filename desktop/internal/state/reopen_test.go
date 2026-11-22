@@ -33,6 +33,23 @@ func TestTheCloseOfALifetimeAppliesAfterItsOpenReply(t *testing.T) {
 	}
 }
 
+// While a close's reply of a later lifetime is held, an event of the
+// earlier lifetime is dropped, though both have one updatedAt (Codex review
+// of #121, round 6).
+func TestAnEarlierLifetimesEventNeverUndoesALaterReply(t *testing.T) {
+	d := &Data{}
+	d.SetThreads(d.BeginThreads(), []proto.Thread{thread(1, proto.ThreadOpen, 0)})
+	reopened := thread(1, proto.ThreadOpen, time.Minute)
+	at := reopened.UpdatedAt
+	reopened.Reopens, reopened.ReopenedAt = 1, &at
+	d.ThreadClosed(reopened)
+	closed := thread(1, proto.ThreadClosed, time.Minute)
+	d.Apply(proto.Event{Type: proto.EventThread, Thread: &closed})
+	if th, _ := d.Thread(1); th.State != proto.ThreadOpen || th.Reopens != 1 {
+		t.Fatalf("an earlier lifetime's event undid the reply: %+v", th)
+	}
+}
+
 // A fetch's copy of a later lifetime, by reopens, wins over a held copy
 // with a later updatedAt: a missed close and reopen, with pocketd's clock
 // moved back, never leaves the older lifetime shown (Codex review of #121,

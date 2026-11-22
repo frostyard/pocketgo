@@ -81,32 +81,30 @@ func TestAMergeCloseChecksAgainBeforeItWithdraws(t *testing.T) {
 	}
 }
 
-// A reopen retires the thread's worker: a run of the closed time, which the
-// close stopped, replies to no one once the thread is open again (Codex
-// review of #121, rounds 3 and 5).
+// The close's stop of the worker moves its cursor past the closed time:
+// a run the close stopped replies to no one once the thread is open again
+// (Codex review of #121, rounds 3 to 6).
 func TestAReopenLeavesTheClosedTimesWorkerRunsUnanswered(t *testing.T) {
 	h, thread := workerHarness(t)
 	ctx := context.Background()
 	worker := startedWorker(t, h, thread)
-	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "close"}, thread.ID); err != nil {
-		t.Fatal(err)
-	}
 	h.engine.mu.Lock()
 	h.engine.transcripts = map[int64][]proto.Entry{worker: {{ID: 3, Kind: proto.EntryUser, Text: "Go."},
 		{ID: 4, Kind: proto.EntryAssistant, Text: "The aborted run's reply."}}}
 	h.engine.mu.Unlock()
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "close"}, thread.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "m1", Text: "One more thing."}); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := h.store.Thread(ctx, thread.ID)
-	if err != nil || reopened.State != store.ThreadOpen || reopened.WorkerSession != 0 {
+	if err != nil || reopened.State != store.ThreadOpen || reopened.WorkerCursor != 4 {
 		t.Fatalf("the reopened thread %+v, %v", reopened, err)
 	}
-	if retired, err := h.store.RetiredWorkers(ctx); err != nil || len(retired) != 1 || retired[0] != worker {
-		t.Fatalf("retired %v, %v", retired, err)
+	if err := h.server.queueWorkerReplies(ctx, reopened, worker); err != nil {
+		t.Fatal(err)
 	}
-	// The old worker's run ends: nothing is owed to the specialist.
-	h.server.followWorker(worker)
 	unsent, _ := h.store.UnsentReportsOf(ctx, thread.ID)
 	for _, row := range unsent {
 		if strings.HasPrefix(row.Key, "worker-reply:") {
@@ -115,9 +113,8 @@ func TestAReopenLeavesTheClosedTimesWorkerRunsUnanswered(t *testing.T) {
 	}
 }
 
-// A close's stop of the worker that failed, followed by a reopen before
-// the next delivery pass, still stops the retired worker's run (Codex
-// review of #121, round 5).
+// A close's worker stop that failed holds the reopen until the delivery
+// pass's retry stopped the run (Codex review of #121, rounds 5 and 6).
 func TestAFailedStopOfARetiredWorkerIsTriedAgain(t *testing.T) {
 	h, thread := workerHarness(t)
 	ctx := context.Background()
@@ -142,16 +139,22 @@ func TestAFailedStopOfARetiredWorkerIsTriedAgain(t *testing.T) {
 	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "m1", Text: "One more thing."}); err != nil {
 		t.Fatal(err)
 	}
-	h.engine.mu.Lock()
-	aborted := len(h.engine.aborted)
-	h.engine.mu.Unlock()
-	if _, err := h.server.deliverAll(ctx); err != nil {
-		t.Fatal(err)
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadClosed {
+		t.Fatalf("reopened before the stop: %+v", got)
+	}
+	for range 2 {
+		if _, err := h.server.deliverAll(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
 	h.engine.mu.Lock()
-	defer h.engine.mu.Unlock()
-	if got := h.engine.aborted[aborted:]; len(got) != 1 || got[0] != worker {
-		t.Fatalf("aborted %v; want the retired worker %d", got, worker)
+	aborted := append([]int64(nil), h.engine.aborted...)
+	h.engine.mu.Unlock()
+	if len(aborted) == 0 || aborted[len(aborted)-1] != worker {
+		t.Fatalf("aborted %v; want the worker %d", aborted, worker)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen {
+		t.Fatalf("not reopened once the stop was done: %+v", got)
 	}
 }
 

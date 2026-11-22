@@ -694,3 +694,42 @@ func TestTheFakeTurnsALargePhotoAfterItShrinks(t *testing.T) {
 		t.Fatalf("charging the photo allocated %d bytes", allocated)
 	}
 }
+
+// The fake reopens a closed thread when a message reaches its specialist,
+// refuses one to a closed plan's thread, and answers a close run again
+// with the thread as it is now, as pocketd does (ADR-0061; Codex review of
+// #121, round 6).
+func TestTheFakeReopensAClosedThreadOnAMessage(t *testing.T) {
+	s := New()
+	s.AddSession(proto.Session{ID: 11, Title: "T1 · Fix CI", Cwd: "/w"})
+	s.AddSession(proto.Session{ID: 12, Title: "T2 · Plan task", Cwd: "/w"})
+	s.AddThread(proto.Thread{ID: 1, Title: "Fix CI", Agent: "vera", Supervisor: 1, Session: 11, State: proto.ThreadOpen, CreatedAt: Now, UpdatedAt: Now})
+	s.AddThread(proto.Thread{ID: 2, Title: "Plan task", Agent: "vera", Supervisor: 1, Session: 12, State: proto.ThreadClosed, Plan: 3, PlanTask: "t1",
+		CreatedAt: Now, UpdatedAt: Now})
+	client, err := proto.NewClient(s.URL, Token, &http.Client{Transport: s.Transport()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if closed, err := client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "c1"}); err != nil || closed.State != proto.ThreadClosed {
+		t.Fatalf("the close %+v, %v", closed, err)
+	}
+	if _, err := client.Send(ctx, 11, proto.SendMessage{RequestID: "m1", Text: "One more thing."}); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := client.Threads(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(threads, func(t proto.Thread) bool { return t.ID == 1 })
+	if i < 0 || threads[i].State != proto.ThreadOpen || threads[i].Reopens != 1 || threads[i].ReopenedAt == nil {
+		t.Fatalf("not reopened: %+v", threads)
+	}
+	if again, err := client.CloseThread(ctx, 1, proto.CloseThread{RequestID: "c1"}); err != nil || again.State != proto.ThreadOpen {
+		t.Fatalf("the close run again: %+v, %v", again, err)
+	}
+	var pe *proto.Error
+	if _, err := client.Send(ctx, 12, proto.SendMessage{RequestID: "m2", Text: "Hi."}); !errors.As(err, &pe) || pe.Status != http.StatusConflict {
+		t.Fatalf("a closed plan's thread took a message: %v", err)
+	}
+}

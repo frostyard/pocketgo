@@ -20,14 +20,7 @@ import (
 // workerKey is the request key of thread's worker session: by the thread's
 // random owner, never its row number (AGENTS.md: a key that crosses the two
 // databases).
-func workerKey(thread store.ThreadRow) string {
-	// A thread a message reopened has a worker of its own: the one before
-	// the reopen was retired (ADR-0061).
-	if thread.Reopened > 0 {
-		return "worker:" + thread.Owner + ":r" + strconv.Itoa(thread.Reopened)
-	}
-	return "worker:" + thread.Owner
-}
+func workerKey(thread store.ThreadRow) string { return "worker:" + thread.Owner }
 
 // TeamWorker runs team_worker for session call.Session: a thread's
 // specialist sends w's message to its thread's worker, which the first call
@@ -530,11 +523,7 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 		thread, err := s.store.ThreadOfWorker(ctx, worker)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			// No thread's worker: one a reopen retired, whose stop a close
-			// owed, is stopped; nothing else is owed (Codex review of #121,
-			// round 5).
-			s.stopWorker(ctx, worker)
-			continue
+			continue // no thread's worker: nothing is owed
 		case err != nil:
 			s.workerDue(worker)
 			continue
@@ -560,31 +549,56 @@ func (s *Server) followDueWorkers(ctx context.Context) bool {
 // or a look at the worker, that fails is tried again by the delivery pass
 // (Codex review of #29, round 1); the run's reply reaches no one.
 //
-// A reopen retires the thread's worker (store.RetiredWorkers): no thread
-// names it then, and the stop goes all the same, while the reopened
-// thread's work goes to a worker of its own, which no stop of the old one
-// reaches (ADR-0061; Codex review of #121, round 5). Only a read that
-// finds the worker's thread closed, or none, lets the stop go: a worker an
-// open thread names is its current one, and a read that fails is tried
-// again by the delivery pass (round 3).
+// No message reopens the thread until the stop is done (worker_stop_due):
+// the run of the closed time stops before any work of the reopened thread
+// reaches the worker, and the worker's cursor moves past that time, so its
+// runs reply to no one (store.WorkerStopped; ADR-0061; Codex review of
+// #121, rounds 2 to 6). Only a read that finds the worker's thread closed
+// lets the stop go: a read that fails is tried again by the delivery pass
+// (round 3), and a worker no closed thread names is owed nothing.
 func (s *Server) stopWorker(ctx context.Context, worker int64) {
 	thread, err := s.readThreadOfWorker(ctx, worker)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) {
+		return
+	} else if err != nil {
 		s.log.Warn("read a worker's thread before its stop", "session", worker, "err", err)
 		s.workerDue(worker)
 		return
 	}
-	if err == nil && thread.State != store.ThreadClosed {
+	if thread.State != store.ThreadClosed {
 		return
 	}
 	busy, err := s.engine.Busy(ctx, worker)
 	if err == nil && busy {
 		err = s.engine.Abort(ctx, worker)
 	}
+	if err == nil && thread.WorkerStopDue {
+		err = s.workerStopped(ctx, thread, worker)
+	}
 	if err != nil {
 		s.log.Warn("stop a closed thread's worker", "session", worker, "err", err)
 		s.workerDue(worker)
 	}
+}
+
+// workerStopped notes the stop of closed thread's worker done, its
+// cursor moved past the closed time's runs (store.WorkerStopped), and has
+// a pass note the messages the stop held back. No work reaches the worker
+// while the thread is closed, so its newest entry ends that time.
+func (s *Server) workerStopped(ctx context.Context, thread store.ThreadRow, worker int64) error {
+	entries, _, err := s.engine.TranscriptAfter(ctx, worker, thread.WorkerCursor)
+	if err != nil {
+		return err
+	}
+	floor := thread.WorkerCursor
+	for _, e := range entries {
+		floor = max(floor, e.ID)
+	}
+	if err := s.store.WorkerStopped(ctx, thread.ID, worker, floor); err != nil {
+		return err
+	}
+	s.deliverLater()
+	return nil
 }
 
 // readThreadOfWorker is store.ThreadOfWorker, which tests may fail
@@ -655,20 +669,5 @@ func (s *Server) scanWorkers(ctx context.Context) {
 	}
 	for _, t := range threads {
 		s.workerRunEnded(ctx, t, t.WorkerSession)
-	}
-	// A worker a reopen retired is stopped too: a stop its close owed may
-	// not have gone before pocketd stopped (ADR-0061; Codex review of
-	// #121, round 5).
-	retired, err := s.store.RetiredWorkers(ctx)
-	if err != nil {
-		s.log.Warn("read the retired workers", "err", err)
-		s.workerMu.Lock()
-		s.workerScanDue = true
-		s.workerMu.Unlock()
-		s.deliverLater()
-		return
-	}
-	for _, worker := range retired {
-		s.stopWorker(ctx, worker)
 	}
 }

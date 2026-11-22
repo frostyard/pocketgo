@@ -593,8 +593,8 @@ func (s *Server) closeThread(ctx context.Context, id int64, key string, admit fu
 	row, err := s.closeThreadLocked(ctx, id, key, admit, close)
 	if err == nil && row.State == store.ThreadClosed {
 		// Its worker stops, outside the team's locks: PiG's abort waits
-		// for the run (ADR-0021). A reopen before the stop retired it
-		// (ADR-0061).
+		// for the run (ADR-0021). No message reopens the thread before the
+		// stop is done (ADR-0061).
 		if row.WorkerSession != 0 {
 			s.stopWorker(ctx, row.WorkerSession)
 		}
@@ -1792,8 +1792,12 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 	if team.IsSendKey(row.Key) {
 		// A supervisor's message in the transcript takes a done or
 		// blocked thread back to open, with its event, and withdraws a
-		// blocked one's open asks with theirs (ADR-0032, ADR-0037).
-		if _, _, err := s.sendDelivered(ctx, row); err != nil {
+		// blocked one's open asks with theirs (ADR-0032, ADR-0037). One
+		// whose reopen the close's worker stop holds back is noted once
+		// the stop is done (ADR-0061).
+		if _, _, err := s.sendDelivered(ctx, row); errors.Is(err, store.ErrWorkerStopping) {
+			return false, nil
+		} else if err != nil {
 			return true, err
 		}
 	} else if err := s.store.ReportSent(ctx, row.Key); err != nil {

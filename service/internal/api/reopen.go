@@ -71,7 +71,11 @@ func (s *Server) noteOwner(ctx context.Context, thread int64, placed func(contex
 		}
 		switch where {
 		case PlacementPlaced:
-			if err := placed(ctx, m); err != nil {
+			// A reopen the close's worker stop holds back waits for it
+			// (store.ErrWorkerStopping).
+			if err := placed(ctx, m); errors.Is(err, store.ErrWorkerStopping) {
+				done = false
+			} else if err != nil {
 				return false, err
 			}
 		case PlacementQueued:

@@ -11,9 +11,10 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// The worker's run a close found going stops, also once a message
-// reopened the thread before the stop: the reopen retired that worker
-// (Codex review of #121, rounds 4 and 5).
+// The specialist's report after the owner's message waits for the close's
+// worker stop: the thread reopens only once the run of the closed time is
+// stopped, and the report is taken then (Codex review of #121, rounds 4
+// to 6).
 func TestAClosesWorkerStopTargetsTheRunItFound(t *testing.T) {
 	h, thread := workerHarness(t)
 	ctx := context.Background()
@@ -22,7 +23,7 @@ func TestAClosesWorkerStopTargetsTheRunItFound(t *testing.T) {
 	if h.engine.busy == nil {
 		h.engine.busy = map[int64]bool{}
 	}
-	h.engine.busy[worker] = true // the worker's run going at the close
+	h.engine.busy[worker] = true
 	h.engine.mu.Unlock()
 	row, err := h.server.closeThreadLocked(ctx, thread.ID, TeamCall{Session: h.super.ID, CallID: "close"}.key(), nil,
 		func() (store.ThreadRow, error) { return h.store.CloseThread(ctx, thread.ID) })
@@ -32,17 +33,18 @@ func TestAClosesWorkerStopTargetsTheRunItFound(t *testing.T) {
 	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "m1", Text: "One more thing."}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen {
-		t.Fatalf("not reopened: %+v", got)
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "early"}, team.Report{Status: team.StatusWorking, Message: "x"}); err == nil {
+		t.Fatal("a report was taken before the worker's stop")
 	}
-	h.engine.mu.Lock()
-	before := len(h.engine.aborted)
-	h.engine.mu.Unlock()
 	h.server.stopWorker(ctx, row.WorkerSession)
 	h.engine.mu.Lock()
-	defer h.engine.mu.Unlock()
-	if got := h.engine.aborted[before:]; len(got) != 1 || got[0] != worker {
-		t.Fatalf("aborted %v; the run the close owed a stop goes on", got)
+	delete(h.engine.busy, worker)
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "r1"}, team.Report{Status: team.StatusWorking, Message: "Pushed."}); err != nil {
+		t.Fatalf("the report after the stop: %v", err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen {
+		t.Fatalf("the thread %+v", got)
 	}
 }
 

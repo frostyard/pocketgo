@@ -354,7 +354,8 @@ func (s *Server) noteSends(ctx context.Context, thread int64, note func(context.
 		if !placed {
 			continue
 		}
-		if _, _, err := note(ctx, row); err != nil {
+		// A reopen the close's worker stop holds back waits for it.
+		if _, _, err := note(ctx, row); err != nil && !errors.Is(err, store.ErrWorkerStopping) {
 			return err
 		}
 	}

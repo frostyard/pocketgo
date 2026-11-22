@@ -1,7 +1,7 @@
 {
   "date": "2026-11-22",
   "scope": "service",
-  "correction": "A close names the worker run it found going, under the team's locks; once a message reopened the thread, the stop aborts only that run if it still goes.",
+  "correction": "No reopen comes before a close's worker stop is done, so the stop reaches only the run of the closed time, never the reopened thread's work.",
   "evidence": "frostyard/pocketgo#121, Codex CLI review round 4 (codex-cli 0.169.0) of head e29cfb3: [P2] Target the worker run that the close was meant to stop",
   "promoted_to": "service/internal/api/reopen_round4_test.go"
 }

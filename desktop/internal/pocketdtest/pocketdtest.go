@@ -415,6 +415,7 @@ func (s *Server) PlaceQueued(id int64) {
 		delete(s.queuedEntries, q.SubmissionID)
 		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: entry.Text, At: Now, SubmissionID: q.SubmissionID,
 			Images: entry.Images, Files: entry.Files})
+		s.reopenLocked(id)
 	}
 	live := sess.detail.Live
 	live.Queued = nil
@@ -1080,6 +1081,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "an attachment is no upload of the session")
 		return
 	}
+	// A closed plan's thread takes no message, as pocketd refuses one
+	// that could not reopen it (protocol rule 10, ADR-0061).
+	if t := s.threadOfSessionLocked(id); t != nil && t.State == proto.ThreadClosed && t.Plan != 0 {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("thread T%d is plan P%d's and stays closed", t.ID, t.Plan))
+		return
+	}
 	text := proto.WithAttachments(request.Text, files)
 	s.submitted++
 	answer := proto.SentMessage{SubmissionID: s.submitted}
@@ -1098,9 +1105,33 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.emitLocked(proto.Event{Type: proto.EventLive, Live: &live})
 	} else {
 		s.writeEntryLocked(proto.Entry{SessionID: id, Kind: proto.EntryUser, Text: text, At: Now, SubmissionID: s.submitted, Images: images, Files: len(files)})
+		s.reopenLocked(id)
 	}
 	s.rememberLocked(r, request.RequestID, answer)
 	writeJSON(w, http.StatusOK, answer)
+}
+
+// threadOfSessionLocked is the thread whose specialist works in session,
+// nil for none.
+func (s *Server) threadOfSessionLocked(session int64) *proto.Thread {
+	if i := slices.IndexFunc(s.threads, func(t proto.Thread) bool { return t.Session == session && session != 0 }); i >= 0 {
+		return &s.threads[i]
+	}
+	return nil
+}
+
+// reopenLocked takes the closed thread whose specialist works in session
+// back to open, as a message in its transcript does (rule 24, ADR-0061):
+// its reopens go up, with its event. A plan's thread stays closed.
+func (s *Server) reopenLocked(session int64) {
+	t := s.threadOfSessionLocked(session)
+	if t == nil || t.State != proto.ThreadClosed || t.Plan != 0 {
+		return
+	}
+	at := Now
+	t.State, t.Reopens, t.ReopenedAt, t.UpdatedAt = proto.ThreadOpen, t.Reopens+1, &at, Now
+	reopened := *t
+	s.emitLocked(proto.Event{Type: proto.EventThread, Thread: &reopened})
 }
 
 // abort follows protocol rule 5 for Abort: the first call records the run
@@ -1375,13 +1406,24 @@ func (s *Server) closeThread(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body: requestId is required")
 		return
 	}
-	if s.replay(w, r, request.RequestID) {
-		return
-	}
 	id := pathID(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	i := slices.IndexFunc(s.threads, func(t proto.Thread) bool { return t.ID == id })
+	// The same request again closes nothing again, and answers with the
+	// thread as it is now, as pocketd's does: a message may have reopened
+	// it (ADR-0061).
+	if prior, retried := s.replies[request.RequestID]; retried {
+		switch {
+		case prior.op != r.Method+" "+r.URL.Path:
+			writeError(w, http.StatusConflict, proto.ErrorCodeConflict, "the requestId was used for a different request")
+		case i < 0:
+			writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such thread")
+		default:
+			writeJSON(w, http.StatusOK, s.threads[i])
+		}
+		return
+	}
 	if i < 0 {
 		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no such thread")
 		return
