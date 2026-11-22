@@ -83,6 +83,8 @@ const (
 	// for them.
 	placeSessions
 	placeMore
+	// placeSearch is the Search view (ADR-0050).
+	placeSearch
 )
 
 // placeNames are the places' names, as state names them; a session's is
@@ -93,6 +95,7 @@ var placeNames = map[place]string{
 	placeTerminal: state.PlaceTerminal,
 	placeSessions: state.PlaceSessions,
 	placeMore:     state.PlaceMore,
+	placeSearch:   state.PlaceSearch,
 }
 
 // name is the place's name, as state names it: "" for a session.
@@ -138,6 +141,7 @@ type App struct {
 
 	signIn   signInForm
 	place    place
+	search   searchView
 	tr       transcriptView
 	composer composer
 	reasons  map[string]*string // deny reasons being written, by approval
@@ -355,6 +359,8 @@ func (a *App) logLine(level state.Level, text string) {
 func (a *App) resetViews() {
 	a.place = placeInbox
 	a.tr = transcriptView{}
+	// A search belongs to the sign-in it was made under.
+	a.search = searchView{}
 	a.composer = composer{drafts: map[int64]*string{}}
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
 	a.reportOpen = map[string]bool{}
@@ -407,6 +413,10 @@ func (a *App) showSession(id int64) {
 	// narrows (state.BackTo, Codex review of #85, round 1).
 	if tab, ok := state.TabOf(a.place.name()); ok {
 		a.phone.tab = tab
+	}
+	// Back goes where it was opened from, as the Search view (ADR-0050).
+	if a.place != placeSession {
+		a.phone.from = a.place.name()
 	}
 	if a.place != placeSession || a.st.Data.OpenID() != id {
 		a.leaveSession()
@@ -521,6 +531,8 @@ func (a *App) mainPane(c *ui.Context) {
 		a.boardPane(c)
 	case a.place == placeTerminal:
 		a.terminalPane(c)
+	case a.place == placeSearch:
+		a.searchPane(c)
 	default:
 		a.inboxPane(c)
 	}
@@ -540,6 +552,10 @@ func (a *App) mainBar(c *ui.Context) {
 	}
 	if a.place == placeTerminal {
 		ui.Text(c, "Terminal").Bold().SingleLine().Grow(1)
+		return
+	}
+	if a.place == placeSearch {
+		a.searchBar(c)
 		return
 	}
 	ui.Column(c).Grow(1).Children(func() {
@@ -603,7 +619,7 @@ func (a *App) statusEnd() []frostui.StatusItem {
 }
 
 func (a *App) menu(m *ui.Menu) {
-	a.table.Menu("new", "inbox", "board", "abort", "", "sidebar", "zoom-in", "zoom-out", "zoom-reset", "")(m)
+	a.table.Menu("new", "inbox", "board", "search", "abort", "", "sidebar", "zoom-in", "zoom-out", "zoom-reset", "")(m)
 	a.table.MenuItem(m, "settings")
 	a.table.MenuItem(m, "about")
 	m.Separator()
@@ -664,6 +680,7 @@ func (a *App) setUpCommands() {
 				}
 			}},
 	)
+	a.table.Add(a.searchCommand())
 	a.table.Add(a.settingsCommand())
 	a.table.Add(a.zoomCommands()...)
 	a.zoomKeys = frostui.NewCommandTable(a.zoomCommands()...)

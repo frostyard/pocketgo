@@ -24,6 +24,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/events"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
+	"github.com/frostyard/pocketgo/service/internal/search"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 	"github.com/frostyard/pocketgo/service/internal/terminal"
@@ -121,6 +122,10 @@ type Engine interface {
 	// TranscriptAfter is Transcript's entries after entry after, and the
 	// live state of their revision.
 	TranscriptAfter(ctx context.Context, id, after int64) ([]proto.Entry, proto.Live, error)
+	// EntriesAfter is at most most of session id's entries after entry
+	// after, oldest first and not placed: the search index reads them
+	// (ADR-0050).
+	EntriesAfter(ctx context.Context, id, after int64, most int) ([]proto.Entry, error)
 	// Tools are the names of the tools an agent can be given.
 	Tools() []string
 	// CreateSession is idempotent by key: the same key returns the same id.
@@ -333,6 +338,15 @@ type Server struct {
 	now       func() time.Time
 	log       *slog.Logger
 	engine    Engine
+	// index keeps the search index up with every session's transcript
+	// (ADR-0050): an entry's event notes its session, and StartIndex
+	// reads every session from its cursor. indexStepped runs after each
+	// of its reads; tests set it before StartIndex.
+	index        *search.Indexer
+	indexStepped func()
+	// afterSearchRead runs in a search after it read the index; tests
+	// finish the index's pass there. nil does nothing.
+	afterSearchRead func()
 	// profiles are the agents' profiles; nil when pocketd has none.
 	profiles ProfileSource
 	// deskCap is how many threads not closed the desk holds; teamMu
@@ -724,6 +738,11 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 	// replaces them replaces them here too.
 	server.questions = approvals.NewQuestions(s, server.publishQuestion, func() time.Time { return server.now() },
 		func(d time.Duration, f func()) func() { return server.questionTimer(d, f) })
+	server.index = search.New(search.Options{Source: engineEntries{server}, Index: s, Log: log, Stepped: func() {
+		if server.indexStepped != nil {
+			server.indexStepped()
+		}
+	}})
 	return server
 }
 
@@ -778,6 +797,8 @@ func (s *Server) Stop() {
 		// A delivery pass, or a round of pull requests, that runs ends
 		// before the engine and the stores close.
 		s.passes.Wait()
+		// So does the search index's reading (ADR-0050).
+		s.index.Stop()
 		// The owner's shells end, and their polls with them, so the
 		// shutdown waits on none (ADR-0025).
 		s.terms.Close()
@@ -792,6 +813,9 @@ func (s *Server) Stop() {
 // goes out and its time is noted under sessionMu, so no session event read
 // before that time is written goes out after the entry.
 func (s *Server) PublishEntry(entry proto.Entry) {
+	// The search index reads the session from its cursor (ADR-0050): the
+	// event is a hint, and noting it never blocks.
+	s.index.Note(entry.SessionID)
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	s.emit(proto.Event{Type: proto.EventEntry, Entry: &entry})
@@ -1061,6 +1085,7 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathDropProposal, s.ownerDropProposal},
 		{"GET", proto.PathLaunches, s.listLaunches},
 		{"POST", proto.PathLaunches, s.ownerLaunch},
+		{"GET", proto.PathSearch, s.search},
 		{"GET", proto.PathPrompts, s.listPrompts},
 		{"GET", proto.PathEvents, s.events},
 		{"GET", proto.PathTerminals, s.terminalList},

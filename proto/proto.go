@@ -59,13 +59,15 @@ package proto
 // Version 26 adds the question tool (ADR-0048): a session's question, POST
 // /v1/sessions/{id}/question/{qid}, and a session that waits for its
 // question's answer.
-// Version 27 adds the owner's saved prompts (ADR-0051): GET /v1/prompts.
-const Version = 27
+// Version 27 adds search (ADR-0050): GET /v1/search, which finds sessions
+// by their titles and by what their transcripts say.
+// Version 29 adds the owner's saved prompts (ADR-0051): GET /v1/prompts.
+const Version = 29
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 27. A path with {id} takes a session,
+// The request paths of protocol version 29. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment;
 // PathQuestion takes its session's id there, and the question's in {qid}.
 // PathUploads takes a file the owner attaches to a message to the session
@@ -104,6 +106,9 @@ const (
 	// PathLaunches the launches: GET lists them, POST starts one.
 	PathDropProposal = "/v1/proposals/{id}/drop"
 	PathLaunches     = "/v1/launches"
+	// PathSearch finds sessions by their titles and by what their
+	// transcripts say (ADR-0050): q holds the words, limit the most hits.
+	PathSearch = "/v1/search"
 	// PathPrompts lists the owner's saved prompts (ADR-0051).
 	PathPrompts = "/v1/prompts"
 	PathEvents  = "/v1/events"

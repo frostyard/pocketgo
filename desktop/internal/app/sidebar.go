@@ -86,11 +86,18 @@ func (a *App) setUpSidebar() {
 	a.showInSidebar()
 }
 
-// clickInSidebar handles a click on row k, or Enter on it. On a session it
-// puts the keyboard focus in its message field, which the arrow keys do
-// not. On a group it folds or unfolds its sessions, as its arrow does, and
+// clickInSidebar handles a click on row k, or Enter on it. On the filter's
+// search row it searches every session for the filter's words. On a
+// session it puts the keyboard focus in its message field, which the
+// arrow keys do not. On a group it folds or unfolds its sessions, as its arrow does, and
 // moves the choice as the arrow would (state.Sidebar.AfterGroupClick).
 func (a *App) clickInSidebar(k state.SidebarKey, _ ui.Modifiers) {
+	// The filter's search runs on a click or Enter, for the words the
+	// filter holds then, never as the keys pass over its row (ADR-0050).
+	if state.Searches(k) {
+		a.goSearch(a.filter)
+		return
+	}
 	if k.Kind == state.SidebarSession {
 		a.composer.focus = true
 		return
@@ -203,6 +210,8 @@ func (a *App) shownKey() (state.SidebarKey, bool) {
 		return state.PlaceKey(sidebarBoard), true
 	case placeTerminal:
 		return state.PlaceKey(sidebarTerminal), true
+	case placeSearch:
+		return state.SearchKey(), true
 	}
 	if id := a.st.Data.OpenID(); id != 0 {
 		return state.SessionKey(id), true
@@ -250,6 +259,9 @@ func (a *App) sidebarRow(k state.SidebarKey) frostui.SourceRow {
 		return a.placeRow(k.Place)
 	case state.SidebarGroup:
 		return a.groupRow(k.Agent)
+	case state.SidebarSearch:
+		label, _ := state.SearchOffer(a.filter)
+		return frostui.SourceRow{Title: label, Icon: "system-search"}
 	}
 	return a.sessionRow(k.Session)
 }

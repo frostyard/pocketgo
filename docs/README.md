@@ -62,6 +62,7 @@ Docs are split by the question they answer:
 - [0047 — Carry a shift's ci on a proposal to its launch](adr/0047-carry-a-shifts-ci-on-a-proposal-to-its-launch.md)
 - [0048 — Put the supervisor's and a private agent's questions to the owner inline, in code](adr/0048-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)
 - [0049 — Notify the owner of what waits, once, decided in code](adr/0049-notify-the-owner-of-what-waits-once-decided-in-code.md)
+- [0050 — Search every session through an FTS5 index in the work database](adr/0050-search-every-session-through-an-fts5-index-in-the-work-database.md)
 - [0051 — Insert the owner's saved prompts into the composer with /](adr/0051-insert-the-owners-saved-prompts-into-the-composer-with-a-slash.md)
 
 ### Org-wide decisions

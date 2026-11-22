@@ -34,6 +34,8 @@ var model = proto.ModelRef{Provider: "faux", ID: "faux-1"}
 type fakeEngine struct {
 	// watchErr fails every Watch while set.
 	watchErr error
+	// entriesErr fails EntriesAfter while set.
+	entriesErr error
 	// readAfter are the cursors TranscriptAfter read from, in order.
 	readAfter []int64
 	// transcriptLive are the live states Transcript gives with a test's transcripts.
@@ -729,6 +731,28 @@ func (f *fakeEngine) TranscriptAfter(ctx context.Context, id, after int64) ([]pr
 		}
 	}
 	return out, live, err
+}
+
+// EntriesAfter is at most most of the transcript's entries after entry
+// after, as the search index reads them (ADR-0050); entriesErr fails it.
+func (f *fakeEngine) EntriesAfter(ctx context.Context, id, after int64, most int) ([]proto.Entry, error) {
+	f.mu.Lock()
+	failed := f.entriesErr
+	f.mu.Unlock()
+	if failed != nil {
+		return nil, failed
+	}
+	entries, _, err := f.Transcript(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	var out []proto.Entry
+	for _, e := range entries {
+		if e.ID > after && len(out) < most {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeEngine) Transcript(_ context.Context, id int64) ([]proto.Entry, proto.Live, error) {
