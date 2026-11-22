@@ -419,6 +419,9 @@ func (a *App) togglePin(id int64) {
 func (a *App) leaveSession() {
 	if a.place == placeSession {
 		a.markSeen(a.st.Data.OpenID())
+		// Its composer leaves the window, and its / picker with it
+		// (ADR-0051).
+		a.composer.hidePicker(a.st.Data.OpenID())
 	}
 }
 

@@ -25,5 +25,7 @@ func Embedded() map[string][]byte {
 		"pocket-new": svg(`<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M12 8v8M8 12h8"/>`),
 		// A gauge: what the sessions used (ADR-0052).
 		"pocket-usage": svg(`<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>`),
+		// A slash in a square: the owner's saved prompts (ADR-0051).
+		"pocket-prompt": svg(`<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M15 7l-6 10"/>`),
 	}
 }

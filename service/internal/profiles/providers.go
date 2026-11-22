@@ -547,6 +547,22 @@ var afterCheck func()
 // gone is an error, never a file that is not there, which would choose a
 // default (Codex review of #34, round 3).
 func (f Folder) read(name string) ([]byte, error) {
+	root, err := f.openRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	file, err := openInRoot(root, name)
+	if err != nil {
+		return nil, err
+	}
+	return readOpened(file)
+}
+
+// openRoot opens one handle of the folder, checked against the one pocketd
+// pinned at start (read): the caller opens its files relative to it, and
+// closes it.
+func (f Folder) openRoot() (*os.Root, error) {
 	if err := f.check(); err != nil {
 		return nil, fmt.Errorf("the profile folder: %v", err)
 	}
@@ -557,19 +573,16 @@ func (f Folder) read(name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the profile folder: %v", err)
 	}
-	defer func() { _ = root.Close() }()
 	if f.Verified != nil {
 		info, err := root.Stat(".")
 		if err != nil {
+			_ = root.Close()
 			return nil, fmt.Errorf("the profile folder: %v", err)
 		}
 		if !os.SameFile(info, f.Verified) {
+			_ = root.Close()
 			return nil, errors.New("the profile folder is not the one pocketd started with: start pocketd again")
 		}
 	}
-	file, err := openInRoot(root, name)
-	if err != nil {
-		return nil, err
-	}
-	return readOpened(file)
+	return root, nil
 }

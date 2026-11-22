@@ -236,7 +236,11 @@ func readProfile(path string) ([]byte, error) {
 
 // readOpened reads an opened profile file, and closes it: a regular file
 // of one name, at most maxProfileSize bytes and one more.
-func readOpened(f *os.File) ([]byte, error) {
+func readOpened(f *os.File) ([]byte, error) { return readOpenedUpTo(f, maxProfileSize) }
+
+// readOpenedUpTo is readOpened with a bound of its own: at most limit
+// bytes and one more, so a longer file reads as one past its bound.
+func readOpenedUpTo(f *os.File, limit int64) ([]byte, error) {
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
@@ -250,7 +254,7 @@ func readOpened(f *os.File) ([]byte, error) {
 		// would change the profile: copy it into the folder instead.
 		return nil, fmt.Errorf("the file has %d names (hard links); copy it into the profile folder", n)
 	}
-	return io.ReadAll(io.LimitReader(f, maxProfileSize+1))
+	return io.ReadAll(io.LimitReader(f, limit+1))
 }
 
 // maxProfileSize bounds a profile file: an identity prompt, not a book.

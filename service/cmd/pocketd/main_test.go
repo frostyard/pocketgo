@@ -341,6 +341,52 @@ func TestListProfilesReportsAGathersSkill(t *testing.T) {
 	}
 }
 
+// pocketd profiles lists the owner's saved prompts, each with its hint and
+// description, or why a file is none, and says when there are none
+// (ADR-0051).
+func TestListProfilesReportsThePrompts(t *testing.T) {
+	dir, data := t.TempDir(), t.TempDir()
+	list := func() string {
+		t.Helper()
+		var out strings.Builder
+		if err := listProfiles(context.Background(), &out, data, dir, ""); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if got := list(); !strings.Contains(got, "\nPrompts: none (prompts/)\n") {
+		t.Fatalf("no folder:\n%s", got)
+	}
+	if err := os.Mkdir(filepath.Join(dir, profiles.PromptsFolder), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{
+		"review-pr.md": "---\ndescription: Review a pull request\nargument-hint: <number>\n---\nReview $ARGUMENTS.",
+		"ship-it.md":   "Ship it.",
+		"broken.md":    "---\nmodel: x\n---\nBroken.",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, profiles.PromptsFolder, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "\nPrompts (prompts/):\n  \"/broken\": invalid: its front matter has the field \"model\": a prompt's are description and argument-hint\n" +
+		"  /review-pr <number>: Review a pull request\n  /ship-it\n"
+	if got := list(); !strings.Contains(got, want) {
+		t.Fatalf("the report lacks %q:\n%s", want, got)
+	}
+	// A file's name that is no prompt's is quoted: a line break or a
+	// terminal's control in it never splits the report or reaches the
+	// terminal (Codex review of #108, round 1).
+	if err := os.WriteFile(filepath.Join(dir, profiles.PromptsFolder, "x\n  ship-it: forged\x1b[2J.md"), []byte("Forged."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := list()
+	if strings.Contains(got, "\n  ship-it: forged") || strings.Contains(got, "\x1b") ||
+		!strings.Contains(got, `  "/x\n  ship-it: forged\x1b[2J": invalid: "x\n  ship-it: forged\x1b[2J" is no prompt's name`) {
+		t.Fatalf("an invalid name was written as it is:\n%q", got)
+	}
+}
+
 // The service's zone is TZ's when set, else the one /etc/localtime links
 // to, by name, else Go's Local (ADR-0030).
 func TestTheServicesZone(t *testing.T) {

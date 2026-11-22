@@ -65,11 +65,14 @@ type fixture struct {
 	mu       sync.Mutex
 	entries  []proto.Entry
 	lives    []proto.Live
+	// lived gets a signal after each live state the watch hands OnLive,
+	// so a test waits on what the watch sent, never on a sleep.
+	lived chan struct{}
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{t: t, dataDir: t.TempDir(), work: t.TempDir(), requests: make(chan proto.Approval, 16)}
+	f := &fixture{t: t, dataDir: t.TempDir(), work: t.TempDir(), requests: make(chan proto.Approval, 16), lived: make(chan struct{}, 1)}
 	s, err := store.Open(context.Background(), filepath.Join(f.dataDir, "work.sqlite"), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +102,15 @@ func (f *fixture) openWith(models *ai.Models, needs func(string) bool) *Engine {
 		NeedsApproval: needs,
 		Unsandboxed:   true,
 		OnEntry:       func(entry proto.Entry) { f.mu.Lock(); f.entries = append(f.entries, entry); f.mu.Unlock() },
-		OnLive:        func(live proto.Live) { f.mu.Lock(); f.lives = append(f.lives, live); f.mu.Unlock() },
+		OnLive: func(live proto.Live) {
+			f.mu.Lock()
+			f.lives = append(f.lives, live)
+			f.mu.Unlock()
+			select {
+			case f.lived <- struct{}{}:
+			default:
+			}
+		},
 	}, models)
 	if err != nil {
 		f.t.Fatal(err)
@@ -116,6 +127,28 @@ func (f *fixture) nextApproval() proto.Approval {
 	case <-time.After(10 * time.Second):
 		f.t.Fatal("no approval was requested")
 		return proto.Approval{}
+	}
+}
+
+// waitLive waits until found holds for the live states the watch has
+// handed OnLive so far, read under the fixture's lock: the watch publishes
+// from its own goroutine, so a Send that returned says nothing of what the
+// watch sent yet (frostyard/pocketgo#113).
+func (f *fixture) waitLive(found func([]proto.Live) bool) bool {
+	f.t.Helper()
+	deadline := time.After(20 * time.Second)
+	for {
+		f.mu.Lock()
+		ok := found(f.lives)
+		f.mu.Unlock()
+		if ok {
+			return true
+		}
+		select {
+		case <-f.lived:
+		case <-deadline:
+			return false
+		}
 	}
 }
 
@@ -721,17 +754,21 @@ func TestASupervisorsMessageCarriesItsSender(t *testing.T) {
 	if err != nil || len(live.Queued) != 1 || live.Queued[0].SubmissionID != second || live.Queued[0].Sender == nil || *live.Queued[0].Sender != want {
 		t.Fatalf("while it waits: queued %+v, %v", live.Queued, err)
 	}
-	f.mu.Lock()
+	// The watch sends from its own goroutine: wait for its live state that
+	// lists the queued message (frostyard/pocketgo#113).
 	var watchedQueue *proto.QueuedMessage
-	for _, l := range f.lives {
-		for _, q := range l.Queued {
-			if q.SubmissionID == second {
-				watchedQueue = &q
+	listed := f.waitLive(func(lives []proto.Live) bool {
+		watchedQueue = nil
+		for _, l := range lives {
+			for _, q := range l.Queued {
+				if q.SubmissionID == second {
+					watchedQueue = &q
+				}
 			}
 		}
-	}
-	f.mu.Unlock()
-	if watchedQueue == nil || watchedQueue.Sender == nil || *watchedQueue.Sender != want {
+		return watchedQueue != nil
+	})
+	if !listed || watchedQueue.Sender == nil || *watchedQueue.Sender != want {
 		t.Fatalf("the watch's queue %+v", watchedQueue)
 	}
 	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {

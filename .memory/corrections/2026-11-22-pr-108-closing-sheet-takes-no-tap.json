@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A row of the phone's prompt sheet does nothing once the sheet's open flag is false, while it still slides away.",
+  "evidence": "frostyard/pocketgo#108, Codex CLI review round 3 (codex-cli 0.169.0) of head 1d4c46a: [P2] Ignore prompt selections while the phone sheet is closing",
+  "promoted_to": "desktop/internal/app/prompts_review3_test.go"
+}
