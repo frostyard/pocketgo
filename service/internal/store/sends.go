@@ -19,6 +19,16 @@ import (
 // session is row's: a thread that closed or never started is ErrConflict,
 // and nothing is kept.
 func (s *Store) FileSend(ctx context.Context, row ReportRow) (ReportRow, error) {
+	return s.FileSendTo(ctx, row, false)
+}
+
+// FileSendTo is FileSend for a message whose text was written for a
+// thread that is closed (ADR-0061), when closed is set: it is kept only
+// while the thread is closed, is no plan's, and its specialist's session is
+// row's, and names the reopen its delivery brings (reports.reopens), with
+// no word of unblocking. Either way, a thread whose state differs from the
+// one the text was written for is ErrConflict, and nothing is kept.
+func (s *Store) FileSendTo(ctx context.Context, row ReportRow, closed bool) (ReportRow, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ReportRow{}, err
@@ -31,20 +41,33 @@ func (s *Store) FileSend(ctx context.Context, row ReportRow) (ReportRow, error) 
 		return ReportRow{}, err
 	}
 	var state string
-	var session int64
-	if err := tx.QueryRowContext(ctx, `SELECT state, session FROM threads WHERE id = ?`, row.ThreadID).Scan(&state, &session); errors.Is(err, sql.ErrNoRows) {
+	var session, plan int64
+	var reopened int
+	if err := tx.QueryRowContext(ctx, `SELECT state, session, plan, reopened FROM threads WHERE id = ?`, row.ThreadID).Scan(&state, &session, &plan, &reopened); errors.Is(err, sql.ErrNoRows) {
 		return ReportRow{}, ErrNotFound
 	} else if err != nil {
 		return ReportRow{}, err
 	}
-	if (state != ThreadOpen && state != ThreadDone && state != ThreadBlocked) || session == 0 || session != row.SessionID {
+	if session == 0 || session != row.SessionID {
 		return ReportRow{}, ErrConflict
 	}
-	// Its text says it unblocks a blocked thread (team.SendText), so its
-	// delivery may (ADR-0037).
-	if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at, unblocks) VALUES (?, ?, ?, ?, ?, 1)`,
-		row.Key, row.ThreadID, row.SessionID, row.Text, s.millis()); err != nil {
-		return ReportRow{}, err
+	switch {
+	case closed && state == ThreadClosed && plan == 0:
+		// Its text says it reopens the thread (team.SendTextToClosed), and
+		// it names the reopen its delivery brings (ADR-0061).
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at, unblocks, reopens) VALUES (?, ?, ?, ?, ?, 0, ?)`,
+			row.Key, row.ThreadID, row.SessionID, row.Text, s.millis(), reopened+1); err != nil {
+			return ReportRow{}, err
+		}
+	case !closed && (state == ThreadOpen || state == ThreadDone || state == ThreadBlocked):
+		// Its text says it unblocks a blocked thread (team.SendText), so its
+		// delivery may (ADR-0037).
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at, unblocks) VALUES (?, ?, ?, ?, ?, 1)`,
+			row.Key, row.ThreadID, row.SessionID, row.Text, s.millis()); err != nil {
+			return ReportRow{}, err
+		}
+	default:
+		return ReportRow{}, ErrConflict
 	}
 	kept, err = scanReport(tx.QueryRowContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE key = ?`, row.Key).Scan)
 	if err != nil {
@@ -56,8 +79,11 @@ func (s *Store) FileSend(ctx context.Context, row ReportRow) (ReportRow, error) 
 // SendNoted is what the noting of a supervisor's message changed
 // (SendDelivered).
 type SendNoted struct {
-	// Reopened says its thread went back to open, from done or blocked.
+	// Reopened says its thread went back to open, from done, blocked or,
+	// for a message kept while it was closed, closed (ADR-0061).
 	Reopened bool
+	// FromClosed says it went from closed.
+	FromClosed bool
 	// Unblocked says it went from blocked (ADR-0037).
 	Unblocked bool
 	// Withdrawn are the thread's asks the noting withdrew, as it left
@@ -72,7 +98,9 @@ type SendNoted struct {
 // it: they wait for no answer now, the message's row says it unblocked
 // the thread, and each ask names the message. An answer that committed
 // first stands. Only the noting that changes the message reopens the
-// thread, once, and a thread open or closed by then keeps its state.
+// thread, once, and a thread open by then keeps its state; a closed one
+// reopens only for a message kept while it was closed, and not reopened
+// since (ADR-0061).
 // thread is as the transaction leaves it.
 func (s *Store) SendDelivered(ctx context.Context, key string, id int64) (thread ThreadRow, change SendNoted, err error) {
 	now := s.millis()
@@ -106,14 +134,26 @@ func (s *Store) SendDelivered(ctx context.Context, key string, id int64) (thread
 // (Codex review of #62, round 1).
 func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now int64) (SendNoted, error) {
 	var state string
-	if err := tx.QueryRowContext(ctx, `SELECT state FROM threads WHERE id = ?`, id).Scan(&state); errors.Is(err, sql.ErrNoRows) {
+	var reopened int
+	if err := tx.QueryRowContext(ctx, `SELECT state, reopened FROM threads WHERE id = ?`, id).Scan(&state, &reopened); errors.Is(err, sql.ErrNoRows) {
 		return SendNoted{}, ErrNotFound
 	} else if err != nil {
 		return SendNoted{}, err
 	}
 	var unblocks bool
-	if err := tx.QueryRowContext(ctx, `SELECT unblocks FROM reports WHERE key = ?`, key).Scan(&unblocks); err != nil {
+	var reopens int
+	if err := tx.QueryRowContext(ctx, `SELECT unblocks, reopens FROM reports WHERE key = ?`, key).Scan(&unblocks, &reopens); err != nil {
 		return SendNoted{}, err
+	}
+	// A message kept while its thread was closed reopens it, while the
+	// thread has not reopened since: a close after that reopen dropped it
+	// (ADR-0061).
+	if state == ThreadClosed {
+		if reopens == 0 || reopens != reopened+1 {
+			return SendNoted{}, nil
+		}
+		ok, err := reopenThread(ctx, tx, id, now)
+		return SendNoted{Reopened: ok, FromClosed: ok}, err
 	}
 	if state != ThreadDone && (state != ThreadBlocked || !unblocks) {
 		return SendNoted{}, nil

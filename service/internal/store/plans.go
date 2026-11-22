@@ -330,11 +330,11 @@ func insertThread(ctx context.Context, tx *sql.Tx, row ThreadRow, now int64) (Th
 		return ThreadRow{}, false, err
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO threads (key, title, agent, supervisor_session, repository, cwd, branch, task, state, owner, task_id,
-		review_pull, review_head, review_author_provider, review_author_model, worker_provider, worker_model, plan, plan_task, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
+		review_pull, review_head, review_author_provider, review_author_model, worker_provider, worker_model, plan, plan_task, follows, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 		row.Key, row.Title, row.Agent, row.SupervisorSession, row.Repository, row.Cwd, row.Branch, row.Task, ThreadStarting, owner, row.TaskID,
 		row.ReviewPull, row.ReviewHead, row.ReviewAuthor.Provider, row.ReviewAuthor.ID, row.WorkerAsked.Provider, row.WorkerAsked.ID, row.Plan,
-		row.PlanTask, now, now)
+		row.PlanTask, row.Follows, now, now)
 	if err != nil {
 		return ThreadRow{}, false, err
 	}
@@ -343,7 +343,19 @@ func insertThread(ctx context.Context, tx *sql.Tx, row ThreadRow, now int64) (Th
 		return ThreadRow{}, false, err
 	}
 	got, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE key = ?`, row.Key).Scan)
-	return got, n == 0, err
+	if err != nil {
+		return ThreadRow{}, false, err
+	}
+	// The thread it carries on names it as its successor, in the
+	// transaction that records it (ADR-0061): the newest one wins, and
+	// only an older thread is named, so the chain has no loop.
+	if n == 1 && got.Follows != 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET successor = ?, updated_at = MAX(updated_at, ?) WHERE id = ? AND id < ?`,
+			got.ID, now, got.Follows, got.ID); err != nil {
+			return ThreadRow{}, false, err
+		}
+	}
+	return got, n == 0, nil
 }
 
 // CreatePlanThread records a new plan and its plan thread, starting, in

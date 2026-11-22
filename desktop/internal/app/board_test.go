@@ -285,6 +285,26 @@ func TestTheReadyPillClaimsOnlyWhatPocketdSaw(t *testing.T) {
 	}
 }
 
+// A thread a message reopened shows reopened with its specialist, and a
+// thread's card names the thread it carries on and the one that carries it
+// on (ADR-0061).
+func TestAReopenedThreadOnTheBoardSnapshot(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddProfile(proto.Profile{ID: "lucilla", Name: "Lucilla", Role: "specialist"})
+	x.srv.AddProfile(proto.Profile{ID: "murbella", Name: "Murbella", Role: "specialist"})
+	reopened := at(-time.Minute)
+	x.srv.AddThread(proto.Thread{ID: 77, Title: "Take the review points on core#283", Agent: "lucilla", Supervisor: 1, Session: 9,
+		Repository: "frostyard/core", Branch: "lucilla/core-283-t77", State: proto.ThreadOpen, Report: "Done at e0bfba6.",
+		Successor: 84, ReopenedAt: &reopened, CreatedAt: at(-3 * time.Hour), UpdatedAt: at(-time.Minute)})
+	x.srv.AddThread(proto.Thread{ID: 84, Title: "Re-check Murbella's blocking point", Agent: "murbella", Supervisor: 1, Session: 12,
+		State: proto.ThreadOpen, Follows: 77, CreatedAt: at(-2 * time.Hour), UpdatedAt: at(-2 * time.Minute)})
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.hasAll(t, "T77 · Take the review points on core#283", "reopened", "Carried on in T84.",
+		"T84 · Re-check Murbella's blocking point", "Carries on T77.")
+	x.snapshot(t, "board-reopened")
+}
+
 // A thread's shift shows on the board, where it is and why it stopped; the
 // owner stops it after confirming, and resumes it, each request once
 // (ADR-0024).

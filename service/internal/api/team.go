@@ -261,6 +261,17 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	if err != nil {
 		return store.ThreadRow{}, err
 	}
+	// The thread it carries on names it as its successor (ADR-0061): one
+	// of the caller's profile's threads, no cross-review, and no plan's
+	// work, whose threads its plan delivers.
+	if d.Follows != 0 {
+		if d.Plan != nil {
+			return store.ThreadRow{}, errors.New("a plan's thread carries on no thread: leave follows out")
+		}
+		if err := s.checkFollows(ctx, caller, d.Follows); err != nil {
+			return store.ThreadRow{}, err
+		}
+	}
 	models, err := s.engine.Models(ctx)
 	if err != nil {
 		return store.ThreadRow{}, err
@@ -294,20 +305,55 @@ func (s *Server) newThread(ctx context.Context, call TeamCall, key string, d tea
 	db := context.WithoutCancel(ctx)
 	return s.changeThread(func() (store.ThreadRow, error) {
 		row := store.ThreadRow{Key: key, Title: team.Title(d), Agent: target.ID,
-			SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task), TaskID: call.Task, WorkerAsked: asked}
+			SupervisorSession: call.Session, Repository: d.Repository, Task: strings.TrimSpace(d.Task), TaskID: call.Task, WorkerAsked: asked,
+			Follows: d.Follows}
+		var created store.ThreadRow
+		var existed bool
+		var err error
 		if shift != nil {
-			created, _, err := s.store.CreateShiftThread(db, row, store.ShiftRow{Stop: shift.Stop, MaxRounds: shift.MaxRounds,
+			created, existed, err = s.store.CreateShiftThread(db, row, store.ShiftRow{Stop: shift.Stop, MaxRounds: shift.MaxRounds,
 				Deadline: shift.Deadline(s.now()), CI: shift.CI})
 			if err == nil {
 				// A pass sets the shift's deadline wake, whatever its brief
 				// does (Codex review of #36).
 				s.shiftSoon()
 			}
-			return created, err
+		} else {
+			created, existed, err = s.store.CreateThread(db, row)
 		}
-		created, _, err := s.store.CreateThread(db, row)
+		// The thread it carries on named it as its successor in the same
+		// transaction: its event goes out too, under workMu (ADR-0061).
+		if err == nil && !existed && created.Follows != 0 {
+			if before, rerr := s.store.Thread(db, created.Follows); rerr == nil {
+				s.publishThread(before)
+			} else {
+				s.log.Warn("read the thread a delegation carries on", "thread", created.Follows, "err", rerr)
+			}
+		}
 		return created, err
 	})
+}
+
+// checkFollows checks the thread a delegation from a session of profile
+// caller carries on (team.CheckFollows): one a session of the same
+// profile delegated, and no cross-review.
+func (s *Server) checkFollows(ctx context.Context, caller *profiles.Profile, id int64) error {
+	f := team.FollowTarget{ID: id}
+	if id > 0 && caller != nil {
+		thread, err := s.store.Thread(ctx, id)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+		case err != nil:
+			return err
+		default:
+			target, err := s.sendTarget(ctx, caller.ID, thread)
+			if err != nil {
+				return err
+			}
+			f.Exists, f.Review, f.Own = true, target.Review, target.Own
+		}
+	}
+	return team.CheckFollows(f)
 }
 
 // startThread finishes a thread's start, each step idempotent, so a run
@@ -955,6 +1001,21 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	if thread.ReviewPull != 0 {
 		return "", errors.New("a cross-review reports only with team_verdict")
 	}
+	// A closed thread's messages already in the transcript are noted
+	// first: the owner's, or a supervisor's kept while it was closed,
+	// reopens it, so the report this run files after them is taken
+	// (ADR-0061).
+	if thread.State == store.ThreadClosed {
+		s.outboxMu.Lock()
+		err := s.noteSendsPlaced(ctx, thread.ID)
+		s.outboxMu.Unlock()
+		if err != nil {
+			return "", err
+		}
+		if thread, err = s.store.Thread(ctx, thread.ID); err != nil {
+			return "", err
+		}
+	}
 	if err := team.CheckReport(r); err != nil {
 		return "", err
 	}
@@ -1011,8 +1072,9 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 		return "", err
 	} else if !filed && thread.State == store.ThreadClosed {
 		// A new report on a closed thread is refused before GitHub is
-		// read; one that closes meanwhile is refused when it is filed.
-		return "", fmt.Errorf("thread T%d is closed and takes no more reports", thread.ID)
+		// read, with what the specialist can do instead (ADR-0061); one
+		// that closes meanwhile is refused when it is filed.
+		return "", s.reportRefused(ctx, thread)
 	} else if !filed && len(r.PullRequests) > 0 {
 		// Each pull request is held from its read to the report's record,
 		// so no round reads it in between; the call's abort stops the
@@ -1081,9 +1143,13 @@ func (s *Server) TeamMessage(ctx context.Context, call TeamCall, r team.Report) 
 	s.outboxMu.Unlock()
 	unlockPulls()
 	if errors.Is(err, store.ErrPullTaken) {
-		return "", err
+		return "", fmt.Errorf("%w: report again without it", err)
 	} else if errors.Is(err, store.ErrConflict) {
-		return "", fmt.Errorf("thread T%d is closed and takes no more reports", thread.ID)
+		closed := thread
+		if now, rerr := s.store.Thread(ctx, thread.ID); rerr == nil {
+			closed = now
+		}
+		return "", s.reportRefused(ctx, closed)
 	} else if err != nil {
 		return "", err
 	}
@@ -1276,6 +1342,12 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	// Workers whose replies or stop could not be done are read again
 	// (ADR-0021).
 	if !s.followDueWorkers(ctx) {
+		done = false
+	}
+	// The owner's messages to threads' specialists are noted once placed:
+	// one reopens a closed thread (ADR-0061).
+	if noted, err := s.noteAllOwnerMessages(ctx); err != nil || !noted {
+		failures = append(failures, err)
 		done = false
 	}
 	if threads, err := s.store.ThreadsWithUnsentReports(ctx); err != nil {
@@ -1612,7 +1684,10 @@ func (s *Server) sendReport(ctx context.Context, row store.ReportRow) (bool, err
 		if err != nil {
 			return false, err
 		}
-		if thread.State == store.ThreadClosed {
+		// A supervisor's message kept while its thread was closed goes to
+		// the closed thread, and reopens it, unless a reopen came since:
+		// then a close after it dropped the message (ADR-0061).
+		if thread.State == store.ThreadClosed && !reopensNow(row, thread) {
 			return true, s.cancelReport(ctx, row)
 		}
 		// A supervisor's message goes to a watched specialist, so its
@@ -1945,6 +2020,10 @@ func (s *Server) deliverPass() {
 func (s *Server) publishThread(row store.ThreadRow) {
 	if row.State == store.ThreadClosed && row.Repository != "" {
 		s.cleanLater(row.ID)
+	} else if row.State != store.ThreadClosed {
+		// A thread that reopened is cleaned again at its next close
+		// (ADR-0061).
+		s.cleanForget(row.ID)
 	}
 	// A shift that cannot be read now holds the thread's event back, as a
 	// plan's does: one with no shift would tell a client it has none. A
@@ -2034,7 +2113,8 @@ func (s *Server) publishAsk(row store.AskRow) {
 func wireThread(row store.ThreadRow) proto.Thread {
 	return proto.Thread{ID: row.ID, Title: row.Title, Agent: row.Agent, Supervisor: row.SupervisorSession, Session: row.Session,
 		Repository: row.Repository, Cwd: row.Cwd, Branch: row.Branch, Task: row.Task, State: proto.ThreadState(row.State),
-		Report: row.Report, Plan: row.Plan, PlanTask: row.PlanTask, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+		Report: row.Report, Plan: row.Plan, PlanTask: row.PlanTask, Follows: row.Follows, Successor: row.Successor,
+		ReopenedAt: row.ReopenedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 func wireAsk(row store.AskRow) proto.Ask {

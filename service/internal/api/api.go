@@ -474,6 +474,9 @@ type Server struct {
 	cleansDue map[int64]bool
 	// cleanNotes holds kept-worktree notes not yet written, under reviewMu.
 	cleanNotes map[int64]string
+	// cleanLocks hold one closed thread each (lockClean): its worktree's
+	// removal, and a message that would reopen it (ADR-0061).
+	cleanLocks keyLocks
 	reviewMu   sync.Mutex
 	// abortsDue are the ended reviews' sessions whose run a stop did not
 	// end, or could not tell; each review pass tries again. reviewMu
@@ -1973,6 +1976,41 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	if shift != 0 {
 		defer s.lockShift(shift)()
 	}
+	// A message to a thread's specialist is followed until PiG places it:
+	// one that reaches a closed thread reopens it (ADR-0061). A closed
+	// thread takes a new one only when it may reopen, checked under its
+	// cleanup lock, held until the message is followed, so its worktree
+	// does not go from under it.
+	follow, unlockClean := int64(0), func() {}
+	defer func() { unlockClean() }()
+	if thread, err := s.store.ThreadOfSession(ctx, id); err == nil && thread.Session == id && thread.ReviewPull == 0 {
+		follow, unlockClean = thread.ID, s.lockClean(thread.ID)
+		if !went {
+			if thread, err = s.store.Thread(ctx, thread.ID); err != nil {
+				s.internal(w, "read the session's thread", err)
+				return
+			}
+			if thread.State == store.ThreadClosed {
+				refusal, failure := s.reopenRefused(ctx, thread, team.FromOwner)
+				if failure != nil {
+					s.internal(w, "check the closed thread", failure)
+					return
+				}
+				if refusal != nil {
+					// A claim an earlier try left, whose message PiG never
+					// took, is freed, as the refusals above free it.
+					if existed {
+						s.releaseSend(ctx, id, key, kind)
+					}
+					writeError(w, http.StatusConflict, proto.ErrorCodeConflict, refusal.Error())
+					return
+				}
+			}
+		}
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.internal(w, "read the session's thread", err)
+		return
+	}
 	// This request's own claim, which a failed release left for a delivery
 	// pass to free, is this request's again: this try frees it if it fails
 	// too, and puts it back if it cannot even claim it (Codex review of
@@ -2019,9 +2057,32 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "send message", err)
 		return
 	}
-	if err := s.store.CompleteRequest(ctx, key, strconv.FormatInt(submission, 10)); err != nil {
+	// The request completes, and a message this try sent to a thread's
+	// specialist is followed, in one step: one that went before, which an
+	// earlier try followed if it got so far, is not followed again, so no
+	// noting reopens the thread twice for it (ADR-0061).
+	followed := follow
+	if went {
+		followed = 0
+	}
+	if err := s.store.CompleteOwnerMessage(ctx, key, strconv.FormatInt(submission, 10), followed, id); err != nil {
 		s.internal(w, "record request", err)
 		return
+	}
+	unlockClean()
+	unlockClean = func() {}
+	if followed != 0 {
+		// Noted at once when it is in the transcript already, as an idle
+		// specialist's message is; else the delivery pass notes it.
+		s.outboxMu.Lock()
+		noted, err := s.noteOwnerMessages(ctx, followed)
+		s.outboxMu.Unlock()
+		if err != nil || !noted {
+			if err != nil {
+				s.log.Warn("note the owner's message", "thread", followed, "err", err)
+			}
+			s.deliverLater()
+		}
 	}
 	writeJSON(w, http.StatusOK, proto.SentMessage{SubmissionID: submission})
 }

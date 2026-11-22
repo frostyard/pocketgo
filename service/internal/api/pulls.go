@@ -277,16 +277,22 @@ func (s *Server) closeIfMerged(ctx context.Context, thread int64) error {
 	if err != nil {
 		return err
 	}
-	merged := false
+	merged := 0
 	for _, p := range pulls {
 		switch p.State {
 		case store.PullOpen:
 			return nil
 		case store.PullMerged:
-			merged = true
+			merged++
 		}
 	}
-	if !merged {
+	// A thread that reopened closes so only once one more merged than had
+	// when it reopened (ADR-0061).
+	row, err := s.store.Thread(ctx, thread)
+	if err != nil {
+		return err
+	}
+	if !team.MergedOut(0, merged, row.MergedAtReopen) {
 		return nil
 	}
 	rechecked := map[int64]bool{}

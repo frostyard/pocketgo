@@ -1,0 +1,183 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/frostyard/pocketgo/service/internal/store"
+	"github.com/frostyard/pocketgo/service/internal/team"
+)
+
+// A closed thread goes back to open when a message pocketd follows by its
+// key reaches its specialist's session (ADR-0061): the owner's message,
+// followed from when PiG took it (store.CompleteOwnerMessage), and a
+// supervisor's team_send kept while the thread was closed. Delivered means
+// Engine.Placed found it in the transcript, never that Send returned, as
+// for a supervisor's message that unblocks a thread (ADR-0037).
+
+// noteOwnerMessages notes each of thread's owner's messages that PiG placed
+// in its specialist's transcript, and stops following each that never got
+// there, under outboxMu, which the caller holds: a report, a close or a
+// stop that follows reads the state they leave. A placed one takes a
+// closed thread back to open, with its event, under workMu
+// (ownerMessagePlaced). done says none is left on its way.
+func (s *Server) noteOwnerMessages(ctx context.Context, thread int64) (done bool, err error) {
+	return s.noteOwner(ctx, thread, func(ctx context.Context, m store.OwnerMessage) error {
+		s.workMu.Lock()
+		defer s.workMu.Unlock()
+		return s.ownerMessagePlaced(ctx, m)
+	})
+}
+
+// noteOwnerMessagesLocked is noteOwnerMessages with workMu held, as a close
+// holds it.
+func (s *Server) noteOwnerMessagesLocked(ctx context.Context, thread int64) (done bool, err error) {
+	return s.noteOwner(ctx, thread, s.ownerMessagePlaced)
+}
+
+// noteOwner looks up each of thread's owner's messages pocketd follows, by
+// PiG's record of its request key, and notes each placed one with placed.
+// done is false while one waits in a closed thread's queue: its noting
+// would reopen the thread, and the delivery pass looks again. One queued
+// for a thread not closed changes nothing when placed, so it holds no pass
+// back: the close that would make it matter notes it first, and asks for a
+// pass.
+func (s *Server) noteOwner(ctx context.Context, thread int64, placed func(context.Context, store.OwnerMessage) error) (done bool, err error) {
+	messages, err := s.store.OwnerMessagesOf(ctx, thread)
+	if err != nil || len(messages) == 0 {
+		return err == nil, err
+	}
+	row, err := s.store.Thread(ctx, thread)
+	if err != nil {
+		return false, err
+	}
+	done = true
+	for _, m := range messages {
+		where, err := s.engine.Placed(ctx, m.SessionID, m.Key)
+		if err != nil {
+			return false, err
+		}
+		switch where {
+		case PlacementPlaced:
+			if err := placed(ctx, m); err != nil {
+				return false, err
+			}
+		case PlacementQueued:
+			done = done && row.State != store.ThreadClosed
+		default:
+			// Withdrawn by an abort, or gone from PiG: it never reached the
+			// specialist, and reopens nothing.
+			if err := s.store.DropOwnerMessage(ctx, m.Key); err != nil {
+				return false, err
+			}
+		}
+	}
+	return done, nil
+}
+
+// ownerMessagePlaced notes the owner's message m in the transcript, and
+// publishes its thread when the noting reopened it. workMu is held.
+func (s *Server) ownerMessagePlaced(ctx context.Context, m store.OwnerMessage) error {
+	thread, reopened, err := s.store.OwnerMessagePlaced(ctx, m.Key)
+	if err != nil {
+		return err
+	}
+	if reopened {
+		s.publishThread(thread)
+	}
+	return nil
+}
+
+// noteAllOwnerMessages is noteOwnerMessages for every thread with an
+// owner's message pocketd follows, under outboxMu per thread: the delivery
+// pass's. done says none is left on its way.
+func (s *Server) noteAllOwnerMessages(ctx context.Context) (done bool, err error) {
+	threads, err := s.store.ThreadsWithOwnerMessages(ctx)
+	if err != nil {
+		return false, err
+	}
+	done = true
+	var failures []error
+	for _, thread := range threads {
+		s.outboxMu.Lock()
+		noted, err := s.noteOwnerMessages(ctx, thread)
+		s.outboxMu.Unlock()
+		if err != nil {
+			failures = append(failures, fmt.Errorf("the owner's messages to thread T%d: %w", thread, err))
+		}
+		done = done && noted
+	}
+	return done && len(failures) == 0, errors.Join(failures...)
+}
+
+// successorOf is where closed thread row's work goes on now: the first of
+// its successors that is not closed, following at most team.MaxSuccessors
+// of them, with its specialist's name; 0 for none. A read that fails names
+// none: the refusal says what to do without it.
+func (s *Server) successorOf(ctx context.Context, row store.ThreadRow) (int64, string) {
+	next := row.Successor
+	for i := 0; i < team.MaxSuccessors && next != 0 && next > row.ID; i++ {
+		t, err := s.store.Thread(ctx, next)
+		if err != nil {
+			return 0, ""
+		}
+		if t.State != store.ThreadClosed {
+			return t.ID, s.agentName(t.Agent)
+		}
+		if t.Successor <= t.ID {
+			break
+		}
+		next = t.Successor
+	}
+	return 0, ""
+}
+
+// reopenTarget is what the rules read of closed thread row (ADR-0061):
+// its plan, whether its brief reached its specialist, by pocketd's note or
+// PiG's record of its key, and where its work goes on.
+func (s *Server) reopenTarget(ctx context.Context, row store.ThreadRow) (team.ReopenTarget, error) {
+	t := team.ReopenTarget{ID: row.ID, Plan: row.Plan, PlanTask: row.PlanTask}
+	t.Successor, t.SuccessorAgent = s.successorOf(ctx, row)
+	switch err := s.briefFirst(ctx, row.ID); {
+	case err == nil:
+		t.Briefed = row.Brief != ""
+	case errors.Is(err, errNoBriefYet):
+	default:
+		return team.ReopenTarget{}, err
+	}
+	return t, nil
+}
+
+// reopenRefused is the rule's refusal of a message to closed thread row
+// from sender, nil when the message may go and reopen it: a plan's thread
+// and an unbriefed one never reopen (team.CheckReopen), and one whose
+// folder is no longer its own, a worktree pocketd removed included, is
+// refused with why (team.FolderGone). failure is a check that could not
+// tell, which refuses nothing. The caller holds the thread's cleanup lock
+// (lockClean) from this look to the record of the message.
+func (s *Server) reopenRefused(ctx context.Context, row store.ThreadRow, sender team.Sender) (refusal, failure error) {
+	target, err := s.reopenTarget(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+	if err := team.CheckReopen(target, sender); err != nil {
+		return err, nil
+	}
+	var moved folderChanged
+	switch err := s.recheckFolder(ctx, row, row.Cwd, row.Branch); {
+	case errors.As(err, &moved):
+		return team.FolderGone(target, sender, moved.Error()), nil
+	case err != nil:
+		return nil, fmt.Errorf("check thread T%d's folder: %w", row.ID, err)
+	}
+	return nil, nil
+}
+
+// reportRefused is team_message's refusal on closed thread row: what its
+// specialist can do instead (team.ReportRefused).
+func (s *Server) reportRefused(ctx context.Context, row store.ThreadRow) error {
+	target := team.ReopenTarget{ID: row.ID, Plan: row.Plan, PlanTask: row.PlanTask}
+	target.Successor, target.SuccessorAgent = s.successorOf(ctx, row)
+	return errors.New(team.ReportRefused(target))
+}

@@ -111,9 +111,9 @@ func TestTeamSendDeliversToItsThreadsSpecialist(t *testing.T) {
 }
 
 // team_send is refused in code for a caller that is no supervisor, for a
-// thread another supervisor delegated, a closed thread, one still
-// starting, no thread, and a text that is empty or over 6,000 characters;
-// a refusal keeps and sends nothing (ADR-0032).
+// thread another supervisor delegated, a closed thread that never started
+// (ADR-0061), one still starting, no thread, and a text that is empty or
+// over 6,000 characters; a refusal keeps and sends nothing (ADR-0032).
 func TestTeamSendRefuses(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -135,8 +135,11 @@ func TestTeamSendRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	other, _ := h.store.ThreadByKey(ctx, letos.key())
-	closed := homeThread(t, h, "d3")
-	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "c3"}, closed.ID); err != nil {
+	closed, _, err := h.store.CreateThread(ctx, store.ThreadRow{Key: "unstarted", Title: "x", Agent: "duncan", SupervisorSession: h.super.ID, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.FailThread(ctx, closed.ID, "it could not start"); err != nil {
 		t.Fatal(err)
 	}
 	starting, _, err := h.store.CreateThread(ctx, store.ThreadRow{Key: "starting", Title: "x", Agent: "duncan", SupervisorSession: h.super.ID, Task: "x"})
@@ -154,7 +157,7 @@ func TestTeamSendRefuses(t *testing.T) {
 		"the specialist":     {thread.Session, team.Send{Thread: thread.ID, Text: "x"}, "only a supervisor"},
 		"another's thread":   {h.super.ID, team.Send{Thread: other.ID, Text: "x"}, "delegated by another supervisor"},
 		"to Odrade's thread": {leto.ID, team.Send{Thread: thread.ID, Text: "x"}, "delegated by another supervisor"},
-		"a closed thread":    {h.super.ID, team.Send{Thread: closed.ID, Text: "x"}, "is closed"},
+		"a closed thread":    {h.super.ID, team.Send{Thread: closed.ID, Text: "x"}, "closed before its specialist had its brief"},
 		"a starting thread":  {h.super.ID, team.Send{Thread: starting.ID, Text: "x"}, "still starting"},
 		"no thread":          {h.super.ID, team.Send{Thread: 99, Text: "x"}, "no thread T99"},
 		"an empty text":      {h.super.ID, team.Send{Thread: thread.ID, Text: "  "}, "empty"},

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // Pull request states (ADR-0016).
@@ -258,13 +260,14 @@ func settledPullsIn(ctx context.Context, q queryer, since time.Time) ([]PullRow,
 }
 
 // ThreadsMergedOut are the threads not closed whose pull requests are all
-// merged or closed, one at least merged: those CloseMergedThread would
-// close. A round finds them from the work database alone, so a thread
-// whose last pull request merged closes even when pocketd stopped between
-// the two.
+// merged or closed, one at least merged, and for a reopened thread one
+// more merged than when it reopened (team.MergedOut, ADR-0061): those
+// CloseMergedThread would close. A round finds them from the work database
+// alone, so a thread whose last pull request merged closes even when
+// pocketd stopped between the two.
 func (s *Store) ThreadsMergedOut(ctx context.Context) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM threads WHERE state != 'closed'
-		AND EXISTS (SELECT 1 FROM pull_requests p WHERE p.thread_id = threads.id AND p.state = 'merged')
+		AND (SELECT COUNT(*) FROM pull_requests p WHERE p.thread_id = threads.id AND p.state = 'merged') > merged_at_reopen
 		AND NOT EXISTS (SELECT 1 FROM pull_requests p WHERE p.thread_id = threads.id AND p.state = 'open') ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -282,9 +285,10 @@ func (s *Store) ThreadsMergedOut(ctx context.Context) ([]int64, error) {
 }
 
 // CloseMergedThread closes thread when its pull requests are all merged
-// or closed, one at least merged (ADR-0016), with text of them as its
-// report, and says whether it did. A thread closed already, or with an
-// open pull request, or none merged, stays as it is.
+// or closed, one at least merged (ADR-0016), and for a reopened thread one
+// more merged than when it reopened (team.MergedOut, ADR-0061), with text
+// of them as its report, and says whether it did. A thread closed already,
+// or with an open pull request, or none merged since, stays as it is.
 func (s *Store) CloseMergedThread(ctx context.Context, thread int64, text func(merged []PullRow) string) (ThreadRow, bool, error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -303,15 +307,16 @@ func (s *Store) CloseMergedThread(ctx context.Context, thread int64, text func(m
 		return ThreadRow{}, false, err
 	}
 	var merged []PullRow
+	open := 0
 	for _, p := range pulls {
 		switch p.State {
 		case PullOpen:
-			return row, false, nil
+			open++
 		case PullMerged:
 			merged = append(merged, p)
 		}
 	}
-	if row.State == ThreadClosed || len(merged) == 0 {
+	if row.State == ThreadClosed || !team.MergedOut(open, len(merged), row.MergedAtReopen) {
 		return row, false, nil
 	}
 	before := row

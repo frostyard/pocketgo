@@ -522,9 +522,17 @@ type Thread struct {
 	PlanTask string `json:"planTask,omitempty"`
 	// Shift is the thread's shift (ADR-0024), nil for a thread that runs
 	// none.
-	Shift     *Shift    `json:"shift,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Shift *Shift `json:"shift,omitempty"`
+	// Follows is the thread this one carries on, as its delegation named
+	// it, and Successor the newest thread that carries this one on; 0 for
+	// none (ADR-0061).
+	Follows   int64 `json:"follows,omitempty"`
+	Successor int64 `json:"successor,omitempty"`
+	// ReopenedAt is when a message that reached its closed specialist
+	// last took the thread back to open, nil for never (ADR-0061).
+	ReopenedAt *time.Time `json:"reopenedAt,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 }
 
 // ShiftState is where a shift is.

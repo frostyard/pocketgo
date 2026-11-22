@@ -67,12 +67,15 @@ package proto
 // Version 29 adds the owner's saved prompts (ADR-0051): GET /v1/prompts.
 // Version 30 adds a session's changes (ADR-0053): GET
 // /v1/sessions/{id}/changes and GET /v1/sessions/{id}/changes/file.
-const Version = 30
+// Version 32 reopens a closed thread when a message reaches its
+// specialist (ADR-0061): a thread's follows, successor and reopenedAt.
+// Version 31 is frostyard/pocketgo#118's.
+const Version = 32
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 30. A path with {id} takes a session,
+// The request paths of protocol version 32. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment;
 // PathQuestion takes its session's id there, and the question's in {qid}.
 // PathChangesFile takes the file's path in the query string (path=).

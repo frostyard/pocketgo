@@ -160,6 +160,7 @@ const delegateParameters = `{"type":"object","properties":{` +
 	`"task":{"type":"string","description":"The task's id in the plan, as t2."}` +
 	`},"additionalProperties":false},` +
 	`"worker":{"type":"string","description":"Only when the owner named a worker model for this work: its provider (as deepseek) or provider/id, an entry of the owner's worker list. Every worker of the thread runs it, over the specialist's profile's worker. Leave it out otherwise: the profile's worker, else the first model pocketd runs of the owner's list, runs."},` +
+	`"follows":{"type":"integer","description":"When this thread carries on the work of a thread you delegated, closed or about to close, as the same pull request: that thread's number, 12 for T12. The older thread then names this one as its successor, so a late message to it, and its specialist, are pointed here. Leave it out otherwise."},` +
 	`"shift":{"type":"object","description":"Run the thread as a shift: pocketd sends the specialist round after round toward the task until the stop condition holds, a round reports blocked, or the round limit or deadline is reached, then asks for one report. For long work the owner asks to run as a shift; leave it out otherwise.","properties":{` +
 	`"stop":{"type":"string","description":"When the work is done, in words the specialist can check, at most 3000 characters. Name green CI in it only with ci true: without ci nothing waits for CI."},` +
 	`"max_rounds":{"type":"integer","description":"At most this many rounds, 1 to 100; 20 when left out."},` +
@@ -231,7 +232,7 @@ const closeParameters = `{"type":"object","properties":{` +
 	`},"required":["thread"],"additionalProperties":false}`
 
 const sendParameters = `{"type":"object","properties":{` +
-	`"thread":{"type":"integer","description":"The thread's number: 12 for T12. A thread you delegated, open, done or blocked."},` +
+	`"thread":{"type":"integer","description":"The thread's number: 12 for T12. A thread you delegated: open, done, blocked, or closed, which the message reopens."},` +
 	`"text":{"type":"string","description":"The message for the thread's specialist, in full, at most 6000 characters: it reaches its session as a message from you."}` +
 	`},"required":["thread","text"],"additionalProperties":false}`
 
@@ -377,9 +378,10 @@ func (e *Engine) teamExtension() *durable.Extension {
 			{
 				// After team_schedule, as roleTools and laterSupervisorTools order
 				// them: a session's tools follow this list's order (teamTools).
-				ToolSchema: schema(toolSend, "Send a message to the specialist of a thread you delegated, open, done or blocked: new information, a finding to fix, "+
-					"the owner's decision. pocketd delivers it to the specialist's session once, after its current turn when it is at work, and a done or blocked thread is open "+
-					"again: a blocked thread's asks that wait for the owner are withdrawn. The answer says whether it was delivered or is queued, and which asks it withdrew; "+
+				ToolSchema: schema(toolSend, "Send a message to the specialist of a thread you delegated, open, done, blocked or closed: new information, a finding to fix, "+
+					"the owner's decision. pocketd delivers it to the specialist's session once, after its current turn when it is at work, and a done, blocked or closed thread is open "+
+					"again: a blocked thread's asks that wait for the owner are withdrawn. A closed thread whose plan settled it, or whose worktree is gone, takes none: the refusal "+
+					"names the thread that carries its work on. The answer says whether it was delivered or is queued, and which asks it withdrew; "+
 					"the specialist's next report goes to the session that delegated the thread.", sendParameters),
 				Replay: durable.ReplaySafe,
 				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {

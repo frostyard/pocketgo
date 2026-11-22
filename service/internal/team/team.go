@@ -58,6 +58,9 @@ type Delegation struct {
 	Worker string `json:"worker,omitempty"`
 	// Shift runs the thread in rounds (ADR-0024); nil for none.
 	Shift *Shift `json:"shift,omitempty"`
+	// Follows is the thread this one carries on (ADR-0061): it names the
+	// new thread as its successor. 0 for none.
+	Follows int64 `json:"follows,omitempty"`
 }
 
 // CheckDelegation refuses a delegation that breaks a rule. caller is the
