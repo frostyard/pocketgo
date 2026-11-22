@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep a schema's $ref only when it names a place of the schema read as a schema, checked against the walk's places, never followed, so a recursive reference holds.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 7 (codex-cli 0.169.0) of head 6c0f0a3: [P2] Verify that a resolved schema reference targets a schema",
+  "promoted_to": "service/pig/mcp_round7_test.go"
+}

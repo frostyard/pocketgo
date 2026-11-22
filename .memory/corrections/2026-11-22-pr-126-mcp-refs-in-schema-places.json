@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Read a $ref only in a schema's place (validSchema's walk): a property named $ref, a default and an example are the server's data.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 7 (codex-cli 0.169.0) of head 6c0f0a3: [P2] Resolve references only in schema positions",
+  "promoted_to": "service/pig/mcp_round7_test.go"
+}

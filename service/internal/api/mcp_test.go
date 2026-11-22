@@ -158,24 +158,26 @@ func TestAFailedMCPPassIsTriedAgain(t *testing.T) {
 	}
 }
 
-// A new session's MCP tools are written under mcpMu, as a pass writes
-// them: the two never write one session's tools past one another (Codex
-// review of #126, round 2).
+// A new session's MCP tools are written under its own write lock, as a
+// pass writes them: the two never write one session's tools past one
+// another (Codex review of #126, round 2; the lock is the session's since
+// round 7).
 func TestANewSessionsMCPToolsAreWrittenUnderTheLockOfThePasses(t *testing.T) {
 	h := newTeamHarness(t)
 	h.engine.mcpProfiles = []string{"duncan"}
 	held := true
-	h.engine.onSetMCPTools = func() {
-		if h.server.mcpMu.TryLock() {
+	h.engine.onSetMCPTools = func(id int64) {
+		mu := &h.server.mcpWriteMu[uint64(id)%mcpWriteLocks]
+		if mu.TryLock() {
 			held = false
-			h.server.mcpMu.Unlock()
+			mu.Unlock()
 		}
 	}
 	if _, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "own", Profile: "duncan"}); err != nil {
 		t.Fatal(err)
 	}
 	if !held || len(h.engine.mcpTools) != 1 {
-		t.Fatalf("a new session's MCP tools were written outside mcpMu (held %v, %v)", held, h.engine.mcpTools)
+		t.Fatalf("a new session's MCP tools were written outside its write lock (held %v, %v)", held, h.engine.mcpTools)
 	}
 }
 
@@ -299,5 +301,49 @@ func TestAStoppedRetryThatFiresLeavesItsSuccessor(t *testing.T) {
 	h.server.sessionMu.Unlock()
 	if !waits || now.id != second.id || first.id == second.id || len(h.engine.mcpTools) != 0 {
 		t.Fatalf("the stale retry took its successor's place (waits %v, id %d of %d) or ran (%v)", waits, now.id, second.id, h.engine.mcpTools)
+	}
+}
+
+// A new session's record, and a specialist's attachment, which holds the
+// outbox and the work locks, wait for no MCP pass: one that holds mcpMu
+// while it reads every session holds up neither (Codex review of #126,
+// round 7).
+func TestANewSessionWaitsForNoMCPPass(t *testing.T) {
+	h := newTeamHarness(t)
+	h.engine.mcpProfiles = []string{"duncan"}
+	h.server.mcpMu.Lock()
+	type made struct {
+		own, specialist int64
+		err             error
+	}
+	done := make(chan made, 1)
+	go func() {
+		ctx := context.Background()
+		own, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "own", Profile: "duncan"})
+		if err != nil {
+			done <- made{err: err}
+			return
+		}
+		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, team.Delegation{Agent: "duncan", Task: "Tidy up"}); err != nil {
+			done <- made{err: err}
+			return
+		}
+		thread, err := h.store.Thread(ctx, 1)
+		done <- made{own: own.ID, specialist: thread.Session, err: err}
+	}()
+	var got made
+	select {
+	case got = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a new session waited for the pass")
+	}
+	h.server.mcpMu.Unlock()
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	for _, id := range []int64{got.own, got.specialist} {
+		if tools := h.engine.mcpTools[id]; !slices.Equal(tools, []string{"duncan"}) {
+			t.Errorf("session %d given the MCP tools of %v", id, tools)
+		}
 	}
 }

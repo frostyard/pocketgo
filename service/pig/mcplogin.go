@@ -169,8 +169,17 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	// registered with the authorization server discovery names now, for
 	// this redirect URI and for every scope asked for now: another
 	// server never got it, and a server may refuse a client a scope it
-	// did not register.
+	// did not register. The flow runs on the discovery checked here, as
+	// PiG's flow keeps one: a second discovery could name another
+	// authorization server, which would get the client kept for this one.
 	seed := oauth.McpOAuthState{ServerURL: resource.Href()}
+	if info != nil {
+		seed.Discovery = &oauth.OAuthDiscoveryState{AuthorizationServerURL: info.AuthorizationServerURL,
+			AuthorizationServerMetadata: info.AuthorizationServerMetadata, ResourceMetadata: info.ResourceMetadata}
+		if challenge.ResourceMetadataURL != nil {
+			seed.Discovery.ResourceMetadataURL = challenge.ResourceMetadataURL.Href()
+		}
+	}
 	if old := store.oauthState(server.Name, server.URL); old != nil && server.OAuth.ClientID == "" && old.ClientInformation != nil &&
 		slices.Contains(old.ClientInformation.RedirectURIs, server.OAuth.CallbackURL) && registeredFor(old.ClientInformation.Scope, scope) &&
 		info != nil && old.Discovery != nil && old.Discovery.AuthorizationServerURL == info.AuthorizationServerURL {

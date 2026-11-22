@@ -187,7 +187,10 @@ func TestMCPLoginRegistersAgainForMoreScopes(t *testing.T) {
 	resource, _ := oauth.ParseURL(gatewayURL)
 	client := oauth.OAuthClientInformation{ClientID: "client-old"}
 	client.RedirectURIs, client.Scope = []string{profiles.DefaultMCPCallback}, "notes:read"
-	if err := store.saveOAuth("gateway", gatewayURL, oauth.McpOAuthState{ServerURL: resource.Href(), ClientInformation: &client}); err != nil {
+	// Registered with the authorization server discovery names now: only
+	// its scopes may make pocketd register again.
+	if err := store.saveOAuth("gateway", gatewayURL, oauth.McpOAuthState{ServerURL: resource.Href(), ClientInformation: &client,
+		Discovery: &oauth.OAuthDiscoveryState{AuthorizationServerURL: authURL}}); err != nil {
 		t.Fatal(err)
 	}
 	inR, inW := io.Pipe()

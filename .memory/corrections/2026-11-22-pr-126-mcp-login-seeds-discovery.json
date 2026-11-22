@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Run pocketd mcp login's OAuth flow on the discovery it checked a kept client against (seeded into PiG's state), never a second discovery that could name another authorization server.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 7 (codex-cli 0.169.0) of head 6c0f0a3: [P1] Pin OAuth client reuse to the discovery used for the exchange",
+  "promoted_to": "service/pig/mcp_round7_test.go"
+}

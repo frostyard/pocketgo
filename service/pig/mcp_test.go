@@ -86,7 +86,15 @@ type fakeMCP struct {
 	// 429, and tokenError answers every refresh with that OAuth error.
 	noList, listBusy, listError bool
 	tokenError                  string
+	// moveAfter, when set, makes the gateway's resource metadata name
+	// otherAuthURL once it was read that many times, and metadataReads
+	// counts the reads.
+	moveAfter, metadataReads int
 }
+
+// otherAuthURL is an authorization server the gateway's metadata may
+// name instead of authURL (fakeMCP.moveAfter).
+const otherAuthURL = "https://other-auth.example.com"
 
 func newFakeMCP(t *testing.T) *fakeMCP {
 	f := &fakeMCP{t: t, access: map[string]bool{}, challenges: map[string]string{}, tools: []map[string]any{
@@ -149,11 +157,20 @@ func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
 		}
 		f.serveMCP(w, r, body)
 	case "https://mcp.example.com/.well-known/oauth-protected-resource/gateway/mcp":
-		metadata := map[string]any{"resource": gatewayURL, "authorization_servers": []string{authURL}}
+		f.metadataReads++
+		issuer := authURL
+		if f.moveAfter > 0 && f.metadataReads > f.moveAfter {
+			issuer = otherAuthURL
+		}
+		metadata := map[string]any{"resource": gatewayURL, "authorization_servers": []string{issuer}}
 		if f.scopes != nil {
 			metadata["scopes_supported"] = f.scopes
 		}
 		writeJSON(w, metadata)
+	case otherAuthURL + "/.well-known/oauth-authorization-server":
+		writeJSON(w, map[string]any{"issuer": otherAuthURL, "authorization_endpoint": otherAuthURL + "/authorize", "token_endpoint": otherAuthURL + "/token",
+			"registration_endpoint": otherAuthURL + "/register", "response_types_supported": []string{"code"},
+			"code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none"}})
 	case authURL + "/.well-known/oauth-authorization-server":
 		writeJSON(w, map[string]any{"issuer": authURL, "authorization_endpoint": authURL + "/authorize", "token_endpoint": authURL + "/token",
 			"registration_endpoint": authURL + "/register", "response_types_supported": []string{"code"},

@@ -16,9 +16,9 @@ import (
 // servers listed them: a pass that serving does not wait for, and that a
 // server that is down holds up no longer than its timeout. A server that
 // is down keeps the tools it listed last, whose calls say it is down, and
-// pocketd tries it again later. The connections are made outside mcpMu,
-// which a new session's record takes (mcpAfterCreate): no session waits
-// on a server.
+// pocketd tries it again later. The connections are made before the
+// pass, and a new session's record waits for no pass (mcpAfterCreate): no
+// session waits on a server.
 func (s *Server) StartMCP() {
 	if len(s.engine.MCPProfiles()) == 0 {
 		return
@@ -59,13 +59,13 @@ func (s *Server) mcpGo(f func(context.Context)) {
 	}()
 }
 
-// mcpUpgrade runs a pass (upgradeMCPTools) under mcpMu. A pass that
-// failed for a session is tried again after wait (mcpRetryLater); one that
-// succeeds ends the retry its scope waits on.
+// mcpUpgrade runs a pass (upgradeMCPTools) under mcpMu, numbered as it
+// begins, before it reads the sessions. A pass that failed for a session
+// is tried again after wait (mcpRetryLater); one that succeeds ends the
+// retry its scope waits on.
 func (s *Server) mcpUpgrade(ctx context.Context, only string, wait time.Duration) {
 	s.mcpMu.Lock()
-	s.mcpPassNo++
-	pass := s.mcpPassNo
+	pass := s.mcpPassNo.Add(1)
 	err := s.upgradeMCPTools(ctx, only)
 	s.mcpMu.Unlock()
 	if ctx.Err() != nil {
@@ -136,9 +136,13 @@ type mcpRetry struct {
 // as they are now when it takes them (team.MayUseMCP), and takes any from
 // one that does not. The engine made it with the tools of that moment; a
 // listing between then and its record would reach it by no pass, since a
-// pass reads only the sessions recorded before it. It holds mcpMu, as a
-// pass does, so the two never write a session's tools past one another.
-// A failure is logged: the next pass tries again.
+// pass reads only the sessions recorded before it. It writes under the
+// session's own lock, as a pass does (mcpWrite), so the two never write
+// its tools past one another, and each writes the tools pocketd holds as
+// it writes; it waits for no pass, since its caller may hold the outbox
+// and the work locks. Its number comes after the record: a pass numbered
+// later read the session. A failure is logged: the next pass tries
+// again.
 func (s *Server) mcpAfterCreate(ctx context.Context, id int64, profile string, role team.SessionRole) {
 	if profile == "" || !slices.Contains(s.engine.MCPProfiles(), profile) {
 		return
@@ -147,16 +151,28 @@ func (s *Server) mcpAfterCreate(ctx context.Context, id int64, profile string, r
 	if !team.MayUseMCP(role) {
 		profile = ""
 	}
-	s.mcpMu.Lock()
-	s.mcpPassNo++
-	pass := s.mcpPassNo
-	_, err := s.engine.SetMCPTools(ctx, id, profile)
-	s.mcpMu.Unlock()
+	pass := s.mcpPassNo.Add(1)
+	_, err := s.mcpWrite(ctx, id, profile)
 	if err != nil {
 		// No other pass may come: its profile's pass is tried again.
 		s.log.Warn("give a new session its profile's MCP tools; tried again later", "session", id, "err", err)
 		s.mcpRetryLater(scope, mcpRetryFirst, pass)
 	}
+}
+
+// mcpWriteLocks is how many locks the sessions' MCP tool writes share, by
+// session number.
+const mcpWriteLocks = 32
+
+// mcpWrite gives session id profile's MCP tools as pocketd holds them now
+// (Engine.SetMCPTools; "" for none), under the lock of its number: one
+// session's tools are written one write at a time, and a write waits for
+// no other session's but one that shares its lock.
+func (s *Server) mcpWrite(ctx context.Context, id int64, profile string) (bool, error) {
+	mu := &s.mcpWriteMu[uint64(id)%mcpWriteLocks]
+	mu.Lock()
+	defer mu.Unlock()
+	return s.engine.SetMCPTools(ctx, id, profile)
 }
 
 // roleOfSpec is what a session made from spec works as.
@@ -218,7 +234,7 @@ func (s *Server) upgradeMCPTools(ctx context.Context, only string) error {
 		if !team.MayUseMCP(role) {
 			profile = ""
 		}
-		if changed, err := s.engine.SetMCPTools(ctx, row.ID, profile); err != nil {
+		if changed, err := s.mcpWrite(ctx, row.ID, profile); err != nil {
 			failures = append(failures, fmt.Errorf("session %d: %w", row.ID, err))
 		} else if changed {
 			s.log.Info("gave a session its profile's MCP tools, or took them", "session", row.ID, "profile", row.Profile)

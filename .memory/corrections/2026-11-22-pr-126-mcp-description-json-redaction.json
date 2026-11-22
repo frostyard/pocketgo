@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Redact an MCP tool's description decoded when it is JSON, as a result's text is, before it is cut, kept or offered.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 7 (codex-cli 0.169.0) of head 6c0f0a3: [P1] Redact JSON-formatted tool descriptions before caching them",
+  "promoted_to": "service/pig/mcp_round7_test.go"
+}

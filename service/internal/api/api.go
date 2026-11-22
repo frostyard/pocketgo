@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -592,8 +593,11 @@ type Server struct {
 	allStale  bool
 	// refreshMu serializes refreshLessons.
 	refreshMu sync.Mutex
-	// mcpMu runs the MCP tools' passes one at a time (ADR-0063).
-	mcpMu sync.Mutex
+	// mcpMu runs the MCP tools' passes one at a time (ADR-0063), and
+	// mcpWriteMu writes one session's MCP tools at a time, by its number
+	// (mcpWrite): a new session's write waits for no pass.
+	mcpMu      sync.Mutex
+	mcpWriteMu [mcpWriteLocks]sync.Mutex
 	// pullLocks holds each pull request, by store ref, from its read on
 	// GitHub to its record: two reads of one never cross (ADR-0016). A
 	// wait for one ends with its context.
@@ -614,9 +618,9 @@ type Server struct {
 	// mcpRetryNo numbers the retries set (mcpRetry.id); sessionMu guards
 	// it.
 	mcpRetryNo uint64
-	// mcpPassNo numbers the MCP tools' passes and new sessions' writes, in
-	// the order they take mcpMu, which guards it.
-	mcpPassNo uint64
+	// mcpPassNo numbers the MCP tools' passes, as each begins, and new
+	// sessions' writes, once each session is recorded.
+	mcpPassNo atomic.Uint64
 	// consultTimer wakes a delivery pass at a consult's deadline
 	// (armConsults; tests replace it), and consultCancel stops the one
 	// set; sessionMu guards consultCancel.

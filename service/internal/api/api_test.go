@@ -121,7 +121,7 @@ type fakeEngine struct {
 	mcpTools    map[int64][]string
 	// onSetMCPTools sees each SetMCPTools, before it records it;
 	// mcpFails fails that many SetMCPTools calls.
-	onSetMCPTools func()
+	onSetMCPTools func(id int64)
 	mcpFails      int
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
@@ -511,7 +511,7 @@ func (f *fakeEngine) SetMCPTools(_ context.Context, id int64, profile string) (b
 	seen := f.onSetMCPTools
 	f.mu.Unlock()
 	if seen != nil {
-		seen()
+		seen(id)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

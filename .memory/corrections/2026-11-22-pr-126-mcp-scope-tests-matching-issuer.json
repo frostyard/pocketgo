@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Seed the kept OAuth client's discovery with the authorization server the fake names in the scope-reuse tests, and test a sufficient scope that must reuse the client, so the tests fail without registeredFor.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 7 (codex-cli 0.169.0) of head 6c0f0a3: [P2] Make the scope-reuse tests exercise a matching issuer",
+  "promoted_to": "service/pig/mcp_round4_test.go"
+}

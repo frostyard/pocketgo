@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -199,15 +200,22 @@ func mcpPlainName(server, tool string) string {
 }
 
 // mcpDigestName is a server's tool named by its plain name, cut, then __
-// and a digest of the server's and the tool's names: the same for the
-// same tool, whatever else the servers list. It ends with __ and the
-// digest, which no plain name does (a plain name's tool part holds no
-// __), so no tool's plain name is another's digest name.
+// and a digest of the server's and the tool's names, 16 hexadecimal
+// digits of SHA-256 (mcpDigest): the same for the same tool, whatever else
+// the servers list. It ends with __ and the digest, which no plain name
+// does (a plain name's tool part holds no __), so no tool's plain name is
+// another's digest name.
 func mcpDigestName(server, tool string) string {
 	name := mcpPlainName(server, tool)
-	sum := sha256.Sum256([]byte(server + "\x00" + tool))
-	digest := hex.EncodeToString(sum[:])[:8]
+	digest := mcpDigest(server, tool)
 	return name[:min(len(name), maxMCPToolName-len(digest)-2)] + "__" + digest
+}
+
+// mcpDigest is the digest of a server's tool in its digest name (tests
+// replace it, to make two alike).
+var mcpDigest = func(server, tool string) string {
+	sum := sha256.Sum256([]byte(server + "\x00" + tool))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // delimited says whether a part of a plain tool name leaves the __
@@ -227,11 +235,13 @@ func delimited(part string) bool {
 // exactly one server and tool, and a digest name is of the two names as
 // they are. So a name never moves to another tool, whatever a listing's
 // order or what a later listing holds: find.note and find_note never
-// share one. A name still taken, which a digest's collision alone could
-// make, is "": the tool is not offered.
+// share one. A name two tools would share, which a digest's collision
+// alone could make, is "" for both, whatever their order: neither is
+// offered, so the name never reaches one tool in one listing and the
+// other in the next.
 func mcpToolNames(servers []string, tools map[string][]mcpTool) map[string][]string {
 	out := map[string][]string{}
-	used := map[string]bool{}
+	count := map[string]int{}
 	for _, server := range servers {
 		for _, tool := range tools[server] {
 			name := mcpPlainName(server, tool.Name)
@@ -239,11 +249,15 @@ func mcpToolNames(servers []string, tools map[string][]mcpTool) map[string][]str
 				len(name) > maxMCPToolName {
 				name = mcpDigestName(server, tool.Name)
 			}
-			if used[name] {
-				name = ""
-			}
-			used[name] = name != ""
+			count[name]++
 			out[server] = append(out[server], name)
+		}
+	}
+	for _, names := range out {
+		for i, name := range names {
+			if count[name] > 1 {
+				names[i] = ""
+			}
 		}
 	}
 	return out
@@ -403,7 +417,9 @@ func (h *mcpHub) sanitize(server string, tools []mcpTool) []mcpTool {
 			continue
 		}
 		seen[t.Name] = true
-		t.Description = cut(redact(t.Description, secrets), maxMCPDescription)
+		// A description that is JSON is redacted decoded, as a result's
+		// text is: an encoder's escapes may spell a secret otherwise.
+		t.Description = cut(redactText(t.Description, secrets), maxMCPDescription)
 		t.InputSchema = normalSchema(t.InputSchema)
 		if holdsSecret(string(t.InputSchema), secrets) || decodedHoldsSecret(t.InputSchema, secrets) {
 			h.log.Warn("an MCP tool's schema holds a secret pocketd keeps: it is offered with none", "server", server)
@@ -684,73 +700,10 @@ func normalSchema(input json.RawMessage) json.RawMessage {
 		return json.RawMessage(emptySchema)
 	}
 	var decoded any
-	if json.Unmarshal(data, &decoded) != nil || !validSchema(decoded, 0) || !refsResolve(decoded, decoded, 0) {
+	if json.Unmarshal(data, &decoded) != nil || !validSchema(decoded) {
 		return json.RawMessage(emptySchema)
 	}
 	return data
-}
-
-// refsResolve says whether every $ref under value names a part of root
-// that is there: a JSON pointer into the schema itself (#, #/$defs/x).
-func refsResolve(root, value any, depth int) bool {
-	if depth > maxSchemaDepth {
-		return false
-	}
-	switch v := value.(type) {
-	case map[string]any:
-		for key, item := range v {
-			if key == "$ref" {
-				ref, ok := item.(string)
-				if !ok || !pointerResolves(root, ref) {
-					return false
-				}
-				continue
-			}
-			if !refsResolve(root, item, depth+1) {
-				return false
-			}
-		}
-	case []any:
-		for _, item := range v {
-			if !refsResolve(root, item, depth+1) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// pointerResolves says whether ref, a fragment #/a/b (RFC 6901), names a
-// part of root that is there.
-func pointerResolves(root any, ref string) bool {
-	if ref == "#" {
-		return true
-	}
-	path, ok := strings.CutPrefix(ref, "#/")
-	if !ok {
-		return false
-	}
-	at := root
-	for _, part := range strings.Split(path, "/") {
-		part = strings.ReplaceAll(strings.ReplaceAll(part, "~1", "/"), "~0", "~")
-		switch v := at.(type) {
-		case map[string]any:
-			next, ok := v[part]
-			if !ok {
-				return false
-			}
-			at = next
-		case []any:
-			i, err := strconv.Atoi(part)
-			if err != nil || i < 0 || i >= len(v) {
-				return false
-			}
-			at = v[i]
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // maxSchemaDepth bounds how deep validSchema reads a schema.
@@ -760,43 +713,105 @@ const maxSchemaDepth = 32
 // its keywords take one, as a model provider checks it: an object or a
 // boolean under properties, items and the like, lists of them under
 // allOf and the like, a type that is a name or a list of names, and a
-// required list of names. Any other keyword is the server's.
-func validSchema(value any, depth int) bool {
+// required list of names. Any other keyword is the server's. Each $ref in
+// a schema's place names a place of the schema itself that is read as a
+// schema (#, #/$defs/x): a reference to a default, an example, a
+// property's name or a type would have a provider refuse the whole
+// request. A recursive reference is checked as the place it names, never
+// followed.
+func validSchema(value any) bool {
+	w := &schemaWalk{at: map[string]bool{}}
+	if !w.valid(value, "", 0) {
+		return false
+	}
+	for _, ref := range w.refs {
+		pointer, ok := refPointer(ref)
+		if !ok || !w.at[pointer] {
+			return false
+		}
+	}
+	return true
+}
+
+// schemaWalk is one read of a schema by validSchema: at holds the JSON
+// pointer (RFC 6901) of every place read as a schema, and refs every
+// $ref read in one.
+type schemaWalk struct {
+	at   map[string]bool
+	refs []string
+}
+
+// childPointer is the JSON pointer of key under the place at path.
+func childPointer(path, key string) string {
+	return path + "/" + strings.ReplaceAll(strings.ReplaceAll(key, "~", "~0"), "/", "~1")
+}
+
+// refPointer is the JSON pointer a reference into the schema itself
+// names, written as childPointer writes one: # is the schema, and #/a/b
+// its place a, then b, percent-decoded as a URI's fragment is.
+func refPointer(ref string) (string, bool) {
+	fragment, ok := strings.CutPrefix(ref, "#")
+	if !ok {
+		return "", false
+	}
+	fragment, err := url.PathUnescape(fragment)
+	if err != nil {
+		return "", false
+	}
+	if fragment == "" {
+		return "", true
+	}
+	parts, ok := strings.CutPrefix(fragment, "/")
+	if !ok {
+		return "", false
+	}
+	pointer := ""
+	for _, part := range strings.Split(parts, "/") {
+		pointer = childPointer(pointer, strings.ReplaceAll(strings.ReplaceAll(part, "~1", "/"), "~0", "~"))
+	}
+	return pointer, true
+}
+
+// valid reads value, at path, as a schema (validSchema).
+func (w *schemaWalk) valid(value any, path string, depth int) bool {
 	if depth > maxSchemaDepth {
 		return false
 	}
 	if _, ok := value.(bool); ok {
+		w.at[path] = true
 		return true
 	}
 	object, ok := value.(map[string]any)
 	if !ok {
 		return false
 	}
+	w.at[path] = true
 	for key, v := range object {
+		at := childPointer(path, key)
 		switch key {
 		case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
 			fields, ok := v.(map[string]any)
 			if !ok {
 				return false
 			}
-			for _, field := range fields {
-				if !validSchema(field, depth+1) {
+			for name, field := range fields {
+				if !w.valid(field, childPointer(at, name), depth+1) {
 					return false
 				}
 			}
 		case "items":
 			if list, ok := v.([]any); ok {
-				for _, item := range list {
-					if !validSchema(item, depth+1) {
+				for i, item := range list {
+					if !w.valid(item, childPointer(at, strconv.Itoa(i)), depth+1) {
 						return false
 					}
 				}
-			} else if !validSchema(v, depth+1) {
+			} else if !w.valid(v, at, depth+1) {
 				return false
 			}
 		case "additionalProperties", "additionalItems", "not", "contains", "propertyNames", "if", "then", "else",
 			"unevaluatedProperties", "unevaluatedItems":
-			if !validSchema(v, depth+1) {
+			if !w.valid(v, at, depth+1) {
 				return false
 			}
 		case "allOf", "anyOf", "oneOf", "prefixItems":
@@ -804,8 +819,8 @@ func validSchema(value any, depth int) bool {
 			if !ok || len(list) == 0 {
 				return false
 			}
-			for _, item := range list {
-				if !validSchema(item, depth+1) {
+			for i, item := range list {
+				if !w.valid(item, childPointer(at, strconv.Itoa(i)), depth+1) {
 					return false
 				}
 			}
@@ -834,6 +849,7 @@ func validSchema(value any, depth int) bool {
 			if !ok || !strings.HasPrefix(ref, "#") {
 				return false
 			}
+			w.refs = append(w.refs, ref)
 		case "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties", "minContains", "maxContains":
 			n, ok := v.(float64)
 			if !ok || n < 0 || n != float64(int64(n)) {
@@ -929,10 +945,13 @@ var (
 	errMCPNeedsHeader = errors.New("needs a header pocketd does not keep")
 	errMCPNotSignedIn = errors.New("is not signed in")
 	errMCPSignIn      = errors.New("needs the owner to sign in again")
+	// errMCPNoRefresh is a sign-in the server refused that holds no
+	// refresh token: the owner signs in again (it is an errMCPSignIn).
+	errMCPNoRefresh = fmt.Errorf("%w: its sign-in holds no refresh token", errMCPSignIn)
 	// errMCPRefresh is a sign-in PiG's flow could not refresh, for no
-	// refusal of the authorization server's: it did not answer, answered
-	// server_error, or the sign-in holds no refresh token. PiG's flow then
-	// starts an authorization, which refreshOnly refuses with it.
+	// refusal of the authorization server's: it did not answer, or
+	// answered server_error. PiG's flow then starts an authorization,
+	// which refreshOnly refuses with it.
 	errMCPRefresh = errors.New("could not refresh its sign-in")
 	// errMCPScope is a call the server refused for a scope pocketd's
 	// sign-in lacks (403 insufficient_scope): a step up needs the owner.
@@ -1210,16 +1229,20 @@ func (c *mcpConn) call(ctx context.Context, tool string, args any) durable.ToolE
 // requestLocal says whether err ended one request alone, the connection
 // holding: a request stopped or past its own timeout, refused by the
 // server with an HTTP status of its own (a 401 included) or a JSON-RPC
-// error, answered with no list, or refused for a sign-in the next request
-// tries again. Only another failure is the
-// connection's, which every session of the server shares.
+// error, answered with no list, refused for a sign-in the next request
+// tries again, or answered with what pocketd could not read (past
+// maxMCPMessage, or no JSON-RPC message), which PiG says in an error of
+// no type. Only a session the server ended, a connection PiG closed, or
+// an exchange that failed itself (exchangeFailed) is the connection's,
+// which every session of the server shares.
 func requestLocal(ctx context.Context, err error) bool {
 	var abort *mcp.McpAbortError
 	var timeout *mcp.McpTimeoutError
 	var status *mcp.McpHttpError
 	var oauthErr *oauth.OAuthError
 	var expired *mcp.McpSessionExpiredError
-	if errors.As(err, &expired) {
+	var closed *mcp.McpConnectionClosedError
+	if errors.As(err, &expired) || errors.As(err, &closed) {
 		return false
 	}
 	var rpc *mcp.McpError
@@ -1231,7 +1254,16 @@ func requestLocal(ctx context.Context, err error) bool {
 	}
 	return ctx.Err() != nil || errors.As(err, &abort) || errors.As(err, &timeout) || errors.As(err, &status) ||
 		errors.As(err, &oauthErr) || errors.Is(err, errMCPScope) || errors.Is(err, errMCPRefresh) || errors.Is(err, errMCPSignIn) ||
-		errors.As(err, &rpc) || errors.Is(err, errMCPList)
+		errors.As(err, &rpc) || errors.Is(err, errMCPList) || !exchangeFailed(err) && !errors.Is(err, errMCPClosed)
+}
+
+// exchangeFailed says whether err is an HTTP exchange that failed itself,
+// with no answer: the server not reached, or the connection broken, which
+// net/http says in a url.Error or a net.OpError.
+func exchangeFailed(err error) bool {
+	var urlErr *url.Error
+	var opErr *net.OpError
+	return errors.As(err, &urlErr) || errors.As(err, &opErr)
 }
 
 // serverText is what a server said, with no secret in it, then cut to its
@@ -1263,6 +1295,8 @@ func (c *mcpConn) failure(err error) string {
 		return "is not connected: it is not signed in: the owner signs in with pocketd mcp login " + name
 	case errors.As(err, &oauthErr) && oauthTransient(oauthErr):
 		return "could not refresh pocketd's sign-in: its authorization server cannot answer now: try again later"
+	case errors.Is(err, errMCPNoRefresh):
+		return "refused pocketd's sign-in, which holds no refresh token: the owner signs in again with pocketd mcp login " + name
 	case errors.Is(err, errMCPSignIn), errors.As(err, &oauthErr):
 		return "refused pocketd's sign-in, and its refresh: the owner signs in again with pocketd mcp login " + name
 	case errors.Is(err, errMCPRefresh):
@@ -1284,6 +1318,10 @@ func (c *mcpConn) failure(err error) string {
 		return "was not reached: the call was stopped"
 	case errors.As(err, &rpc):
 		return "refused the connection: " + c.serverText(rpc.Message)
+	}
+	var closed *mcp.McpConnectionClosedError
+	if !exchangeFailed(err) && !errors.As(err, &closed) && !errors.Is(err, errMCPClosed) {
+		return fmt.Sprintf("answered with nothing pocketd could read (an answer past %d bytes, or no JSON-RPC message): try again later", maxMCPMessage)
 	}
 	return "is unreachable: pocketd could not connect to it; it may be down: try again later"
 }
@@ -1516,10 +1554,18 @@ func (a *serveAuth) OnUnauthorized(ctx context.Context, unauthorized mcp.Unautho
 	challenge := oauth.ParseWWWAuthenticate(strings.Join(unauthorized.Response.Header.Values("Www-Authenticate"), ", "))
 	a.conn.authMu.Lock()
 	flight := a.conn.flight
-	if flight == nil && unauthorized.Token != "" {
-		if tokens, err := a.provider.Tokens(ctx); err == nil && tokens != nil && tokens.AccessToken != "" && tokens.AccessToken != unauthorized.Token {
+	if flight == nil {
+		tokens, err := a.provider.Tokens(ctx)
+		switch {
+		case err != nil:
+		case unauthorized.Token != "" && tokens != nil && tokens.AccessToken != "" && tokens.AccessToken != unauthorized.Token:
 			a.conn.authMu.Unlock()
 			return nil
+		case tokens == nil || tokens.RefreshToken == "":
+			// No refresh token: no wait mends it, and only the owner
+			// signs in again.
+			a.conn.authMu.Unlock()
+			return errMCPNoRefresh
 		}
 	}
 	if flight == nil {
@@ -1595,7 +1641,13 @@ func mcpImage(mimeType, data string, secrets []string) (ai.ImageContent, bool) {
 	if err != nil {
 		return ai.ImageContent{}, false
 	}
-	return ai.ImageContent{Data: base64.StdEncoding.EncodeToString(prepared.Data), MimeType: prepared.MimeType}, true
+	// Within the result's bound as the model gets it: a re-encoded GIF or
+	// a turned JPEG may come out larger than it came.
+	encoded := base64.StdEncoding.EncodeToString(prepared.Data)
+	if len(encoded) > maxMCPImageBytes {
+		return ai.ImageContent{}, false
+	}
+	return ai.ImageContent{Data: encoded, MimeType: prepared.MimeType}, true
 }
 
 // refreshOnly is the OAuth sign-in a serving pocketd connects with: it
