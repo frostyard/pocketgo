@@ -22,12 +22,7 @@ import (
 // cache it read and wrote. It is the measure PiG compacts a session on
 // (ai.CalculateContextTokens): the answer's request and the answer itself,
 // which the next request carries.
-func ContextTokens(u proto.Usage) int64 {
-	if u.Total > 0 {
-		return u.Total
-	}
-	return max(0, u.Input) + max(0, u.Output) + max(0, u.CacheRead) + max(0, u.CacheWrite)
-}
+func ContextTokens(u proto.Usage) int64 { return u.Tokens() }
 
 // MeterLevel is how near a session's context is to where it is compacted.
 type MeterLevel int
@@ -201,8 +196,8 @@ func (d *Data) FillOf(id int64) ContextFill {
 }
 
 // Tokens is the tokens a usage counts: its total, else the sum of its
-// parts.
-func Tokens(u proto.Usage) int64 { return ContextTokens(u) }
+// parts (proto.Usage.Tokens).
+func Tokens(u proto.Usage) int64 { return u.Tokens() }
 
 // ShowsCost says whether a usage's cost shows: only when it is more than
 // zero. A model on a subscription costs nothing per token, so its usage
@@ -455,19 +450,43 @@ func (d *Data) UsageTotals(now time.Time) (today, week UsageTotal, shown bool) {
 	return today, week, week.Used()
 }
 
-// usageChanged says a session event changes what a session used, against
-// the summary the client has: the totals are fetched again.
-func (d *Data) usageChanged(s proto.Session) bool {
-	held, ok := d.Session(s.ID)
-	if !ok {
-		return s.Usage != (proto.Usage{})
+// oweUsage notes an answer's entry that used something: its session's
+// event, which follows it once the entry's time is written (protocol rule
+// 16b), fetches the totals again. Not the entry's own event: pocketd reads
+// no session whose time is before the report's first day, so a session
+// idle until this answer would be left out until its time was written.
+func (d *Data) oweUsage(e proto.Entry) {
+	if e.Kind != proto.EntryAssistant || e.Usage == nil || UsageLine(*e.Usage) == "" {
+		return
 	}
-	return held.Usage != s.Usage
+	if d.usageOwed == nil {
+		d.usageOwed = map[int64]bool{}
+	}
+	d.usageOwed[e.SessionID] = true
 }
 
-// refetchUsage follows a session event whose usage changed: one fetch at
-// a time, and one more after it for every change that came while it ran.
+// usageChanged says a session event changes the totals: an answer came to
+// the session since its last event, or what it used differs from the
+// summary the client has. The answer counts whatever the summary says, as
+// a list fetched meanwhile may hold the new summary already (Codex review
+// of #107, round 1).
+func (d *Data) usageChanged(s proto.Session) bool {
+	owed := d.usageOwed[s.ID]
+	delete(d.usageOwed, s.ID)
+	held, ok := d.Session(s.ID)
+	if !ok {
+		return owed || s.Usage != (proto.Usage{})
+	}
+	return owed || held.Usage != s.Usage
+}
+
+// refetchUsage follows a session event that changes the totals: one fetch
+// at a time, and one more after it for every change that came while it
+// ran. A fetch's answer that a change came after is older than it: it is
+// not shown, and the fetch that follows shows the totals (Codex review of
+// #107, round 1).
 func (s *Store) refetchUsage() {
+	s.usageEvents++
 	if s.fetching["usage"] > 0 {
 		s.usageDirty = true
 		return
@@ -479,15 +498,18 @@ func (s *Store) refetchUsage() {
 func (s *Store) loadUsage() {
 	f := s.Data.BeginUsage()
 	since := UsageSince(s.now())
+	events := s.usageEvents
 	var report proto.UsageReport
 	s.do("Loading the usage", func(ctx context.Context, c *proto.Client) (err error) {
 		report, err = c.Usage(ctx, since)
 		return err
 	}, s.track("usage", func(err error) {
-		if err != nil {
-			s.Data.SetUsageError(f, err.Error())
-		} else {
-			s.Data.SetUsage(f, report)
+		if events == s.usageEvents {
+			if err != nil {
+				s.Data.SetUsageError(f, err.Error())
+			} else {
+				s.Data.SetUsage(f, report)
+			}
 		}
 		if s.usageDirty && s.fetching["usage"] == 0 {
 			s.usageDirty = false

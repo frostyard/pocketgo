@@ -139,8 +139,11 @@ type Store struct {
 	// the last one answers with a list older than it.
 	schedulesEvents int
 	// usageDirty says a session's usage changed while the usage report's
-	// fetch ran: one more fetch follows it (refetchUsage).
-	usageDirty bool
+	// fetch ran: one more fetch follows it (refetchUsage); usageEvents
+	// counts those changes: a fetch begun before the last one answers with
+	// totals older than it.
+	usageDirty  bool
+	usageEvents int
 
 	ids requestIDs
 	// abortRuns holds the sessions whose abort keeps its request id (sent

@@ -54,14 +54,26 @@ type Usage struct {
 	Cost       float64 `json:"cost"`
 }
 
-// Add returns u plus v.
+// Tokens is the tokens a usage counts: its Total, as the provider reported
+// it, else its parts summed when the provider reported none.
+func (u Usage) Tokens() int64 {
+	if u.Total > 0 {
+		return u.Total
+	}
+	return max(0, u.Input) + max(0, u.Output) + max(0, u.CacheRead) + max(0, u.CacheWrite)
+}
+
+// Add returns u plus v. Its Total is the two sides' Tokens: a side whose
+// provider reported no total counts its parts, so a sum of usages with and
+// without totals loses none of them (ADR-0052; Codex review of #107, round
+// 1).
 func (u Usage) Add(v Usage) Usage {
 	return Usage{
 		Input:      u.Input + v.Input,
 		Output:     u.Output + v.Output,
 		CacheRead:  u.CacheRead + v.CacheRead,
 		CacheWrite: u.CacheWrite + v.CacheWrite,
-		Total:      u.Total + v.Total,
+		Total:      u.Tokens() + v.Tokens(),
 		Cost:       u.Cost + v.Cost,
 	}
 }

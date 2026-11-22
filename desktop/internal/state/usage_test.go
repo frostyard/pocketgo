@@ -229,6 +229,12 @@ func TestAThreadsUsageIsItsSessionsAndItsWorkers(t *testing.T) {
 	if got := d.ThreadUsage(proto.Thread{ID: 2}); got != (proto.Usage{}) {
 		t.Errorf("a thread with no session %+v", got)
 	}
+	// A session whose provider reported no total counts its parts beside
+	// a worker's total (Codex review of #107, round 1).
+	d.SetSessions(d.Begin(), []proto.Session{{ID: 1, Usage: proto.Usage{Input: 40}}, {ID: 2, StartedBy: 1, Usage: proto.Usage{Total: 60}}})
+	if got := Tokens(d.ThreadUsage(proto.Thread{ID: 1, Session: 1})); got != 100 {
+		t.Errorf("a thread's tokens with and without totals: %d", got)
+	}
 }
 
 func usageDay(day string, models ...proto.ModelUsage) proto.UsageDay {
@@ -352,6 +358,66 @@ func TestTheTotalsAreFetchedAgainWhenASessionsUsageChanges(t *testing.T) {
 	if got := len(h.srv.RequestsTo(http.MethodGet, proto.PathUsage)); got != before+1 {
 		t.Errorf("%d fetches after a usage change, want %d", got, before+1)
 	}
+}
+
+// An answer to a session fetches the totals again at its session's event,
+// though a session list fetched meanwhile brought its summary first, so
+// the event changes no usage the client has (Codex review of #107, round
+// 1).
+func TestAnAnswerFetchesTheTotalsThoughAListBroughtItsSummary(t *testing.T) {
+	var d Data
+	s := session(1, "Work", -time.Minute)
+	d.SetSessions(d.Begin(), []proto.Session{s})
+	answer := proto.Entry{ID: 2, SessionID: 1, Kind: proto.EntryAssistant, Usage: &proto.Usage{Input: 10, Total: 10}}
+	if got := d.Apply(proto.Event{Type: proto.EventEntry, Entry: &answer}); got != RefetchNone {
+		t.Errorf("the entry's event asks for %v: the session's time may not be written yet", got)
+	}
+	s.Usage = proto.Usage{Input: 10, Total: 10}
+	d.SetSessions(d.Begin(), []proto.Session{s})
+	if got := d.Apply(proto.Event{Type: proto.EventSession, Session: &s}); got != RefetchUsage {
+		t.Errorf("the session's event after an answer asks for %v, want the totals", got)
+	}
+	if got := d.Apply(proto.Event{Type: proto.EventSession, Session: &s}); got != RefetchNone {
+		t.Errorf("a second event of the same usage asks for %v", got)
+	}
+	// An answer that used nothing owes nothing.
+	empty := proto.Entry{ID: 3, SessionID: 1, Kind: proto.EntryAssistant, Usage: &proto.Usage{}}
+	d.Apply(proto.Event{Type: proto.EventEntry, Entry: &empty})
+	if got := d.Apply(proto.Event{Type: proto.EventSession, Session: &s}); got != RefetchNone {
+		t.Errorf("an answer that used nothing asks for %v", got)
+	}
+}
+
+// The answer of a totals' fetch that a change came after is not shown:
+// the fetch that follows it shows the totals (Codex review of #107, round
+// 1).
+func TestATotalsAnswerAChangeCameAfterIsNotShown(t *testing.T) {
+	h := newHarness(t)
+	s := session(1, "Work", -time.Minute)
+	h.srv.AddSession(s)
+	h.connect(t)
+	before := len(h.srv.RequestsTo(http.MethodGet, proto.PathUsage))
+	h.srv.SetUsage(proto.UsageReport{Days: []proto.UsageDay{usageDay("2026-11-18", modelUsage("deepseek", 1, 0))}})
+	release := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathUsage)
+	s.Usage.Total = 1
+	emitSession(h, s)
+	h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodGet, proto.PathUsage) })
+	// A change comes while the fetch's answer, of 1 token, is on its way.
+	h.srv.SetUsage(proto.UsageReport{Days: []proto.UsageDay{usageDay("2026-11-18", modelUsage("deepseek", 2, 0))}})
+	s.Usage.Total = 2
+	last := emitSession(h, s)
+	h.loop.RunUntil(t, func() bool { return h.store.lastSeq == last.Seq })
+	releaseNext := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathUsage)
+	release()
+	h.loop.RunUntil(t, func() bool {
+		return len(h.srv.RequestsTo(http.MethodGet, proto.PathUsage)) == before+2 && h.srv.Holding(http.MethodGet, proto.PathUsage)
+	})
+	if today, _, shown := h.store.UsageTotals(); shown {
+		t.Errorf("the answer a change came after is shown: %+v", today)
+	}
+	releaseNext()
+	h.loop.RunUntil(t, func() bool { today, _, shown := h.store.UsageTotals(); return shown && today.Usage.Total == 2 })
+	h.settle(t)
 }
 
 // emitSession emits a session event of a copy of s: the fake writes the

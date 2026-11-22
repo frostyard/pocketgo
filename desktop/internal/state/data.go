@@ -50,9 +50,11 @@ type Data struct {
 	schedules        proto.Schedules
 	schedulesList    list
 	// usage is the newest usage report (GET /v1/usage, ADR-0052), fetched
-	// whole (usage.go).
+	// whole (usage.go); usageOwed are the sessions an answer came to whose
+	// session event has not come yet (usageChanged).
 	usage     proto.UsageReport
 	usageList list
+	usageOwed map[int64]bool
 
 	open *OpenSession
 	// terminals are the owner's shells, oldest first, replaced whole by
@@ -678,6 +680,7 @@ func (d *Data) Apply(ev proto.Event) Refetch {
 		}
 	case proto.EventEntry:
 		if ev.Entry != nil {
+			d.oweUsage(*ev.Entry)
 			d.applyEntry(*ev.Entry)
 		}
 	case proto.EventLive:

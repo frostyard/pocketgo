@@ -188,3 +188,105 @@ func TestUsageKeepsNoDayOlderThanAReportAsksFor(t *testing.T) {
 		t.Fatalf("kept %+v from %s", held.days, held.from)
 	}
 }
+
+// Answers with and without a reported total sum to every token of both
+// (Codex review of #107, round 1).
+func TestUsageSumsAnswersWithAndWithoutTotals(t *testing.T) {
+	h := newHarness(t)
+	now := h.clock.Now()
+	h.usageSession("r1", answerAt(1, now, &model, proto.Usage{Input: 40}), answerAt(2, now, &model, proto.Usage{Total: 60}))
+	r, err := h.client.Usage(context.Background(), "2026-11-18")
+	if err != nil || len(r.Days) != 1 || r.Days[0].Models[0].Usage.Total != 100 {
+		t.Fatalf("report %+v, %v", r, err)
+	}
+}
+
+// The sums kept of a session that aged out of every report go, though no
+// report reads the session again (Codex review of #107, round 1).
+func TestUsageForgetsASessionThatAgedOut(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	id := h.usageSession("r1", answerAt(1, h.clock.Now(), &model, proto.Usage{Output: 1, Total: 1}))
+	if _, err := h.client.Usage(ctx, "2026-11-18"); err != nil {
+		t.Fatal(err)
+	}
+	h.clock.Advance(proto.MaxUsageDays * 24 * time.Hour)
+	if _, err := h.client.Usage(ctx, "2027-02-18"); err != nil {
+		t.Fatal(err)
+	}
+	h.server.usageMu.Lock()
+	defer h.server.usageMu.Unlock()
+	if held, ok := h.server.usageSums[id]; ok {
+		t.Fatalf("a session no report can ask for is kept: %+v", held)
+	}
+}
+
+// A report whose client gave up reads no other session (Codex review of
+// #107, round 1).
+func TestAUsageReportItsClientGaveUpOnReadsNoMore(t *testing.T) {
+	h := newHarness(t)
+	h.usageSession("r1", answerAt(1, h.clock.Now(), &model, proto.Usage{Output: 1, Total: 1}))
+	h.usageSession("r2", answerAt(1, h.clock.Now(), &model, proto.Usage{Output: 2, Total: 2}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The client gives up while the first session is read.
+	h.engine.onUsageRead = func(int64) { cancel() }
+	b := boundsOf(h.clock.Now(), time.UTC)
+	if _, err := h.server.sumUsage(ctx, dayStart(b.today, time.UTC), b); !errors.Is(err, context.Canceled) {
+		t.Fatalf("sumUsage = %v", err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.usageReads) != 1 {
+		t.Fatalf("a report given up on read on: %+v", h.engine.usageReads)
+	}
+}
+
+// A day whose midnight the zone's clocks skip starts as they move on:
+// America/Santiago's 2026-09-06 starts at 01:00, and today is that day,
+// not the one before (Codex review of #107, round 1).
+func TestADayWhoseMidnightIsSkippedStartsAsItsClocksMoveOn(t *testing.T) {
+	h := newHarness(t)
+	santiago, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.server.SetZone(santiago)
+	h.clock.mu.Lock()
+	h.clock.now = time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC)
+	h.clock.mu.Unlock()
+	h.usageSession("r1",
+		answerAt(1, time.Date(2026, 9, 6, 3, 30, 0, 0, time.UTC), &model, proto.Usage{Output: 1, Total: 1}), // 23:30 on the 5th
+		answerAt(2, time.Date(2026, 9, 6, 4, 30, 0, 0, time.UTC), &model, proto.Usage{Output: 2, Total: 2}), // 01:30 on the 6th
+	)
+	r, err := h.client.Usage(context.Background(), "2026-09-06")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Today != "2026-09-06" || !r.TodayEnds.Equal(time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC)) || len(r.Days) != 1 ||
+		r.Days[0].Day != "2026-09-06" || r.Days[0].Models[0].Usage.Total != 2 {
+		t.Fatalf("report %+v", r)
+	}
+	if got := dayStart(time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC), santiago); !got.Equal(time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC)) {
+		t.Fatalf("the day starts at %s", got)
+	}
+}
+
+// An answer that names no model counts under its session's model as it is
+// when the report is made, whether or not its sum was kept from before
+// (Codex review of #107, round 1).
+func TestAnAnswerWithNoModelCountsUnderItsSessionsModelNow(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	id := h.usageSession("r1", answerAt(1, h.clock.Now(), nil, proto.Usage{Output: 1, Total: 1}))
+	if r, err := h.client.Usage(ctx, "2026-11-18"); err != nil || r.Days[0].Models[0].Model != model {
+		t.Fatalf("report %+v, %v", r, err)
+	}
+	other := proto.ModelRef{Provider: "faux", ID: "faux-2"}
+	if err := h.store.SetSessionModel(ctx, id, other.Provider, other.ID, "", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := h.client.Usage(ctx, "2026-11-18"); err != nil || len(r.Days[0].Models) != 1 || r.Days[0].Models[0].Model != other {
+		t.Fatalf("report after the model changed %+v, %v", r, err)
+	}
+}

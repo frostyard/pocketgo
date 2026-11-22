@@ -29,7 +29,9 @@ type UsageEntry struct {
 
 // sessionUsage is what GET /v1/usage keeps of one session: the sums of its
 // answers through entry through, by day and model, of the days from from,
-// the start of a day in the service's zone, on.
+// the start of a day in the service's zone, on. An answer that names no
+// model is kept under the zero model, which a report reads as the
+// session's model then (rule 63), so no sum depends on when it was read.
 type sessionUsage struct {
 	from    time.Time
 	through int64
@@ -39,59 +41,92 @@ type sessionUsage struct {
 // usageDays are usage sums by day (proto.UsageDayLayout) and model.
 type usageDays map[string]map[proto.ModelRef]proto.Usage
 
-// add counts e on its day in zone, under its model, else under the
-// session's model when the entry names none; an answer that used nothing
-// counts nowhere.
-func (d usageDays) add(e UsageEntry, session proto.ModelRef, zone *time.Location) {
+// add counts e on its day in zone, under its model; an answer that used
+// nothing counts nowhere.
+func (d usageDays) add(e UsageEntry, zone *time.Location) {
 	if e.Usage == (proto.Usage{}) {
 		return
 	}
-	model := e.Model
-	if model == (proto.ModelRef{}) {
-		model = session
-	}
-	day := e.At.In(zone).Format(proto.UsageDayLayout)
+	d.addTo(e.At.In(zone).Format(proto.UsageDayLayout), e.Model, e.Usage)
+}
+
+func (d usageDays) addTo(day string, model proto.ModelRef, u proto.Usage) {
 	if d[day] == nil {
 		d[day] = map[proto.ModelRef]proto.Usage{}
 	}
-	d[day][model] = d[day][model].Add(e.Usage)
+	d[day][model] = d[day][model].Add(u)
 }
 
-// usageDay is the start of the day t falls on in zone.
-func usageDay(t time.Time, zone *time.Location) time.Time {
+// prune drops the days before first.
+func (d usageDays) prune(first string) {
+	for day := range d {
+		if day < first {
+			delete(d, day)
+		}
+	}
+}
+
+// civilDay is the date t falls on in zone, as midnight in UTC: a date
+// with no instant of its own, which AddDate moves by whole days.
+func civilDay(t time.Time, zone *time.Location) time.Time {
 	y, m, d := t.In(zone).Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, zone)
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+// dayStart is the first instant of date day (civilDay) in zone. A zone
+// whose clocks skip midnight that day, as America/Santiago's on
+// 2026-09-06, starts it as the clocks move on: time.Date would name an
+// instant of the day before (Codex review of #107, round 1).
+func dayStart(day time.Time, zone *time.Location) time.Time {
+	y, m, d := day.Date()
+	t := time.Date(y, m, d, 0, 0, 0, 0, zone)
+	if ty, tm, td := t.Date(); ty != y || tm != m || td != d {
+		if _, end := t.ZoneBounds(); !end.IsZero() {
+			t = end
+		}
+	}
+	return t
+}
+
+// usageBounds are the days a report sums, in zone, as of now: today, its
+// first instant's next day's (when today ends), and the oldest day a
+// since may name, proto.MaxUsageDays-1 days before today.
+type usageBounds struct {
+	today, oldest           time.Time // dates (civilDay)
+	todayEnds, oldestStarts time.Time // instants
+}
+
+func boundsOf(now time.Time, zone *time.Location) usageBounds {
+	today := civilDay(now, zone)
+	oldest := today.AddDate(0, 0, -(proto.MaxUsageDays - 1))
+	return usageBounds{today: today, oldest: oldest, todayEnds: dayStart(today.AddDate(0, 0, 1), zone), oldestStarts: dayStart(oldest, zone)}
 }
 
 // errUsageSince is a since GET /v1/usage cannot take.
 var errUsageSince = errors.New("since must be a day, YYYY-MM-DD")
 
-// usageSince is the start of day raw in zone, as GET /v1/usage takes its
-// since (rule 63): a day written as proto.UsageDayLayout writes it, at most
-// proto.MaxUsageDays-1 days before today, the day now falls on in zone. A
-// day after today is taken: it has no usage yet.
-func usageSince(raw string, now time.Time, zone *time.Location) (time.Time, error) {
-	day, err := time.Parse(proto.UsageDayLayout, raw)
+// usageSince is day raw as GET /v1/usage takes its since (rule 63): a day
+// written as proto.UsageDayLayout writes it, at most proto.MaxUsageDays-1
+// days before today; and its first instant in zone. A day after today is
+// taken: it has no usage yet.
+func usageSince(raw string, b usageBounds, zone *time.Location) (day, start time.Time, err error) {
+	day, err = time.Parse(proto.UsageDayLayout, raw)
 	if err != nil || day.Format(proto.UsageDayLayout) != raw {
-		return time.Time{}, errUsageSince
+		return time.Time{}, time.Time{}, errUsageSince
 	}
-	since := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, zone)
-	if oldest := usageDay(now, zone).AddDate(0, 0, -(proto.MaxUsageDays - 1)); since.Before(oldest) {
-		return time.Time{}, fmt.Errorf("since is at most %d days before today, %s: %s is earlier", proto.MaxUsageDays-1,
-			oldest.Format(proto.UsageDayLayout), raw)
+	if day.Before(b.oldest) {
+		return time.Time{}, time.Time{}, fmt.Errorf("since is at most %d days before today, %s: %s is earlier", proto.MaxUsageDays-1,
+			b.oldest.Format(proto.UsageDayLayout), raw)
 	}
-	return since, nil
+	return day, dayStart(day, zone), nil
 }
 
-// usageReport is the report of days from since through today, the day now
-// falls on in zone, from the sums of days and the zone (rule 63): the days
-// with usage, oldest first, each with its models' usage by provider, then
-// by model id.
-func usageReport(days usageDays, since, now time.Time, zone *time.Location) proto.UsageReport {
-	today := usageDay(now, zone)
-	r := proto.UsageReport{Zone: zone.String(), Today: today.Format(proto.UsageDayLayout),
-		TodayEnds: time.Date(today.Year(), today.Month(), today.Day()+1, 0, 0, 0, 0, zone).UTC(),
-		Since:     since.Format(proto.UsageDayLayout), Days: []proto.UsageDay{}}
+// usageReport is the report of days from since (a date) through today,
+// from the sums of days, in zone (rule 63): the days with usage, oldest
+// first, each with its models' usage by provider, then by model id.
+func usageReport(days usageDays, since time.Time, b usageBounds, zone *time.Location) proto.UsageReport {
+	r := proto.UsageReport{Zone: zone.String(), Today: b.today.Format(proto.UsageDayLayout), TodayEnds: b.todayEnds.UTC(),
+		Since: since.Format(proto.UsageDayLayout), Days: []proto.UsageDay{}}
 	for day, models := range days {
 		if day < r.Since || day > r.Today {
 			continue
@@ -113,29 +148,34 @@ func usageReport(days usageDays, since, now time.Time, zone *time.Location) prot
 	return r
 }
 
-// usage answers GET /v1/usage (rule 63).
+// usage answers GET /v1/usage (rule 63). It reads only, so a request its
+// client gave up on stops (Codex review of #107, round 1).
 func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
-	since, err := usageSince(r.URL.Query().Get("since"), now, s.zone)
+	b := boundsOf(now, s.zone)
+	since, start, err := usageSince(r.URL.Query().Get("since"), b, s.zone)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
 		return
 	}
-	days, err := s.sumUsage(context.WithoutCancel(r.Context()), since, now)
+	days, err := s.sumUsage(r.Context(), start, b)
 	if err != nil {
-		s.internal(w, "sum the usage", err)
+		if r.Context().Err() == nil {
+			s.internal(w, "sum the usage", err)
+		}
 		return
 	}
-	writeJSON(w, http.StatusOK, usageReport(days, since, now, s.zone))
+	writeJSON(w, http.StatusOK, usageReport(days, since, b, s.zone))
 }
 
-// sumUsage sums the answers of every session updated since since, by day
-// and model. It reads each session's answers once: it keeps their sums,
-// and reads on after the newest entry it read; a session it holds from a
-// day after since is read again from since. A session not updated since
-// since has no answer since then, as its time is its newest entry's (rule
-// 16b), and is not read.
-func (s *Server) sumUsage(ctx context.Context, since, now time.Time) (usageDays, error) {
+// sumUsage sums the answers of every session updated since since, an
+// instant, by day and model; an answer that names no model counts under
+// its session's model. It reads each session's answers once: it keeps
+// their sums, and reads on after the newest entry it read; a session it
+// holds from a day after since is read again from since. A session not
+// updated since since has no answer since then, as its time is its
+// newest entry's (rule 16b), and is not read. It stops when ctx ends.
+func (s *Server) sumUsage(ctx context.Context, since time.Time, b usageBounds) (usageDays, error) {
 	rows, err := s.store.Sessions(ctx)
 	if err != nil {
 		return nil, err
@@ -145,54 +185,68 @@ func (s *Server) sumUsage(ctx context.Context, since, now time.Time) (usageDays,
 	if s.usageSums == nil {
 		s.usageSums = map[int64]*sessionUsage{}
 	}
-	oldest := usageDay(now, s.zone).AddDate(0, 0, -(proto.MaxUsageDays - 1))
+	s.pruneUsage(rows, b)
 	sum := usageDays{}
 	for _, row := range rows {
 		if row.UpdatedAt.Before(since) {
 			continue
 		}
-		held, err := s.sessionUsage(ctx, row, since, oldest)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		held, err := s.sessionUsage(ctx, row.ID, since)
 		if err != nil {
 			return nil, err
 		}
+		session := proto.ModelRef{Provider: row.Provider, ID: row.Model}
 		for day, models := range held.days {
 			for model, u := range models {
-				if sum[day] == nil {
-					sum[day] = map[proto.ModelRef]proto.Usage{}
+				if model == (proto.ModelRef{}) {
+					model = session
 				}
-				sum[day][model] = sum[day][model].Add(u)
+				sum.addTo(day, model, u)
 			}
 		}
 	}
 	return sum, nil
 }
 
-// sessionUsage brings the sums kept of row's session up to its newest
-// entry, from since on at least, and drops the days before oldest, which
-// no report asks for. Sums whose read fails stay as they were.
-func (s *Server) sessionUsage(ctx context.Context, row store.SessionRow, since, oldest time.Time) (*sessionUsage, error) {
-	held := s.usageSums[row.ID]
+// pruneUsage drops what no report can ask for: every kept day before the
+// oldest one a since may name, and the sums kept of a session left with
+// none that was not updated since then, whether or not a report reads it
+// (Codex review of #107, round 1).
+func (s *Server) pruneUsage(rows []store.SessionRow, b usageBounds) {
+	updated := make(map[int64]time.Time, len(rows))
+	for _, row := range rows {
+		updated[row.ID] = row.UpdatedAt
+	}
+	first := b.oldest.Format(proto.UsageDayLayout)
+	for id, held := range s.usageSums {
+		held.days.prune(first)
+		if held.from.Before(b.oldestStarts) {
+			held.from = b.oldestStarts
+		}
+		if len(held.days) == 0 && updated[id].Before(b.oldestStarts) {
+			delete(s.usageSums, id)
+		}
+	}
+}
+
+// sessionUsage brings the sums kept of session id up to its newest entry,
+// from since on at least. Sums whose read fails stay as they were.
+func (s *Server) sessionUsage(ctx context.Context, id int64, since time.Time) (*sessionUsage, error) {
+	held := s.usageSums[id]
 	if held == nil || since.Before(held.from) {
 		held = &sessionUsage{from: since, days: usageDays{}}
 	}
-	entries, newest, err := s.engine.UsageEntries(ctx, row.ID, held.through, held.from)
+	entries, newest, err := s.engine.UsageEntries(ctx, id, held.through, held.from)
 	if err != nil {
-		return nil, fmt.Errorf("usage of session %d: %w", row.ID, err)
+		return nil, fmt.Errorf("usage of session %d: %w", id, err)
 	}
-	model := proto.ModelRef{Provider: row.Provider, ID: row.Model}
 	for _, e := range entries {
-		held.days.add(e, model, s.zone)
+		held.days.add(e, s.zone)
 	}
 	held.through = max(held.through, newest)
-	if held.from.Before(oldest) {
-		first := oldest.Format(proto.UsageDayLayout)
-		for day := range held.days {
-			if day < first {
-				delete(held.days, day)
-			}
-		}
-		held.from = oldest
-	}
-	s.usageSums[row.ID] = held
+	s.usageSums[id] = held
 	return held, nil
 }

@@ -188,6 +188,15 @@ func TestUsageAdd(t *testing.T) {
 	if got != want {
 		t.Fatalf("Add = %+v", got)
 	}
+	// A side with no total counts its parts: a sum of usages with and
+	// without totals loses none (Codex review of #107, round 1).
+	got = Usage{Input: 40}.Add(Usage{Total: 60})
+	if want := (Usage{Input: 40, Total: 100}); got != want {
+		t.Fatalf("Add of a usage with no total = %+v, want %+v", got, want)
+	}
+	if got := (Usage{Input: 3, Output: 2, CacheRead: -1}).Tokens(); got != 5 {
+		t.Fatalf("Tokens = %d", got)
+	}
 }
 
 // handlerTransport serves requests with a handler in memory, so unit tests

@@ -150,9 +150,11 @@ type fakeEngine struct {
 	createLost error
 	reads      int
 	// usageReads are UsageEntries' reads, in order, and usageReadErr
-	// fails the next one (ADR-0052).
+	// fails the next one (ADR-0052); onUsageRead sees each, before it
+	// reads.
 	usageReads   []usageRead
 	usageReadErr error
+	onUsageRead  func(id int64)
 }
 
 // usageRead is one read of UsageEntries: its session, the entry it read
@@ -768,6 +770,9 @@ func (f *fakeEngine) Usage(context.Context, int64) (proto.Usage, error) {
 // usage after entry after, newest first, down to the first one before
 // since.
 func (f *fakeEngine) UsageEntries(_ context.Context, id, after int64, since time.Time) ([]UsageEntry, int64, error) {
+	if f.onUsageRead != nil {
+		f.onUsageRead(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.usageReads = append(f.usageReads, usageRead{id: id, after: after, since: since})
