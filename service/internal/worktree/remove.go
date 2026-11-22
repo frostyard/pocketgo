@@ -97,6 +97,13 @@ func Remove(ctx context.Context, t Tools, r Removal) (branchKept string, err err
 	if strings.TrimSpace(status) != "" {
 		return "", Kept{Reason: r.Path + " has uncommitted changes or untracked files"}
 	}
+	// An index entry marked assume-unchanged or skip-worktree hides a
+	// file's change from status, and from git worktree remove's own check:
+	// none may be, or the removal could delete that change (cross-review
+	// of #106, round 3).
+	if err := noHiddenEntries(ctx, t, r.Path); err != nil {
+		return "", err
+	}
 	// Check the task's commits before removing either its folder or branch.
 	if r.Branch != "" {
 		if err := removableCommits(ctx, t, r); err != nil {
@@ -182,4 +189,29 @@ func removalAncestor(ctx context.Context, git Git, path, head, target string) (b
 		return false, nil
 	}
 	return false, unsure{fmt.Errorf("git could not compare %s with %s: %w", head, target, err)}
+}
+
+// noHiddenEntries keeps a worktree whose index marks an entry
+// assume-unchanged (a lowercase tag in git ls-files -v) or skip-worktree
+// ("S"): status cannot see a change to such a file, so its absence from
+// status says nothing. Every entry must be tagged "H ".
+func noHiddenEntries(ctx context.Context, t Tools, path string) error {
+	if t.Each == nil {
+		return unsure{errors.New("no streaming git: the worktree's index cannot be checked")}
+	}
+	var hidden error
+	err := t.Each(ctx, path, 0, func(entry string) error {
+		if entry != "" && !strings.HasPrefix(entry, "H ") {
+			hidden = Kept{Reason: fmt.Sprintf("%s marks %q so status cannot see a change to it", path, entry)}
+			return hidden
+		}
+		return nil
+	}, "ls-files", "-v", "-z")
+	if hidden != nil {
+		return hidden
+	}
+	if err != nil {
+		return explain(ctx, path, no(err), "git could not list the worktree's index")
+	}
+	return nil
 }

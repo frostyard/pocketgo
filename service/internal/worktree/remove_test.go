@@ -102,6 +102,31 @@ func TestRemoveKeepsADirtyWorktree(t *testing.T) {
 	}
 }
 
+// A tracked file marked assume-unchanged or skip-worktree hides its
+// change from git status and from git worktree remove's own check: the
+// worktree and the change stay (cross-review of #106, round 3).
+func TestRemoveKeepsAChangeTheIndexHides(t *testing.T) {
+	for _, flag := range []string{"--assume-unchanged", "--skip-worktree"} {
+		t.Run(flag, func(t *testing.T) {
+			checkout, path, branch := removalTask(t)
+			c := removalCommit(t, path)
+			removalMerge(t, checkout, branch)
+			mustGit(t, path, "update-index", flag, "tracked")
+			file := filepath.Join(path, "tracked")
+			if err := os.WriteFile(file, []byte("edited\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if status := mustGit(t, path, "status", "--porcelain"); status != "" {
+				t.Fatalf("status shows the hidden change: %q", status)
+			}
+			assertRemovalKept(t, Removal{Path: path, Branch: branch, Heads: []string{c}}, "so status cannot see a change to it")
+			if got, err := os.ReadFile(file); err != nil || string(got) != "edited\n" {
+				t.Fatalf("the hidden change is gone: %q, %v", got, err)
+			}
+		})
+	}
+}
+
 func TestRemoveKeepsCommitsInNoLinkedPullRequest(t *testing.T) {
 	checkout, path, branch := removalTask(t)
 	c1 := removalCommit(t, path)
