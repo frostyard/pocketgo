@@ -19,15 +19,15 @@ import (
 
 // Schedules (ADR-0030) send a session a message later, or on repeat: the
 // owner's, from schedules.json in the profile folder, to a profile's
-// standing session, and a supervisor's own, from team_schedule, to its
-// session. A pass, one at a time, reads the owner's file, brings their
-// records in step with it, and files each time that is due as a note, in
-// the transaction that moves the schedule on (store.FireSchedule); the
-// delivery pass places the note, which counts as sent only once
-// Engine.Placed finds it in the transcript. A pass runs at start, after
-// engine.Resume, at the soonest time a schedule goes out, every
-// scheduleCheck, so a change of the owner's file is seen, and after each
-// team_schedule call.
+// standing session, a supervisor's own, from team_schedule, and a private
+// agent's own, from schedule (ADR-0060), to its session. A pass, one at a
+// time, reads the owner's file, brings their records in step with it, and
+// files each time that is due as a note, in the transaction that moves the
+// schedule on (store.FireSchedule); the delivery pass places the note,
+// which counts as sent only once Engine.Placed finds it in the transcript.
+// A pass runs at start, after engine.Resume, at the soonest time a
+// schedule goes out, every scheduleCheck, so a change of the owner's file
+// is seen, and after each team_schedule or schedule call.
 
 // scheduleCheck is how often a pass runs whatever is due: the owner's file
 // is read again then.
@@ -104,12 +104,12 @@ type ownerFile struct {
 func (s *Server) schedulePass(ctx context.Context) {
 	s.scheduleMu.Lock()
 	defer s.scheduleMu.Unlock()
-	// An upgrade of the supervisors' tools that failed at start, as for a
-	// profile that could not be read, goes again (Codex review of #51,
-	// round 2).
+	// An upgrade of the supervisors' tools, or of the private agents'
+	// schedule tool, that failed at start, as for a profile that could not
+	// be read, goes again (Codex review of #51, round 2; ADR-0060).
 	if s.toolsDue {
-		if err := s.upgradeSupervisorTools(ctx); err != nil {
-			s.log.Warn("give team_schedule to older supervisors' sessions", "err", err)
+		if err := s.upgradeScheduleTools(ctx); err != nil {
+			s.log.Warn("give the schedule tools to older sessions", "err", err)
 		} else {
 			s.toolsDue = false
 		}
@@ -635,28 +635,60 @@ func (s *Server) listSchedules(w http.ResponseWriter, r *http.Request) {
 }
 
 // TeamSchedule is team_schedule (ADR-0030): a supervisor's own reminders
-// and repeats, to the session that calls it. An add is recorded once per
-// call (api.TeamCall), and the call run again answers as the first did,
-// whatever the rules say by then; a cancel's answer depends only on the
-// schedule.
+// and repeats, to the session that calls it (keepSchedules). Only a
+// session whose profile is a supervisor's now keeps them with it; a
+// private agent's session never reaches it, since every team tool refuses
+// one before it runs (TeamAllows, ADR-0042).
 func (s *Server) TeamSchedule(ctx context.Context, call TeamCall, c schedule.Call) (string, error) {
+	return s.keepSchedules(ctx, schedule.TeamTool, call, c, func(ctx context.Context) error {
+		caller, err := s.callerProfile(ctx, call.Session)
+		if err != nil {
+			return err
+		}
+		if caller == nil || caller.Role != profiles.RoleSupervisor {
+			return errors.New("only a supervisor keeps schedules: this session's profile is not one")
+		}
+		return nil
+	})
+}
+
+// Schedule is schedule (ADR-0060): a private agent's own reminders and
+// repeats, to the session that calls it, with team_schedule's engine and
+// limits (keepSchedules). It is no team tool: TeamAllows does not run
+// before it. Its caller is checked here, with its profile as it is now
+// and what the session works as (team.CheckScheduleCaller): a private
+// agent's or a supervisor's session, working as no thread's specialist,
+// review, worker, consult or gather session; every other is refused.
+func (s *Server) Schedule(ctx context.Context, call TeamCall, c schedule.Call) (string, error) {
+	return s.keepSchedules(ctx, schedule.OwnTool, call, c, func(ctx context.Context) error {
+		caller, role, err := s.sessionCaller(ctx, call.Session)
+		if err != nil {
+			return err
+		}
+		return team.CheckScheduleCaller(caller, role)
+	})
+}
+
+// keepSchedules runs a call of tool, a schedule tool, for the session that
+// calls it, once allowed says the caller may keep schedules: an add sends
+// to the calling session alone. An add is recorded once per call
+// (api.TeamCall), and the call run again answers as the first did,
+// whatever the rules say by then, allowed included; a cancel's answer
+// depends only on the schedule.
+func (s *Server) keepSchedules(ctx context.Context, tool string, call TeamCall, c schedule.Call, allowed func(context.Context) error) (string, error) {
 	ctx = context.WithoutCancel(ctx)
 	if err := schedule.CheckCall(c); err != nil {
 		return "", err
 	}
 	if c.Action == schedule.ActionAdd {
 		if row, err := s.store.ScheduleByKey(ctx, call.key()); err == nil {
-			return s.addedText(row), nil
+			return s.addedText(tool, row), nil
 		} else if !errors.Is(err, store.ErrNotFound) {
 			return "", err
 		}
 	}
-	caller, err := s.callerProfile(ctx, call.Session)
-	if err != nil {
+	if err := allowed(ctx); err != nil {
 		return "", err
-	}
-	if caller == nil || caller.Role != profiles.RoleSupervisor {
-		return "", errors.New("only a supervisor keeps schedules: this session's profile is not one")
 	}
 	switch c.Action {
 	case schedule.ActionAdd:
@@ -680,7 +712,7 @@ func (s *Server) TeamSchedule(ctx context.Context, call TeamCall, c schedule.Cal
 			return "", err
 		}
 		s.scheduleSoon()
-		return s.addedText(row), nil
+		return s.addedText(tool, row), nil
 	case schedule.ActionCancel:
 		id, err := schedule.ParseID(c.ID)
 		if err != nil {
@@ -695,22 +727,21 @@ func (s *Server) TeamSchedule(ctx context.Context, call TeamCall, c schedule.Cal
 		s.scheduleSoon()
 		return schedule.CancelledText(schedule.ID(row.ID), row.State == store.ScheduleDone), nil
 	}
-	return s.scheduleLines(ctx, call.Session, c.Page)
+	return s.scheduleLines(ctx, tool, call.Session, c.Page)
 }
 
-// addedText is team_schedule's answer to an add, from the schedule as it
-// was made.
-func (s *Server) addedText(row store.ScheduleRow) string {
-	return schedule.AddedText(schedule.ID(row.ID), row.Spec, row.FirstAt, s.scheduleZone(row.Zone))
+// addedText is tool's answer to an add, from the schedule as it was made.
+func (s *Server) addedText(tool string, row store.ScheduleRow) string {
+	return schedule.AddedText(tool, schedule.ID(row.ID), row.Spec, row.FirstAt, s.scheduleZone(row.Zone))
 }
 
-// scheduleLines is team_schedule's list: the session's own schedules that
-// still go out, and, for a standing session, the owner's that go to it, as
+// scheduleLines is tool's list: the session's own schedules that still go
+// out, and, for a standing session, the owner's that go to it, as
 // GET /v1/schedules has them: the owner's file is read and their records
 // brought in step first, under scheduleMu, so the list never pairs a new
 // file with an old record, and a pass then wakes at what changed (Codex
 // review of #51, round 1).
-func (s *Server) scheduleLines(ctx context.Context, session int64, page int) (string, error) {
+func (s *Server) scheduleLines(ctx context.Context, tool string, session int64, page int) (string, error) {
 	profile, err := s.store.StandingProfile(ctx, session)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return "", err
@@ -751,7 +782,7 @@ func (s *Server) scheduleLines(ctx context.Context, session int64, page int) (st
 		}
 		lines = append(lines, line)
 	}
-	text, err := schedule.ListText(lines, page)
+	text, err := schedule.ListText(tool, lines, page)
 	if err != nil {
 		return "", err
 	}

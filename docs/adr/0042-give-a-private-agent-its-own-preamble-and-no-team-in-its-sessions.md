@@ -1,6 +1,6 @@
 # 0042 — Give a private agent its own preamble, and no team in its sessions
 
-- **Status:** Accepted
+- **Status:** Accepted; a private agent's own schedules, kept with `schedule`, no team tool and the one exception to decision 3, added by [ADR-0060](0060-give-a-private-agent-a-schedule-tool-of-its-own-checked-in-code.md)
 - **Date:** 2026-11-21
 
 ## Context

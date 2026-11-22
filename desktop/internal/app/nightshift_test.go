@@ -188,7 +188,7 @@ func TestTheNightShiftShowsWithNoThreadsSnapshot(t *testing.T) {
 	empty.connect(t)
 	empty.click(t, "Work Board")
 	empty.inOrder(t, "Proposals", "No proposal waits. When a gather asks the team for work, its proposals show here for you to pick and launch.",
-		"Schedules", "No schedule. Your schedules file and a supervisor's team_schedule add them.", "No threads yet")
+		"Schedules", "No schedule. Your schedules file, a supervisor's team_schedule and a private agent's schedule add them.", "No threads yet")
 	if empty.tt.HasText("Launch picks") {
 		t.Error("an empty board offers a launch")
 	}

@@ -467,7 +467,8 @@ func (s *Server) recordGate(_ context.Context, row store.PullRow, set func() (st
 // team_inbox, to each older supervisor's session but a standing one,
 // which takes them at its idle refresh (ADR-0030, ADR-0032, ADR-0046),
 // and team_github to each older plan lead's and open review's (ADR-0036,
-// ADR-0057). The service calls it once, after
+// ADR-0057), and the schedule tool to each older private agent's session
+// but a standing one (ADR-0060). The service calls it once, after
 // engine.Resume; a session it cannot change is logged, and keeps its
 // tools. The upgrades go apart: one that fails holds back no other, and
 // the schedule tools' is tried again by the schedules passes (Codex
@@ -483,10 +484,11 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 		failures = append(failures, err)
 	}
 	// A supervisor's session started before team_schedule or team_send
-	// gets it (ADR-0030, ADR-0032; Codex review of #51, round 1); what
-	// cannot be done now, a schedules pass tries again (round 2).
+	// gets it (ADR-0030, ADR-0032; Codex review of #51, round 1), and a
+	// private agent's session started before schedule gets it (ADR-0060);
+	// what cannot be done now, a schedules pass tries again (round 2).
 	s.scheduleMu.Lock()
-	err := s.upgradeSupervisorTools(ctx)
+	err := s.upgradeScheduleTools(ctx)
 	s.toolsDue = err != nil
 	s.scheduleMu.Unlock()
 	if err != nil {
@@ -601,6 +603,70 @@ func (s *Server) upgradeGitHubTools(ctx context.Context) error {
 			failures = append(failures, fmt.Errorf("thread T%d: %w", t.ID, err))
 		} else if changed {
 			s.log.Info("gave a session team_github", "thread", t.ID, "session", t.Session, "review", t.ReviewPull != 0)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// upgradeScheduleTools gives the tools that keep a session's own
+// schedules to the older sessions that lack them: the supervisor's later
+// team tools, team_schedule among them (upgradeSupervisorTools), and a
+// private agent's schedule (upgradePrivateSchedules, ADR-0060). Both go
+// apart: one that fails holds back no other. scheduleMu is held.
+func (s *Server) upgradeScheduleTools(ctx context.Context) error {
+	return errors.Join(s.upgradeSupervisorTools(ctx), s.upgradePrivateSchedules(ctx))
+}
+
+// upgradePrivateSchedules gives the schedule tool to every session that
+// gets it now (team.MaySchedule: a private profile's, working as no
+// thread, review, worker, consult or gather) and lacks it, but a standing
+// one, which takes its tools at its own refresh, when idle and under
+// refreshMu, as upgradeSupervisorTools leaves it. A profile it cannot read
+// now, or a session it cannot change, is an error, and a later pass tries
+// again; scheduleMu is held. Each profile is read once a pass, and a
+// session's role only for a private profile.
+func (s *Server) upgradePrivateSchedules(ctx context.Context) error {
+	if s.profiles == nil {
+		return nil
+	}
+	rows, err := s.store.Sessions(ctx)
+	if err != nil {
+		return err
+	}
+	read := map[string]*profiles.Profile{}
+	var failures []error
+	for _, row := range rows {
+		if row.Profile == "" || row.Standing {
+			continue
+		}
+		p, known := read[row.Profile]
+		if !known {
+			found, err := s.profiles.Find(row.Profile)
+			if profiles.Unreadable(err) {
+				failures = append(failures, fmt.Errorf("profile %s: %w", row.Profile, err))
+				continue
+			}
+			if err == nil {
+				p = &found
+			}
+			read[row.Profile] = p
+		}
+		// The roles matter only for a private profile.
+		if !team.MaySchedule(p, team.SessionRole{}) {
+			continue
+		}
+		role, err := s.sessionRole(ctx, row.ID)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("session %d: %w", row.ID, err))
+			continue
+		}
+		if !team.MaySchedule(p, role) {
+			continue
+		}
+		if changed, err := s.engine.SetScheduleTool(ctx, row.ID); err != nil {
+			failures = append(failures, fmt.Errorf("session %d: %w", row.ID, err))
+		} else if changed {
+			s.log.Info("gave a private agent's session the schedule tool", "session", row.ID)
 		}
 	}
 	return errors.Join(failures...)
