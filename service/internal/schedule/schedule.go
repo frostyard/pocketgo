@@ -14,11 +14,11 @@ import (
 const (
 	// MaxText is the most characters a scheduled message has.
 	MaxText = 4000
-	// MaxPerSession is the most schedules a supervisor's session keeps
-	// that still go out: a runaway loop of the model's own reminders costs
-	// money. The owner's schedules count apart.
+	// MaxPerSession is the most schedules a session keeps that still go
+	// out, a supervisor's or a private agent's: a runaway loop of the
+	// model's own reminders costs money. The owner's schedules count apart.
 	MaxPerSession = 50
-	// MaxPageBytes and MaxPageLines bound a page of team_schedule's list:
+	// MaxPageBytes and MaxPageLines bound a page of a schedule tool's list:
 	// a tool result stays far below what PiG keeps of one (50 KiB or 2,000
 	// lines), so no schedule is lost to a cut (Codex review of #51, round
 	// 3).
@@ -52,14 +52,23 @@ func CheckText(text string) (string, error) {
 	return text, nil
 }
 
-// Actions of team_schedule.
+// The tools that keep a session's own schedules, with one engine and one
+// set of limits: a supervisor's team_schedule (ADR-0030) and a private
+// agent's schedule (ADR-0060). Their answers name the tool that was
+// called.
+const (
+	TeamTool = "team_schedule"
+	OwnTool  = "schedule"
+)
+
+// Actions of a schedule tool.
 const (
 	ActionAdd    = "add"
 	ActionList   = "list"
 	ActionCancel = "cancel"
 )
 
-// Call is a team_schedule call: add a schedule (When, Message), list the
+// Call is a schedule tool's call: add a schedule (When, Message), list the
 // session's schedules, or cancel one of its own (ID).
 type Call struct {
 	Action  string `json:"action"`
@@ -121,7 +130,7 @@ func ParseID(id string) (int64, error) {
 	return n, nil
 }
 
-// Line is a schedule as team_schedule lists it.
+// Line is a schedule as a schedule tool lists it.
 type Line struct {
 	// ID is S3 for a session's own, or the owner's id in their schedules
 	// file.
@@ -145,7 +154,7 @@ type Line struct {
 	Problem string
 }
 
-// GatherText is a schedule's gather as team_schedule's list shows it: its
+// GatherText is a schedule's gather as a schedule tool's list shows it: its
 // skill, the agents it asks, and its note (Codex review of #57, round 2).
 func GatherText(skill string, agents []string, note string) string {
 	text := "a gather with the skill " + skill + ", asking "
@@ -192,18 +201,19 @@ func Describe(when string, first time.Time, zone *time.Location) string {
 	return "once, " + When(first, zone)
 }
 
-// AddedText is team_schedule's answer to an add: it depends only on the
-// schedule as it was made, so the call run again answers as the first did.
-func AddedText(id, when string, first time.Time, zone *time.Location) string {
-	return fmt.Sprintf("Scheduled %s: %s. It comes to this session as a message that starts with %q; cancel it with team_schedule cancel %s.",
-		id, Describe(when, first, zone), strings.TrimSpace(Prefix), id)
+// AddedText is tool's answer to an add (TeamTool or OwnTool): it depends
+// only on the tool called and the schedule as it was made, so the call run
+// again answers as the first did.
+func AddedText(tool, id, when string, first time.Time, zone *time.Location) string {
+	return fmt.Sprintf("Scheduled %s: %s. It comes to this session as a message that starts with %q; cancel it with %s cancel %s.",
+		id, Describe(when, first, zone), strings.TrimSpace(Prefix), tool, id)
 }
 
-// ListText is team_schedule's answer to a list: page page (from 1, 0 for
-// the first) of its lines, in pages of at most MaxPageBytes bytes and
-// MaxPageLines lines, cut at line ends, each saying whether one follows.
-// A page past the last is an error.
-func ListText(lines []Line, page int) (string, error) {
+// ListText is tool's answer to a list (TeamTool or OwnTool): page page
+// (from 1, 0 for the first) of its lines, in pages of at most MaxPageBytes
+// bytes and MaxPageLines lines, cut at line ends, each saying whether one
+// follows, and how tool reads it. A page past the last is an error.
+func ListText(tool string, lines []Line, page int) (string, error) {
 	if len(lines) == 0 {
 		return "Nothing is scheduled for this session.", nil
 	}
@@ -239,7 +249,7 @@ func ListText(lines []Line, page int) (string, error) {
 	}
 	text := fmt.Sprintf("Page %d of %d of this session's schedules.\n%s", page, len(pages), pages[page-1])
 	if page < len(pages) {
-		text += fmt.Sprintf("\n(More: team_schedule list with page %d.)", page+1)
+		text += fmt.Sprintf("\n(More: %s list with page %d.)", tool, page+1)
 	}
 	return text, nil
 }
@@ -259,7 +269,7 @@ func cutLine(line string, max int) []string {
 	return append(parts, line)
 }
 
-// CancelledText is team_schedule's answer to a cancel: it depends only on
+// CancelledText is a schedule tool's answer to a cancel: it depends only on
 // the schedule, so the call run again answers as the first did.
 func CancelledText(id string, done bool) string {
 	if done {

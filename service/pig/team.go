@@ -55,6 +55,11 @@ type Team interface {
 	// ctx's error.
 	Question(ctx context.Context, call api.TeamCall, q team.Question) (string, error)
 	TeamInbox(ctx context.Context, call api.TeamCall) (string, error)
+	// Schedule keeps a private agent's own schedules, to the calling
+	// session, with team_schedule's engine (ADR-0060). It is no team
+	// tool: TeamAllows does not run before it, and it checks its caller
+	// itself.
+	Schedule(ctx context.Context, call api.TeamCall, c schedule.Call) (string, error)
 }
 
 // SetTeam wires the team tools to t. Call it before Resume, as the other
@@ -72,7 +77,7 @@ const (
 	toolFinding  = "team_finding"
 	toolDiff     = "team_diff"
 	toolWorker   = "team_worker"
-	toolSchedule = "team_schedule"
+	toolSchedule = schedule.TeamTool
 	toolSend     = "team_send"
 	toolGather   = "team_gather"
 	toolBoard    = "team_board"
@@ -364,9 +369,8 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
-				ToolSchema: schema(toolSchedule, "Send yourself a message in this session later, or on repeat: to check back on something slow, "+
-					"or for a regular job. pocketd keeps the time; clock times are in the service's zone. "+schedule.Guide, scheduleParameters),
-				Replay: durable.ReplaySafe,
+				ToolSchema: schema(toolSchedule, scheduleDescription, scheduleParameters),
+				Replay:     durable.ReplaySafe,
 				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
 					c, err := durable.FromJsonValue[schedule.Call](args)
 					if err != nil {
@@ -527,10 +531,11 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // cross-review read GitHub with GET alone, too (team_github, ADR-0036,
 // ADR-0057), and no other session does. A supervisor alone reads the
 // owner's Inbox (team_inbox, ADR-0046). A private agent has no team tool
-// at all (ADR-0042).
+// at all (ADR-0042): it keeps its own schedules with the schedule tool,
+// which is none (toolsOf, ADR-0060).
 func roleTools(spec api.SessionSpec) []string {
-	// A private agent has no team: no team tool, team_memory included,
-	// whatever its role (ADR-0042).
+	// A private agent has no team: no team tool, team_memory and
+	// team_schedule included, whatever its role (ADR-0042, ADR-0060).
 	if spec.Profile != nil && spec.Profile.Private {
 		return nil
 	}
@@ -1352,15 +1357,15 @@ func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 }
 
 // splitTools splits a session's tools into its own (the coding tools),
-// the names of its team tools and its tail, the question tool, which
-// comes after the team tools (toolsOf, ADR-0048): a team tool given later
-// goes among the team tools, before the tail.
+// the names of its team tools and its tail, the question and schedule
+// tools, which come after the team tools (toolsOf, ADR-0048, ADR-0060): a
+// team tool given later goes among the team tools, before the tail.
 func (e *Engine) splitTools(tools []*durable.ToolRegistration) (own []*durable.ToolRegistration, team []string, tail []*durable.ToolRegistration) {
 	for _, tool := range tools {
 		switch {
 		case e.isTeamTool(tool.Name):
 			team = append(team, tool.Name)
-		case tool.Name == toolQuestion:
+		case tool.Name == toolQuestion || tool.Name == toolOwnSchedule:
 			tail = append(tail, tool)
 		default:
 			own = append(own, tool)

@@ -1,6 +1,6 @@
 # 0030 — Send scheduled messages from the owner's file and the supervisor's tool, in code
 
-- **Status:** Accepted; decision 1's missed time for a standing session not open yet is superseded by [0033](0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md), which opens it
+- **Status:** Accepted; decision 1's missed time for a standing session not open yet is superseded by [0033](0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md), which opens it; decision 4's engine and limits given to a private agent's own schedules too, with `schedule`, by [ADR-0060](0060-give-a-private-agent-a-schedule-tool-of-its-own-checked-in-code.md)
 - **Date:** 2026-11-20
 
 ## Context

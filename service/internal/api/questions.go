@@ -71,7 +71,7 @@ func (s *Server) newQuestion(ctx context.Context, call TeamCall, q team.Question
 	if err != nil {
 		return store.QuestionRow{}, err
 	}
-	caller, role, err := s.questionCaller(ctx, call.Session)
+	caller, role, err := s.sessionCaller(ctx, call.Session)
 	if err != nil {
 		return store.QuestionRow{}, err
 	}
@@ -95,11 +95,11 @@ func (s *Server) newQuestion(ctx context.Context, call TeamCall, q team.Question
 	return row, err
 }
 
-// questionCaller is session's profile as it is now, nil for none or for a
+// sessionCaller is session's profile as it is now, nil for none or for a
 // profile that is gone or invalid, and what the session works as. A
 // profile pocketd cannot read now is an error, and a later call tries
 // again.
-func (s *Server) questionCaller(ctx context.Context, session int64) (*profiles.Profile, team.SessionRole, error) {
+func (s *Server) sessionCaller(ctx context.Context, session int64) (*profiles.Profile, team.SessionRole, error) {
 	row, err := s.store.Session(ctx, session)
 	if err != nil {
 		return nil, team.SessionRole{}, err

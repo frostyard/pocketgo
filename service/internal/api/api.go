@@ -182,6 +182,10 @@ type Engine interface {
 	// it, and says whether it did (ADR-0048): the caller decides which
 	// sessions get it (team.MayQuestion).
 	SetQuestionTool(ctx context.Context, id int64) (bool, error)
+	// SetScheduleTool gives the schedule tool to a session made before
+	// it, and says whether it did (ADR-0060): the caller decides which
+	// sessions get it (team.MaySchedule).
+	SetScheduleTool(ctx context.Context, id int64) (bool, error)
 	// Git runs git with args in dir, in the sandbox (worktree.Git), and
 	// Exists says whether a path names an entry there (worktree.Exists).
 	Git(ctx context.Context, dir string, args ...string) (string, error)
@@ -619,8 +623,9 @@ type Server struct {
 	// was due, before it publishes and arms its wake.
 	afterScheduleFire func()
 	// toolsDue says some supervisor's session may still lack
-	// team_schedule or team_send (upgradeSupervisorTools): each schedules
-	// pass tries again. scheduleMu guards it.
+	// team_schedule or team_send, or some private agent's session the
+	// schedule tool (upgradeScheduleTools): each schedules pass tries
+	// again. scheduleMu guards it.
 	toolsDue bool
 	// skills is the skills folder a gather reads a skill from (SetSkills;
 	// ADR-0033). gatherTimer wakes a delivery pass at an ask's deadline or

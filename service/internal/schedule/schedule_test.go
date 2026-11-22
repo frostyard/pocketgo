@@ -323,7 +323,7 @@ func TestTheListComesInPages(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for page := 1; ; page++ {
-		text, err := ListText(lines, page)
+		text, err := ListText(TeamTool, lines, page)
 		if err != nil {
 			t.Fatalf("page %d: %v", page, err)
 		}
@@ -336,7 +336,7 @@ func TestTheListComesInPages(t *testing.T) {
 			}
 		}
 		if !strings.Contains(text, "list with page") {
-			if _, err := ListText(lines, page+1); err == nil {
+			if _, err := ListText(TeamTool, lines, page+1); err == nil {
 				t.Fatalf("a page past the last %d", page)
 			}
 			break
@@ -345,7 +345,7 @@ func TestTheListComesInPages(t *testing.T) {
 	if len(seen) != len(lines) {
 		t.Fatalf("%d of %d lines are on a page", len(seen), len(lines))
 	}
-	if one, err := ListText(lines[:1], 0); err != nil || one != lines[0].String() {
+	if one, err := ListText(TeamTool, lines[:1], 0); err != nil || one != lines[0].String() {
 		t.Fatalf("one page: %q %v", one, err)
 	}
 	if err := CheckCall(Call{Action: ActionAdd, When: "in 1h", Message: "x", Page: 2}); err == nil {
@@ -388,11 +388,11 @@ func TestCheckCallAndIDs(t *testing.T) {
 func TestScheduleTexts(t *testing.T) {
 	zone := chicago(t)
 	first := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
-	if got := AddedText("S3", "every day 19:00", first, zone); !strings.Contains(got, "Scheduled S3: every day at 19:00 (America/Chicago).") ||
+	if got := AddedText(TeamTool, "S3", "every day 19:00", first, zone); !strings.Contains(got, "Scheduled S3: every day at 19:00 (America/Chicago).") ||
 		!strings.Contains(got, `"[scheduled]"`) {
 		t.Errorf("added: %q", got)
 	}
-	if got := AddedText("S4", "in 30m", first, zone); !strings.Contains(got, "Scheduled S4: once, Sun 4 Oct 19:00 CDT.") {
+	if got := AddedText(TeamTool, "S4", "in 30m", first, zone); !strings.Contains(got, "Scheduled S4: once, Sun 4 Oct 19:00 CDT.") {
 		t.Errorf("added once: %q", got)
 	}
 	if Message("look again") != "[scheduled] look again" {
@@ -420,7 +420,7 @@ func TestScheduleTexts(t *testing.T) {
 	big := Line{ID: "night", Owners: true, When: "every day at 23:00", Zone: zone, Text: GatherText("grooming", agents, "")}
 	var whole strings.Builder
 	for page := 1; ; page++ {
-		text, err := ListText([]Line{big}, page)
+		text, err := ListText(TeamTool, []Line{big}, page)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -440,10 +440,33 @@ func TestScheduleTexts(t *testing.T) {
 	if whole.String() != big.String() {
 		t.Fatalf("the pages hold %d of the line's %d bytes", whole.Len(), len(big.String()))
 	}
-	if got, err := ListText(nil, 0); err != nil || got != "Nothing is scheduled for this session." {
+	if got, err := ListText(TeamTool, nil, 0); err != nil || got != "Nothing is scheduled for this session." {
 		t.Error(got)
 	}
 	if CancelledText("S3", false) != "Cancelled S3: it sends nothing more." || !strings.Contains(CancelledText("S3", true), "went out already") {
 		t.Error("cancel texts")
+	}
+}
+
+// An add's answer and a list's next page name the tool that was called: a
+// private agent's schedule, which has no team_schedule, or a supervisor's
+// team_schedule (ADR-0060).
+func TestTheTextsNameTheToolCalled(t *testing.T) {
+	first := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
+	for _, tool := range []string{OwnTool, TeamTool} {
+		if got := AddedText(tool, "S1", "every sun 9:00", first, time.UTC); !strings.HasSuffix(got, "; cancel it with "+tool+" cancel S1.") {
+			t.Errorf("%s: added %q", tool, got)
+		}
+		var lines []Line
+		for i := range 30 {
+			lines = append(lines, Line{ID: ID(int64(i + 1)), When: "once", Zone: time.UTC, Text: strings.Repeat("é", 1000)})
+		}
+		text, err := ListText(tool, lines, 1)
+		if err != nil || !strings.HasSuffix(text, "\n(More: "+tool+" list with page 2.)") {
+			t.Errorf("%s: a page that another follows ends %q, %v", tool, text[max(len(text)-60, 0):], err)
+		}
+	}
+	if got := AddedText(OwnTool, "S1", "every sun 9:00", first, time.UTC); strings.Contains(got, TeamTool) {
+		t.Errorf("a private agent's answer names team_schedule: %q", got)
 	}
 }

@@ -60,9 +60,9 @@ func (e *Engine) questionExtension() *durable.Extension {
 	}
 }
 
-// questionRole is what a session made from spec works as, for
-// team.MayQuestion.
-func questionRole(spec api.SessionSpec) team.SessionRole {
+// roleOf is what a session made from spec works as, for
+// team.MayQuestion and team.MaySchedule.
+func roleOf(spec api.SessionSpec) team.SessionRole {
 	return team.SessionRole{Thread: spec.Thread != 0, Review: spec.Review, Worker: spec.Worker, Consult: spec.Consult != 0, Gather: spec.Gather != 0}
 }
 
@@ -110,8 +110,9 @@ func (e *Engine) placedKeys(ctx context.Context, id, entry int64) (string, error
 }
 
 // SetQuestionTool gives the question tool, and its extension, to session
-// id made before it, after its other tools, and says whether it did
-// (ADR-0048). Its caller decides which sessions get it
+// id made before it, after its other tools but the schedule tool, which
+// comes after it as in a new session (toolsOf, ADR-0060), and says
+// whether it did (ADR-0048). Its caller decides which sessions get it
 // (team.MayQuestion); a session that has it is left as it is.
 func (e *Engine) SetQuestionTool(ctx context.Context, id int64) (bool, error) {
 	conversation, err := e.conversation(ctx, id)
@@ -135,7 +136,11 @@ func (e *Engine) SetQuestionTool(ctx context.Context, id int64) (bool, error) {
 	// so the tool is named in the list always (Codex review of #95,
 	// round 1).
 	if !slices.Contains(toolNames(agent.Tools), toolQuestion) {
-		change.Tools = harness.SetTo(harness.ToolChange{List: append(slices.Clone(agent.Tools), e.questionExt.Tools...)})
+		at := slices.IndexFunc(agent.Tools, func(tool *durable.ToolRegistration) bool { return tool.Name == toolOwnSchedule })
+		if at < 0 {
+			at = len(agent.Tools)
+		}
+		change.Tools = harness.SetTo(harness.ToolChange{List: slices.Concat(agent.Tools[:at], e.questionExt.Tools, agent.Tools[at:])})
 	}
 	return true, conversation.Configure(ctx, change)
 }

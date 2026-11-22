@@ -76,7 +76,7 @@
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#service), [specs/protocol.md](../specs/protocol.md) (rules 1, 10, 24, 26, 27, 28a, 30a and 39)
-- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 33, a closed thread reopened by a message)
+- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 34, a closed thread reopened by a message)
 - Supersedes in part: [ADR-0032](0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md) (decision 1's refusal of a closed thread); amends [ADR-0054](0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md) (a closed thread's worktree waits for a message that may reopen it) and [ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md) (a reopened thread's merge close)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md), [ADR-0020](0020-plan-before-building-with-the-plan-gate-and-consults-in-code.md), [ADR-0032](0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md), [ADR-0037](0037-unblock-a-thread-when-the-supervisors-message-reaches-it.md), [ADR-0054](0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md)
 - Issue: [frostyard/pocketgo#55](https://github.com/frostyard/pocketgo/issues/55)
