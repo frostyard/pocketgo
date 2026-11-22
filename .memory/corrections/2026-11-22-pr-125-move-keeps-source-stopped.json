@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide keeps pocketd stopped on the old host from the data folder's copy on when moving hosts, and starts it only on the new one: each lock holds only its own data folder, and two would resume the same work.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 12 (codex-cli 0.169.0) of head 73b8269: [P1] Keep the source service stopped during a host migration",
+  "promoted_to": "docs/design/setup.md"
+}

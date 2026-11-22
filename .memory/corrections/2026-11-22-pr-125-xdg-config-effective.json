@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide gives the admin shell the XDG_CONFIG_HOME the service runs with, from pocketd.env or else systemctl --user show-environment, not only one pocketd.env sets.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 12 (codex-cli 0.169.0) of head 73b8269: [P1] Use the service's effective XDG config path for gh",
+  "promoted_to": "docs/design/setup.md"
+}
