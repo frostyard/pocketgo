@@ -39,7 +39,7 @@ func TestTheSpecNamesThisVersion(t *testing.T) {
 	}
 	for _, path := range []string{PathHello, PathModels, PathProfiles, PathSessions, PathSession, PathMessages, PathAbort, PathStartOver, PathModel, PathTitle, PathUploads, PathQuestion, PathChanges, PathChangesFile,
 		PathApprovals, PathApproval, PathThreads, PathCloseThread, PathAsks, PathAsk, PathLessons, PathLesson, PathPulls, PathPull, PathPlans, PathApprovePlan, PathSchedules, PathGathers, PathProposals, PathSearch, PathPrompts, PathEvents,
-		PathTerminals, PathTerminal, PathTerminalOutput, PathTerminalInput, PathTerminalResize, PathUsage} {
+		PathTerminals, PathTerminal, PathTerminalOutput, PathTerminalInput, PathTerminalResize, PathUsage, PathSignIns, PathSignIn, PathSignInFlow, PathCancelSignIn} {
 		if !strings.Contains(spec, " "+path+"` |") {
 			t.Errorf("the spec's endpoints lack %s", path)
 		}

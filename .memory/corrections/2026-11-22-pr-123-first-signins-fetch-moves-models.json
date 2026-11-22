@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A fetch of the sign-ins that brings a provider the client did not know counts as moving the models, so the first fetch, which may bring another device's sign-out before its event, fetches the models and profiles.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 3 (codex-cli 0.169.0) of head 38299fd: [P2] Refresh model data on the first sign-in list observation",
+  "promoted_to": "desktop/internal/state/signins_round3_test.go"
+}

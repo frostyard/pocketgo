@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "pocketdtest reads a sign-in start's and cancel's body with decodeStrict, as pocketd does: an unknown field, trailing data or a request id over its bound is bad_request and changes nothing.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 3 (codex-cli 0.169.0) of head 38299fd: [P3] Use the strict request decoder in both fake sign-in routes",
+  "promoted_to": "desktop/internal/pocketdtest/signins_round3_test.go"
+}

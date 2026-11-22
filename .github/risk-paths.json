@@ -178,6 +178,31 @@
       "why": "secrets: pocketd stores model sign-ins, subscriptions by OAuth and API keys, in its data folder (ADR-0005, ADR-0021)"
     },
     {
+      "glob": "service/pig/signin.go",
+      "level": "L1",
+      "why": "secrets: pocketd writes a sign-in a client made into the engine's one credential store, and takes one out (ADR-0062)"
+    },
+    {
+      "glob": "service/internal/signins/**",
+      "level": "L1",
+      "why": "secrets: pocketd runs GitHub's device flow and holds the GitHub token until the engine's credential writer keeps the sign-in (ADR-0062)"
+    },
+    {
+      "glob": "service/internal/api/signins.go",
+      "level": "L1",
+      "why": "auth: the HTTP side of the sign-ins a client makes: which provider signs in, which request starts or cancels a flow, and a sign-out (ADR-0062)"
+    },
+    {
+      "glob": "desktop/internal/state/signins.go",
+      "level": "L1",
+      "why": "auth: the owner signs pocketd in to and out of a subscription from the desktop, and the only device page the desktop opens (ADR-0062)"
+    },
+    {
+      "glob": "desktop/internal/app/signins.go",
+      "level": "L2",
+      "why": "destructive operations: the Sign Out of pocketd from a provider and the question before it (ADR-0062)"
+    },
+    {
       "glob": "service/internal/api/reviews.go",
       "level": "L2",
       "why": "publish: pocketd puts ready-for-human on pull requests on GitHub, as the bot account, from cross-review verdicts it checks"

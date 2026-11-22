@@ -69,13 +69,17 @@ package proto
 // /v1/sessions/{id}/changes and GET /v1/sessions/{id}/changes/file.
 // Version 31 renames a private agent's session (ADR-0058): POST
 // /v1/sessions/{id}/title and a session's renamable.
-const Version = 31
+// Version 32 signs pocketd in to a subscription from a client (ADR-0062):
+// GET /v1/signins, POST and DELETE /v1/signins/{id}, a device
+// flow's GET and cancel, and the signin event.
+const Version = 32
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 31. A path with {id} takes a session,
-// approval, thread, ask, lesson, plan or terminal id in that segment;
+// The request paths of protocol version 32. A path with {id} takes a session,
+// approval, thread, ask, lesson, plan, terminal or device flow id in that
+// segment, and PathSignIn a provider's id;
 // PathQuestion takes its session's id there, and the question's in {qid}.
 // PathChangesFile takes the file's path in the query string (path=).
 // PathUploads takes a file the owner attaches to a message to the session
@@ -137,7 +141,13 @@ const (
 	PathTerminalOutput = "/v1/terminals/{id}/output"
 	PathTerminalInput  = "/v1/terminals/{id}/input"
 	PathTerminalResize = "/v1/terminals/{id}/resize"
-	MaxRequestIDSize   = 128
+	// The sign-ins (ADR-0062): the list, a provider's device flow (POST
+	// starts it, DELETE signs out), one flow, and a flow's cancel.
+	PathSignIns      = "/v1/signins"
+	PathSignIn       = "/v1/signins/{id}"
+	PathSignInFlow   = "/v1/signins/flows/{id}"
+	PathCancelSignIn = "/v1/signins/flows/{id}/cancel"
+	MaxRequestIDSize = 128
 	// MaxTitle is the most bytes of a session's title as a request sends
 	// it, before it is trimmed (rules 9 and 68).
 	MaxTitle       = 200

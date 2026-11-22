@@ -398,6 +398,40 @@ func (c *Client) StartTerminal(ctx context.Context, request StartTerminal) (Term
 	return out, c.do(ctx, http.MethodPost, PathTerminals, request, &out)
 }
 
+// SignIns lists the providers pocketd signs in to, with their state and
+// newest device flow (rule 69).
+func (c *Client) SignIns(ctx context.Context) ([]SignIn, error) {
+	var out []SignIn
+	return out, c.do(ctx, http.MethodGet, PathSignIns, nil, &out)
+}
+
+// StartSignIn starts provider's device flow, or answers its running one
+// (rule 69).
+func (c *Client) StartSignIn(ctx context.Context, provider string, request StartSignIn) (SignInFlow, error) {
+	var out SignInFlow
+	return out, c.do(ctx, http.MethodPost, Path(PathSignIn, provider), request, &out)
+}
+
+// SignInFlow reads device flow id as it is now (rule 69).
+func (c *Client) SignInFlow(ctx context.Context, id string) (SignInFlow, error) {
+	var out SignInFlow
+	return out, c.do(ctx, http.MethodGet, Path(PathSignInFlow, id), nil, &out)
+}
+
+// CancelSignIn cancels device flow id, and answers it as it is then (rule
+// 69).
+func (c *Client) CancelSignIn(ctx context.Context, id string, request CancelSignIn) (SignInFlow, error) {
+	var out SignInFlow
+	return out, c.do(ctx, http.MethodPost, Path(PathCancelSignIn, id), request, &out)
+}
+
+// SignOut signs pocketd out of provider, and answers the provider's sign-in
+// as it is then (rule 69).
+func (c *Client) SignOut(ctx context.Context, provider string) (SignIn, error) {
+	var out SignIn
+	return out, c.do(ctx, http.MethodDelete, Path(PathSignIn, provider), nil, &out)
+}
+
 // EndTerminal ends shell id.
 func (c *Client) EndTerminal(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, Path(PathTerminal, id), nil, nil)

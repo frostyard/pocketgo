@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The sheet's read of its flow is dropped when the sheet took a newer copy since it went, an event's, or its flow ended: a late answer never brings back a code.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 2 (codex-cli 0.169.0) of head 5877502: [P2] Keep a late flow lookup from undoing a terminal event",
+  "promoted_to": "desktop/internal/state/signins_round2_test.go"
+}

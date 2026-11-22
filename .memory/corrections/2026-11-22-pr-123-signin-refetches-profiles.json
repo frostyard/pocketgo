@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "A sign-in that moves the models pocketd runs fetches the profiles with the models (Store.modelsMoved): pocketd decides each profile's model and problem from them.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 2 (codex-cli 0.169.0) of head 5877502: [P2] Refresh profiles when a sign-in changes the available models",
+  "promoted_to": "desktop/internal/state/signins_round2_test.go"
+}

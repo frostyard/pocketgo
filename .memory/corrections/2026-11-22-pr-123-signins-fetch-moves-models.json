@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "Data.SetSignIns says whether a row the client had moved the models, so a fetch that brings a sign-in or a sign-out before its event fetches the models and profiles.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 2 (codex-cli 0.169.0) of head 5877502: [P2] Invalidate models when the sign-in list sees a change first",
+  "promoted_to": "desktop/internal/state/signins_round2_test.go"
+}
