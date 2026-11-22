@@ -83,6 +83,15 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage, cr CrossReview) string {
 	if b == nil || b.Head != f.HeadRefOid {
 		return "PocketGo could not read what the rules you can bypass need"
 	}
+	// GitHub's review decision in the PR query and in the bypass read, which
+	// reads the approvals counted below, must be the same: two that differ,
+	// as when a review came or went between the reads, prove nothing. The
+	// count, the extra approval and pocketd's verdict standing in for a
+	// missing review all rest on them (pocketgo ADR-0059, Codex review of
+	// #119, round 1).
+	if b.ReviewDecision != f.ReviewDecision {
+		return reviewDecisionChanged
+	}
 	// Another open PR at the same commit can block the merge on its reviews,
 	// which PocketGo does not read: a pull_request rule needs it proven.
 	if r.Proof.PullRequest && len(b.SameHead) > 0 {
@@ -146,6 +155,10 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage, cr CrossReview) string {
 	return ""
 }
 
+// reviewDecisionChanged is gate 11's refusal of a read whose PR query and
+// bypass read give GitHub's review decision differently.
+const reviewDecisionChanged = "GitHub's review decision changed while PocketGo read it: check it again"
+
 // approvalCount is gate 11's count of approvals at the head: what the rules
 // the owner can bypass need, the extra approval for an unattributed change
 // as GitHub counts it (extraCounts, pocketgo ADR-0059); GitHub's own, by
@@ -177,7 +190,7 @@ func approvalCount(f PRFacts, r RepoRules, stage Stage, cr CrossReview) (need, g
 // by gate 11, and GitHub enforces each rule the owner cannot bypass at the
 // merge itself (pocketgo ADR-0031, Codex review of #53, round 1).
 func verdictFills(f PRFacts, r RepoRules, stage Stage, cr CrossReview) bool {
-	if r.Bypass == "never" || f.Bypass == nil || f.Bypass.Head != f.HeadRefOid {
+	if r.Bypass == "never" || f.Bypass == nil || f.Bypass.Head != f.HeadRefOid || f.Bypass.ReviewDecision != f.ReviewDecision {
 		return false
 	}
 	need, gh, verdict := approvalCount(f, r, stage, cr)
@@ -226,9 +239,9 @@ func approvalsNeeded(p BypassRules, extra bool) int {
 //     for approvals contradicts), and a value PocketGo does not know. A
 //     review asking for changes is refused by gate 8 and gate 11 first.
 //
-// The decision is the bypass read's, whose approvals gate 11 counts, and
-// the PR query's must be the same: two reads that differ, as when a review
-// came or went between them, prove nothing, and count it.
+// The decision is the bypass read's, whose approvals gate 11 counts. Gate
+// 11 refuses a read whose PR query gives another (reviewDecisionChanged),
+// and two that differ count it here too.
 //
 // Only the extra is GitHub's to count: each rule's own count stays
 // PocketGo's, of approvals at the head by accounts that can push.

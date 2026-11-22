@@ -148,8 +148,9 @@ func TestThePreviewCountsTheExtraApprovalUnlessGitHubsAnswerCanCountIt(t *testin
 // counts, and the PR query's must agree: a review dismissed between the
 // two reads, after the PR query said APPROVED, leaves the bypass read's
 // REVIEW_REQUIRED, and the merge is refused; so is an approval between
-// them, the other way round.
-func TestTheExtraApprovalCountsWhenTheTwoReadsDisagree(t *testing.T) {
+// them, the other way round, at either stage, whoever wrote the pull
+// request.
+func TestGate11RefusesAReadWhoseTwoReviewDecisionsDisagree(t *testing.T) {
 	f := dependabotPR(t)
 	c := f.client()
 	p, err := c.Preview(context.Background(), f.ref, CrossReview{})
@@ -159,31 +160,69 @@ func TestTheExtraApprovalCountsWhenTheTwoReadsDisagree(t *testing.T) {
 	f.reset()
 	f.onBypass = func(repo map[string]any) { obj(repo, "pullRequest")["reviewDecision"] = "REVIEW_REQUIRED" }
 	res := c.Act(context.Background(), Intent{Preview: p, Mode: "single"}, "op-race", nil)
-	if res.Kind != "approved" || res.Step != "read 2" ||
-		!strings.Contains(res.Reason, "the rules need 2 approvals at the head; PocketGo counts 1") ||
+	if res.Kind != "approved" || res.Step != "read 2" || res.Reason != reviewDecisionChanged ||
 		strings.Join(f.mutations, ",") != approve {
 		t.Fatalf("%+v, mutations %v", res, f.mutations)
 	}
 
 	for _, c := range []struct {
-		pr, bypass string
-		stage      Stage
+		author, pr, bypass string
+		stage              Stage
 	}{
-		{"APPROVED", "REVIEW_REQUIRED", AfterApproval},
-		{"REVIEW_REQUIRED", "APPROVED", AfterApproval},
-		{"APPROVED", "REVIEW_REQUIRED", AtPreview},
-		{"REVIEW_REQUIRED", "APPROVED", AtPreview},
-		{"APPROVED", "", AfterApproval},
-		{"", "APPROVED", AfterApproval},
+		{"Bot", "APPROVED", "REVIEW_REQUIRED", AfterApproval},
+		{"Bot", "REVIEW_REQUIRED", "APPROVED", AfterApproval},
+		{"Bot", "APPROVED", "REVIEW_REQUIRED", AtPreview},
+		{"Bot", "REVIEW_REQUIRED", "APPROVED", AtPreview},
+		{"Bot", "APPROVED", "", AfterApproval},
+		{"Bot", "", "APPROVED", AfterApproval},
+		{"User", "REVIEW_REQUIRED", "APPROVED", AfterApproval},
+		{"User", "APPROVED", "", AtPreview},
 	} {
-		f := approvalFacts("Bot", c.pr, Login)
+		f := approvalFacts(c.author, c.pr, Login)
 		f.Bypass.ReviewDecision = c.bypass
 		if c.stage == AtPreview {
 			f.Bypass.Approvers = nil
 		}
-		if !extraCounts(f, c.stage) {
+		ready := CrossReview{Verdict: VerdictReady, Head: f.HeadRefOid, Base: "main"}
+		if why := bypassGate(f, orgRules(1), c.stage, ready); why != reviewDecisionChanged {
+			t.Errorf("%s, the PR query %q, the bypass read %q, stage %d: %q", c.author, c.pr, c.bypass, c.stage, why)
+		}
+		if verdictFills(f, orgRules(1), c.stage, ready) {
+			t.Errorf("%s, the PR query %q, the bypass read %q, stage %d: the verdict fills", c.author, c.pr, c.bypass, c.stage)
+		}
+		if c.author == "Bot" && !extraCounts(f, c.stage) {
 			t.Errorf("the PR query %q, the bypass read %q, stage %d: the extra does not count", c.pr, c.bypass, c.stage)
 		}
+	}
+}
+
+// pocketd's verdict never lets a merge GitHub blocks through on reads that
+// disagree: after the owner's approval, the PR query says the review is
+// required and the merge blocked, while the bypass read already says
+// APPROVED, so no review is missing and the block is something else.
+// Counting the extra approval there would let the verdict fill it and
+// take BLOCKED (Codex review of #119, round 1).
+func TestAVerdictNeverOverridesABlockWhenTheReviewDecisionsDisagree(t *testing.T) {
+	f := botPR(t)
+	ready := CrossReview{Verdict: VerdictReady, Head: f.head(), Base: "main"}
+	c := f.client()
+	p, err := c.Preview(context.Background(), f.ref, ready)
+	if err != nil || !p.Eligible {
+		t.Fatalf("preview %+v, %v", p, err)
+	}
+	f.reset()
+	// The bypass read after the approval, which shows the owner's
+	// approval, says APPROVED; the PR query still says REVIEW_REQUIRED and
+	// BLOCKED (botPR).
+	f.onBypass = func(repo map[string]any) {
+		if f.pr()["viewerLatestReview"] != nil {
+			obj(repo, "pullRequest")["reviewDecision"] = "APPROVED"
+		}
+	}
+	res := c.Act(context.Background(), Intent{Preview: p, Mode: "single", CrossReview: ready}, "op-disagree", nil)
+	if res.Kind != "approved" || res.Step != "read 2" || res.Reason != reviewDecisionChanged ||
+		strings.Join(f.mutations, ",") != approve {
+		t.Fatalf("%+v, mutations %v", res, f.mutations)
 	}
 }
 

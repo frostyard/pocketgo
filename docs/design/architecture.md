@@ -357,7 +357,8 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
   - A `User`'s pull request never needs it.
   - GitHub's `APPROVED` drops it.
   - At the preview, before the owner's approval is at the head, `REVIEW_REQUIRED` leaves it to the read after the approval.
-  - Every other answer counts it: a null, missing or unknown decision, `REVIEW_REQUIRED` once the owner's approval is at the head, and a decision the PR query and the bypass query, which reads it with the approvals, disagree on.
+  - Every other answer counts it: a null, missing or unknown decision, and `REVIEW_REQUIRED` once the owner's approval is at the head.
+  - The bypass query reads the decision with the approvals, and gate 11 refuses a read whose PR query gives another, before it counts anything or lets pocketd's verdict stand in for a missing review.
   - Each rule's own count stays the gates' own, of approvals at the head by accounts that can push.
 
   A Dependabot pull request under the frostyard org ruleset, which GitHub asks 1 approval of, merges with the owner's approval and pocketd's backing. One that GitHub holds at 2 ends approved and unmerged, unless pocketd's verdict makes up the second.
