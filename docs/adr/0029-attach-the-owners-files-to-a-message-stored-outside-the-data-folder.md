@@ -65,5 +65,6 @@
 ## References
 
 - Shapes: [specs/protocol.md](../specs/protocol.md) (rules 1, 3, 4, 5, 7a, 10, 10a and 16a), [design/architecture.md](../design/architecture.md)
+- Set up by: [design: setup guide](../design/setup.md)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (item 14, attachments)
 - Builds on: [ADR-0006](0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0008](0008-keep-work-records-in-the-services-own-tables.md), [ADR-0010](0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md), [ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md) (a standing session's profile and Start Over change its model), [ADR-0028](0028-let-the-owner-change-a-sessions-model-from-the-composer.md) (the owner's change of a session's model)

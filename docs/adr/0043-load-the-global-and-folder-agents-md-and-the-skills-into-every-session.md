@@ -83,5 +83,6 @@ The owner decided on 2026-11-21 (#80, option a): pocketd loads the global file i
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#service)
+- Set up by: [design: setup guide](../design/setup.md)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (Phase 2, item 19)
 - Builds on: [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0015](0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md), [ADR-0021](0021-give-a-threads-specialist-a-worker-on-an-api-key-model-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0033](0033-gather-proposals-from-the-team-in-read-only-sessions-in-code.md), [ADR-0035](0035-make-the-skills-and-uploads-folders-read-only-to-agents.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md)

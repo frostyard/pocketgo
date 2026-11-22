@@ -95,4 +95,5 @@ The issue also asks for a notification when a run ends in a session where the ow
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#desktop-client), [plans/roadmap.md](../plans/roadmap.md#phase-2--team-work-board-and-inbox) (item 23)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0010](0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0032](0032-let-a-supervisor-send-to-a-thread-it-delegated-through-the-outbox.md), [ADR-0040](0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md), [ADR-0048](0048-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)

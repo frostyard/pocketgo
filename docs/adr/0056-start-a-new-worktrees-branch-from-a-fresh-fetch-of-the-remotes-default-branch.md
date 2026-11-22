@@ -40,5 +40,6 @@
 ## References
 
 - Shapes: [specs: protocol rules 6a and 26](../specs/protocol.md), [design: system architecture](../design/architecture.md#service), [plans: roadmap](../plans/roadmap.md)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md), [ADR-0027](0027-start-the-owners-session-on-a-repository-in-a-new-worktree-named-in-code.md)
 - Issue: [frostyard/pocketgo#50](https://github.com/frostyard/pocketgo/issues/50)

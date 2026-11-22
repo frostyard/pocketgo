@@ -52,6 +52,7 @@ This decision supersedes, of [ADR-0015](0015-keep-each-agents-lessons-approved-b
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#service), [specs/protocol.md](../specs/protocol.md) (rules 7b, 25, 32 and 34)
+- Set up by: [design: setup guide](../design/setup.md)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (item 2, threads, delegation and asks: the private-agent rule)
 - Supersedes in part: [ADR-0015](0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md) (decisions 3 and 5, for a private profile)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0015](0015-keep-each-agents-lessons-approved-by-the-owner-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)
