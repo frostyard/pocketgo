@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says the desktop keeps the GitHub App sign-in only in the system keyring, with no file fallback, so approve and merge needs one.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] State the separate keyring requirement for GitHub sign-in",
+  "promoted_to": "docs/design/setup.md"
+}

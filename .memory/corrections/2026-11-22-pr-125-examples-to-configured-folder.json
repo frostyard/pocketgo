@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide copies the example profiles to the service's profile folder: its commands name the default path, and POCKETD_PROFILES changes the target.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Copy the example profiles to the configured profile folder",
+  "promoted_to": "docs/design/setup.md"
+}

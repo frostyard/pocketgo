@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide keeps the App's Expire user authorization tokens on: OAuth.pair takes only a pair with a refresh token and both expiries.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Keep user access token expiration enabled for the GitHub App",
+  "promoted_to": "docs/design/setup.md"
+}

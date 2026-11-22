@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide asks for git 2.43 or later on the service host, checked at the trusted path: worktree.attributesIsolated makes no review worktree with an older git.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P1] Require Git 2.43 or later for the first cross-review",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide tells a fork to build the desktop again after it changes github.Login and the App's constants, before the GitHub sign-in: they are compiled in.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P1] Rebuild the desktop after changing the GitHub App identity",
+  "promoted_to": "docs/design/setup.md"
+}

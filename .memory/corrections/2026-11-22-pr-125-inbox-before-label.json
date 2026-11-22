@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's first run shows a linked pull request in the Inbox at once, and the label later, only with a ready verdict and green CI; a repository with no CI never gets it.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Distinguish Inbox visibility from readiness to merge",
+  "promoted_to": "docs/design/setup.md"
+}
