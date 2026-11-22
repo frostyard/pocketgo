@@ -1,6 +1,6 @@
 # 0040 — Build the iPad and iPhone client from the desktop's code on MyGo's iOS target
 
-- **Status:** Accepted; the iPhone's compact layout its consequences call for decided by [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md), a bar of tabs
+- **Status:** Accepted; the iPhone's compact layout its consequences call for decided by [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md), a bar of tabs; its consequence that `App.Close` may not run on iOS amended by [ADR-0041](0041-save-the-window-and-hold-the-github-refresh-when-ios-suspends-the-app.md), which saves the window as iOS suspends the app
 - **Date:** 2026-11-21
 
 ## Context

@@ -162,7 +162,12 @@ category's `TEMPLATE.md`** and follows its structure:
   ADRs that mark the old one Superseded. This includes ADRs 0001 to 0003 that
   come with the template: their `YYYY-MM-DD` date is a placeholder, not a
   draft status. A new org-wide rule goes in a core ADR listed in
-  `docs/org-adrs.md`; a new project rule goes in a new ADR.
+  `docs/org-adrs.md`; a new project rule goes in a new ADR. An ADR that
+  amends or supersedes part of an earlier one says so in its References
+  (`- Supersedes in part: [ADR-NNNN](…)`, or `whose … it amends` after the
+  link), and the earlier ADR's Status line links it back.
+  `test/adr-records.test.mjs` checks that, the numbering, the Status forms
+  and the index in `docs/README.md`.
 - `docs/design/` — how it fits together. Living; updated in place to match
   reality.
 - `docs/specs/` — exact contracts. Change only alongside implementing code.
