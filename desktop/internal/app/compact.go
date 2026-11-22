@@ -33,6 +33,8 @@ type phoneNav struct {
 	// mobile.Sheet keeps its state on the window's root by the flag's
 	// address, and the form is new at each opening.
 	newSession bool
+	// changes is the Changes sheet's flag (changes.go, ADR-0053).
+	changes bool
 }
 
 // tabIcons are the tabs' icons, of the window's set.
@@ -214,6 +216,7 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.settingsDialog(c)
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
+	a.changesSheet(c)
 	mobile.Sheet(c, &a.shell.Console.Open, mobile.SheetOptions{Detents: []float32{activityDetent}, Label: "Activity"}, func() { a.phoneActivity(c) })
 	mobile.Sheet(c, &a.shell.Info.Open, mobile.SheetOptions{Detents: []float32{0.5}, Label: "About PocketGo"}, func() {
 		ui.Column(c).Padding(frostui.SpaceS, frostui.SpaceL).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
@@ -351,6 +354,7 @@ func (a *App) compactNote(c *ui.Context) {
 	ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Padding(0, a.gutter(), frostui.SpaceS, a.gutter()).Shrink(0).Children(func() {
 		frostui.Caption(c, note).SingleLine().Grow(1).Shrink(1).MinWidth(0)
 		if o != nil {
+			a.changesChip(c, o.ID)
 			statePill(c, a.st.Data.StateOf(o.ID))
 		}
 	})

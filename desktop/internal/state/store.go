@@ -236,6 +236,13 @@ type Store struct {
 	// attachWaiting are the bytes pasted files waiting their turn hold
 	// (PastedWaitingLimit).
 	attachWaiting int64
+	// changesLoading are the sessions whose changes are being fetched,
+	// changesAgain those fetched once more after it, and changesState
+	// each tracked session's state as syncChanges last saw it (changes.go,
+	// ADR-0053).
+	changesLoading map[int64]bool
+	changesAgain   map[int64]bool
+	changesState   map[int64]proto.SessionState
 }
 
 // New returns a store with no sign-in.
@@ -316,6 +323,8 @@ func (s *Store) resetActions() {
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 	s.schedulesDirty = false
+	s.changesLoading, s.changesAgain = map[int64]bool{}, map[int64]bool{}
+	s.changesState = map[int64]proto.SessionState{}
 }
 
 func (s *Store) log(level Level, format string, args ...any) {
@@ -590,6 +599,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleShifts()
 	s.settlePlans()
 	s.settleProposals()
+	s.syncChanges()
 }
 
 // settleCloses drops the retry state of each close whose thread is closed
@@ -746,8 +756,9 @@ func (s *Store) retryFailed() {
 // Refresh fetches again what the client shows: the sessions, the pending
 // approvals, the open asks, the lessons, the threads, their pull requests,
 // the plans, the board's proposals and the schedules, the profiles, the
-// owner's terminals, the open session and the models the composer's chip
-// offers, and the service's hello when it has none yet.
+// owner's terminals, the changes of the sessions it counts them for, the
+// open session and the models the composer's chip offers, and the
+// service's hello when it has none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
@@ -761,6 +772,9 @@ func (s *Store) Refresh() {
 	// The board and the Inbox name agents by their profiles.
 	s.LoadProfiles()
 	s.loadTerminals()
+	// A resync may have missed a run's end: every count shown is read
+	// again (ADR-0053).
+	s.reloadChanges()
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}
@@ -858,6 +872,7 @@ func (s *Store) loadSessions() {
 		s.settleAborts()
 		s.settleModels()
 		s.settleQuestions()
+		s.syncChanges()
 	}))
 }
 
@@ -971,6 +986,7 @@ func (s *Store) loadThreads() {
 		s.Data.SetThreads(f, list)
 		s.settleCloses()
 		s.settleShifts()
+		s.syncChanges()
 	}))
 }
 
@@ -1133,6 +1149,7 @@ func (s *Store) loadDetail(id int64) {
 		s.settleAborts()
 		s.settleModels()
 		s.settleQuestions()
+		s.syncChanges()
 	}))
 }
 
@@ -1204,6 +1221,7 @@ func (s *Store) Open(id int64) {
 	if id != 0 && s.client != nil {
 		s.loadDetail(id)
 	}
+	s.syncChanges()
 }
 
 // pending returns the entry of m under key, made when missing.

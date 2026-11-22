@@ -194,6 +194,21 @@ func (c *Client) ChangeModel(ctx context.Context, id int64, request ChangeModel)
 	return out, c.do(ctx, http.MethodPost, Path(PathModel, id), request, &out)
 }
 
+// Changes reads what session id changed in its git checkout (rule 63).
+func (c *Client) Changes(ctx context.Context, id int64) (Changes, error) {
+	var out Changes
+	return out, c.do(ctx, http.MethodGet, Path(PathChanges, id), nil, &out)
+}
+
+// ChangesFile reads the diff of the file at path in session id's changes
+// (rule 64): path is as Changes lists it.
+func (c *Client) ChangesFile(ctx context.Context, id int64, path string) (FileDiff, error) {
+	q := url.Values{}
+	q.Set("path", path)
+	var out FileDiff
+	return out, c.do(ctx, http.MethodGet, Path(PathChangesFile, id)+"?"+q.Encode(), nil, &out)
+}
+
 // StartOver starts a standing session's context afresh (rule 7d).
 func (c *Client) StartOver(ctx context.Context, id int64, request StartOver) (Session, error) {
 	var out Session

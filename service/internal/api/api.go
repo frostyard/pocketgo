@@ -168,7 +168,9 @@ type Engine interface {
 	Git(ctx context.Context, dir string, args ...string) (string, error)
 	// GitPage runs git as Git does and keeps limit bytes of its output from
 	// offset on, with its whole length: a review pages through a patch
-	// larger than Git's bound (ADR-0019).
+	// larger than Git's bound (ADR-0019). An error comes back with what
+	// git printed of the page before it: a diff of a new file ends with
+	// git's status 1 after it printed the diff (ADR-0053).
 	GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (page string, more bool, err error)
 	// GitEach runs git as Git does and gives each record of its output,
 	// split at sep, to each, with bounded memory (worktree.Each).
@@ -415,6 +417,9 @@ type Server struct {
 	// a standing session's refresh takes refreshMu.
 	afterStandingRead func()
 	onRefreshLock     func()
+	// changesSlots holds a place for each read of a session's changes that
+	// runs, at most maxChangesReads (ADR-0053).
+	changesSlots chan struct{}
 	// modelLocks holds each session, by id, from the read that decides a
 	// change of its model to the change's record (lockModel); onModelLock,
 	// in tests, runs right before a change takes it.
@@ -714,6 +719,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
+	server.changesSlots = make(chan struct{}, maxChangesReads)
 	server.launchStanding = server.openStandingFor
 	server.markLaunchFailed = s.MarkLaunchStartFailed
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
@@ -1039,6 +1045,8 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathModel, s.changeModel},
 		{"POST", proto.PathUploads, s.upload},
 		{"POST", proto.PathQuestion, s.answerQuestion},
+		{"GET", proto.PathChanges, s.sessionChanges},
+		{"GET", proto.PathChangesFile, s.changesFile},
 		{"GET", proto.PathApprovals, s.pending},
 		{"POST", proto.PathApproval, s.decide},
 		{"GET", proto.PathThreads, s.threads},

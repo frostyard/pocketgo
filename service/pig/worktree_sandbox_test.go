@@ -10,8 +10,79 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/frostyard/pocketgo/service/internal/changes"
 	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
+
+// A read of a session's changes runs in the sandbox, with the isolation
+// options, the trusted git and bounded output (ADR-0053): the checkout's
+// fsmonitor never runs, its index stays as it was, and a new file's diff,
+// which git ends with status 1, is the answer.
+func TestAChangesReadRunsInTheSandbox(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	l := newLayout(t)
+	s := usableSandbox(t, l)
+	e := &Engine{opts: Options{Sandbox: s}, commands: allowedEnv()}
+	isolateGit(e)
+	checkout := filepath.Join(l.home, "projects", "example")
+	marker := filepath.Join(l.home, "fsmonitor-ran")
+	monitor := filepath.Join(l.home, "fsmonitor")
+	if err := os.WriteFile(monitor, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", checkout},
+		{"-C", checkout, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first"},
+		{"-C", checkout, "config", "core.fsmonitor", monitor},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "new.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	tools := worktree.Tools{Git: e.Git, Kind: e.Kind, Read: e.Read, Same: e.Same, Each: e.GitEach}
+	if err := worktree.AttributesIsolated(ctx, tools, checkout); err != nil {
+		t.Skipf("this git cannot read a checkout isolated: %v", err)
+	}
+	head, err := e.Git(ctx, checkout, changes.HeadArgs()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var numstat []string
+	if err := e.GitEach(ctx, checkout, 0, func(r string) error { numstat = append(numstat, r); return nil }, changes.NumstatArgs(head)...); err != nil {
+		t.Fatal(err)
+	}
+	var fresh []string
+	if err := e.GitEach(ctx, checkout, 0, func(r string) error { fresh = append(fresh, r); return nil }, changes.NewArgs()...); err != nil {
+		t.Fatal(err)
+	}
+	if len(numstat) != 0 || !slices.Equal(fresh, []string{"new.txt"}) {
+		t.Fatalf("numstat %q, new %q", numstat, fresh)
+	}
+	page, _, err := e.GitPage(ctx, checkout, 0, 4096, changes.NewNumstatArgs("new.txt")...)
+	page, err = changes.Differs(page, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := changes.NewCount(page); err != nil || count.Added != 2 {
+		t.Fatalf("count %+v %v", count, err)
+	}
+	diff, more, err := e.GitPage(ctx, checkout, 0, 4096, changes.NewPatchArgs("new.txt")...)
+	diff, err = changes.Differs(diff, err)
+	if err != nil || more || !strings.Contains(diff, "+++ b/new.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n") {
+		t.Fatalf("diff %q, more %v, %v", diff, more, err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the checkout's fsmonitor ran")
+	}
+}
 
 // A thread's worktree is made by git in the sandbox (ADR-0012, ADR-0014):
 // a post-checkout hook an agent planted in its checkout runs, but cannot

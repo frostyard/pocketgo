@@ -678,20 +678,34 @@ func (f *fakeEngine) GitEach(ctx context.Context, dir string, sep byte, each fun
 	return nil
 }
 
-// GitPage runs git as Git does, and pages its output.
+// GitPage runs git as Git does, and pages its output. As the engine's, an
+// error comes back with the page git printed before it, its output alone,
+// apart from its errors (ADR-0053).
 func (f *fakeEngine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, bool, error) {
-	out, err := f.Git(ctx, dir, args...)
+	if f.onGit != nil {
+		f.onGit(args)
+	}
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = gitEnv()
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() > 0 {
+		err = &worktree.GitExit{Status: exit.ExitCode()}
+	}
 	if err != nil {
+		err = fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
+	}
+	out := stdout.String()
+	if offset >= len(out) {
 		return "", false, err
 	}
-	if out != "" {
-		out += "\n"
-	}
-	if offset >= len(out) {
-		return "", false, nil
-	}
 	end := min(offset+limit, len(out))
-	return out[offset:end], end < len(out), nil
+	if end < len(out) {
+		return out[offset:end], true, nil
+	}
+	return out[offset:end], false, err
 }
 
 func (f *fakeEngine) Abort(_ context.Context, id int64) error {

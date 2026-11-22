@@ -1164,6 +1164,82 @@ type SessionDetail struct {
 	Live    Live    `json:"live"`
 }
 
+// ChangesBase says how pocketd chose the base a session's changes are
+// counted from (ADR-0053, rule 63).
+type ChangesBase string
+
+const (
+	// ChangesBasePull: the base branch of the thread's pull request.
+	ChangesBasePull ChangesBase = "pull"
+	// ChangesBaseDefault: the checkout's default branch.
+	ChangesBaseDefault ChangesBase = "default"
+	// ChangesBaseHead: no base was found, so the changes are those since
+	// HEAD alone, not yet committed.
+	ChangesBaseHead ChangesBase = "head"
+)
+
+// Changes is what a session changed in its git checkout, read with git in
+// the sandbox (ADR-0053, rule 63): from the merge base of its HEAD and a
+// base branch to the files in its folder, committed or not yet.
+type Changes struct {
+	SessionID int64 `json:"sessionId"`
+	// Repository is false when the session's folder is in no git checkout:
+	// nothing else is set then.
+	Repository bool `json:"repository"`
+	// Top is the checkout's top folder.
+	Top string `json:"top,omitempty"`
+	// Branch is the branch checked out, "" when HEAD is detached; Head is
+	// its commit, "" before the first.
+	Branch string `json:"branch,omitempty"`
+	Head   string `json:"head,omitempty"`
+	// Base is the branch the changes are counted against, as git names it
+	// ("origin/main"), "" when BaseRule is head; MergeBase is the commit
+	// they are counted from.
+	Base      string      `json:"base,omitempty"`
+	BaseRule  ChangesBase `json:"baseRule,omitempty"`
+	MergeBase string      `json:"mergeBase,omitempty"`
+	// Files are the files changed, at most MaxChangedFiles, in git's
+	// order: the tracked ones, then the new ones git does not track yet.
+	// More counts the files left out.
+	Files []ChangedFile `json:"files"`
+	More  int           `json:"more,omitempty"`
+	// Added and Removed are the lines of every file counted, the ones left
+	// out included.
+	Added   int `json:"added"`
+	Removed int `json:"removed"`
+}
+
+// ChangedFile is one file of a session's changes.
+type ChangedFile struct {
+	Path string `json:"path"`
+	// OldPath is a renamed file's path at the merge base.
+	OldPath string `json:"oldPath,omitempty"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+	// Binary says git counts no lines of the file; Uncounted that pocketd
+	// did not count those of a new file past MaxCountedNew.
+	Binary    bool `json:"binary,omitempty"`
+	Uncounted bool `json:"uncounted,omitempty"`
+	// Committed says a commit since the merge base changed the file, and
+	// Uncommitted that the folder changes it since HEAD, staged or not.
+	// New says git does not track it yet: it is uncommitted too.
+	Committed   bool `json:"committed,omitempty"`
+	Uncommitted bool `json:"uncommitted,omitempty"`
+	New         bool `json:"new,omitempty"`
+}
+
+// FileDiff is one file's unified diff in a session's changes (rule 64).
+type FileDiff struct {
+	SessionID int64  `json:"sessionId"`
+	Path      string `json:"path"`
+	MergeBase string `json:"mergeBase,omitempty"`
+	// Diff is git's unified diff of the file from the merge base to the
+	// folder, at most MaxFileDiff bytes. Cut says there was more: the diff
+	// ends at the last whole line that fit.
+	Diff string `json:"diff"`
+	Cut  bool   `json:"cut,omitempty"`
+}
+
 // ErrorCode names why a request failed.
 type ErrorCode string
 

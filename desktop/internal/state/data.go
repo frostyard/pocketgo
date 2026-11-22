@@ -51,6 +51,11 @@ type Data struct {
 	schedulesList    list
 
 	open *OpenSession
+	// changes are the sessions' changes the client keeps, by session, and
+	// diff the file whose diff the Changes view shows (changes.go,
+	// ADR-0053).
+	changes map[int64]*sessionChanges
+	diff    *ShownDiff
 	// terminals are the owner's shells, oldest first, replaced whole by
 	// each terminals event (terminal.go); terminalsTouched is the last
 	// event's epoch.

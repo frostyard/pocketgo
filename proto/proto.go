@@ -59,29 +59,36 @@ package proto
 // Version 26 adds the question tool (ADR-0048): a session's question, POST
 // /v1/sessions/{id}/question/{qid}, and a session that waits for its
 // question's answer.
-const Version = 26
+// Version 27 adds a session's changes (ADR-0053): GET
+// /v1/sessions/{id}/changes and GET /v1/sessions/{id}/changes/file.
+const Version = 27
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 26. A path with {id} takes a session,
+// The request paths of protocol version 27. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment;
 // PathQuestion takes its session's id there, and the question's in {qid}.
+// PathChangesFile takes the file's path in the query string (path=).
 // PathUploads takes a file the owner attaches to a message to the session
 // (ADR-0029): its bytes are the body, its name and the request id are in
 // the query string.
 const (
-	PathHello       = "/v1/hello"
-	PathModels      = "/v1/models"
-	PathProfiles    = "/v1/profiles"
-	PathSessions    = "/v1/sessions"
-	PathSession     = "/v1/sessions/{id}"
-	PathMessages    = "/v1/sessions/{id}/messages"
-	PathAbort       = "/v1/sessions/{id}/abort"
-	PathStartOver   = "/v1/sessions/{id}/start-over"
-	PathModel       = "/v1/sessions/{id}/model"
-	PathUploads     = "/v1/sessions/{id}/uploads"
-	PathQuestion    = "/v1/sessions/{id}/question/{qid}"
+	PathHello     = "/v1/hello"
+	PathModels    = "/v1/models"
+	PathProfiles  = "/v1/profiles"
+	PathSessions  = "/v1/sessions"
+	PathSession   = "/v1/sessions/{id}"
+	PathMessages  = "/v1/sessions/{id}/messages"
+	PathAbort     = "/v1/sessions/{id}/abort"
+	PathStartOver = "/v1/sessions/{id}/start-over"
+	PathModel     = "/v1/sessions/{id}/model"
+	PathUploads   = "/v1/sessions/{id}/uploads"
+	PathQuestion  = "/v1/sessions/{id}/question/{qid}"
+	// PathChanges is what a session changed in its git checkout, and
+	// PathChangesFile one file's diff of it (ADR-0053).
+	PathChanges     = "/v1/sessions/{id}/changes"
+	PathChangesFile = "/v1/sessions/{id}/changes/file"
 	PathApprovals   = "/v1/approvals"
 	PathApproval    = "/v1/approvals/{id}"
 	PathThreads     = "/v1/threads"
@@ -137,4 +144,10 @@ const (
 	// TerminalKept is how many bytes of a shell's output pocketd keeps,
 	// and the most one answer of its output carries.
 	TerminalKept = 256 * 1024
+	// MaxChangedFiles is the most files a session's changes list
+	// (ADR-0053); MaxCountedNew the most new files, not tracked yet, whose
+	// lines pocketd counts; MaxFileDiff the most bytes of a file's diff.
+	MaxChangedFiles = 300
+	MaxCountedNew   = 30
+	MaxFileDiff     = 64 * 1024
 )

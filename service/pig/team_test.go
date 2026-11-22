@@ -1591,6 +1591,29 @@ func TestATeamDiffPageReachesTheReviewerWhole(t *testing.T) {
 	t.Fatal("no tool result")
 }
 
+// A page of git that ended with an error comes back with the error: a diff
+// of a new file ends with git's status 1 after it printed the diff, its
+// answer (ADR-0053). A file's diff fits in one page.
+func TestGitPageKeepsWhatGitPrintedBeforeItsError(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "bwrap")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nprintf '+new line\\n'\necho 1 >&3\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trustedGit(); err != nil {
+		t.Skip(err)
+	}
+	e := &Engine{opts: Options{Sandbox: &Sandbox{Bwrap: fake, Shell: "/bin/sh"}}, commands: map[string]string{"PATH": os.Getenv("PATH")}}
+	page, more, err := e.GitPage(context.Background(), dir, 0, proto.MaxFileDiff, "diff", "--no-index", "--", "/dev/null", "x")
+	var exit *worktree.GitExit
+	if page != "+new line\n" || more || !errors.As(err, &exit) || exit.Status != 1 {
+		t.Fatalf("page %q, more %v, err %v", page, more, err)
+	}
+	if proto.MaxFileDiff > gitOutput {
+		t.Fatalf("a file's diff of %d bytes is past a page's bound of %d", proto.MaxFileDiff, gitOutput)
+	}
+}
+
 // A page never ends inside a UTF-8 character (Codex review of #26, round
 // 4).
 func TestAPageEndsAtAWholeCharacter(t *testing.T) {

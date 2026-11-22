@@ -640,14 +640,16 @@ func (e *Engine) Git(ctx context.Context, dir string, args ...string) (string, e
 // from offset on: a cross-review pages through a patch larger than Git's
 // bound (ADR-0019; Codex review of #26, round 2). git is stopped once the
 // page is full, so no size of the whole is needed, and more says output
-// went on past the page (round 3); ctx bounds the time.
+// went on past the page (round 3); ctx bounds the time. An error comes
+// back with the page git printed before it: git diff --no-index ends with
+// status 1 when it printed a difference, its answer (ADR-0053).
 func (e *Engine) GitPage(ctx context.Context, dir string, offset, limit int, args ...string) (string, bool, error) {
 	if offset < 0 || limit <= 0 || limit > gitOutput {
 		return "", false, fmt.Errorf("a page is 1 to %d bytes from an offset of 0 or more", gitOutput)
 	}
 	page := &window{from: int64(offset), keep: limit}
 	if err := e.runGit(ctx, dir, page, args); err != nil && !page.more {
-		return "", false, err
+		return string(page.buf[:wholeRunes(page.buf)]), false, err
 	}
 	// A page cut inside a character ends before it: the next offset starts
 	// at it, so no character is split between two answers (Codex review of

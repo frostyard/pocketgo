@@ -21,5 +21,7 @@ func Embedded() map[string][]byte {
 		"pocket-terminal": svg(`<path d="M4 17l6-6-6-6M12 19h8"/>`),
 		// A plus in a bubble: a new session.
 		"pocket-new": svg(`<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M12 8v8M8 12h8"/>`),
+		// A page with a plus over a minus: a session's changes (ADR-0053).
+		"pocket-changes": svg(`<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M9 10h6M12 7v6M9 17h6"/>`),
 	}
 }

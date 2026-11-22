@@ -155,6 +155,7 @@ func (a *App) threadCard(c *ui.Context, th proto.Thread, m state.Mover) {
 			where = "in " + shortPath(th.Cwd)
 		}
 		frostui.Caption(c, agent+" · "+where).SingleLine()
+		a.threadChanges(c, key, th)
 		if th.Plan != 0 && th.PlanTask != "" {
 			a.taskLine(c, th)
 		}

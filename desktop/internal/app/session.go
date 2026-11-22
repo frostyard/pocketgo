@@ -59,6 +59,7 @@ func (a *App) sessionBar(c *ui.Context) {
 		ui.Text(c, title).Bold().SingleLine()
 		frostui.Caption(c, sessionMeta(s)).SingleLine()
 	})
+	a.changesButton(c, o.ID)
 	statePill(c, a.st.Data.StateOf(o.ID))
 	a.sessionActions(c, o, s)
 }
