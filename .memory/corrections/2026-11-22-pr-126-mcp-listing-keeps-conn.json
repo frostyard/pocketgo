@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A listing on a live MCP connection that failed for itself alone keeps the connection, as a call does.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 4 (codex-cli 0.169.0) of head df472f2: [P2] Keep the shared connection on a request-local listing failure",
+  "promoted_to": "service/pig/mcp_round4_test.go"
+}

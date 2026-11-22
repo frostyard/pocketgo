@@ -1,6 +1,7 @@
 package pig
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -97,12 +99,15 @@ func defaultMCPAfter(d time.Duration, f func()) (stop func() bool) { return time
 // redirect followed only to the origin it came from, so a stored header
 // never reaches a host mcp.json does not name, and every exchange bounded
 // by timeout, its body included: PiG sends a notification and refreshes a
-// sign-in with no deadline of their own.
-func mcpClient(timeout time.Duration) *http.Client {
+// sign-in with no deadline of their own. Every answer but the endpoint's
+// own, whose messages PiG bounds (maxMCPMessage), is bounded too
+// (maxMCPDocument): PiG reads an OAuth document whole.
+func mcpClient(timeout time.Duration, endpoint string) *http.Client {
 	var transport http.RoundTripper = directTransport
 	if mcpTransport != nil {
 		transport = mcpTransport
 	}
+	transport = boundedTransport{next: transport, endpoint: endpoint}
 	return &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if first := via[0].URL; req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
 			return http.ErrUseLastResponse
@@ -113,6 +118,46 @@ func mcpClient(timeout time.Duration) *http.Client {
 		return nil
 	}}
 }
+
+// maxMCPDocument bounds an answer pocketd takes from an MCP server's
+// OAuth side, in bytes: discovery, registration and tokens.
+const maxMCPDocument = 1 << 20
+
+// errMCPTooLarge is an answer past maxMCPDocument.
+var errMCPTooLarge = fmt.Errorf("an answer is larger than %d bytes", maxMCPDocument)
+
+// boundedTransport bounds the body of every answer but endpoint's.
+type boundedTransport struct {
+	next     http.RoundTripper
+	endpoint string
+}
+
+func (t boundedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.next.RoundTrip(r)
+	if err != nil || resp.Body == nil || r.URL.String() == t.endpoint {
+		return resp, err
+	}
+	resp.Body = &boundedBody{body: resp.Body, left: maxMCPDocument}
+	return resp, nil
+}
+
+// boundedBody fails a read once more than left bytes came: a document cut
+// short would parse as another.
+type boundedBody struct {
+	body io.ReadCloser
+	left int64
+}
+
+func (b *boundedBody) Read(p []byte) (int, error) {
+	n, err := b.body.Read(p)
+	b.left -= int64(n)
+	if b.left < 0 {
+		return 0, errMCPTooLarge
+	}
+	return n, err
+}
+
+func (b *boundedBody) Close() error { return b.body.Close() }
 
 // mcpExtensionName is the durable extension of profile's MCP tools.
 func mcpExtensionName(profile string) string { return "pocketgo-mcp-" + profile }
@@ -205,6 +250,9 @@ type mcpHub struct {
 	closed  bool
 	// unkept are why each server's last listing is not kept, by server.
 	unkept map[string]error
+	// work are the exchanges under way, connections being made and calls,
+	// which close waits for: begin adds one, under mu, unless closed.
+	work sync.WaitGroup
 }
 
 // mcpConn is one server's connection: made when needed, and made again
@@ -345,6 +393,9 @@ func (h *mcpHub) listed(name string, tools []mcpTool) {
 	func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
+		if h.closed {
+			return
+		}
 		old, had := h.tools[name]
 		if had && mcpToolsEqual(old, tools) {
 			// The same tools: kept, or kept now, if a write failed before.
@@ -398,6 +449,25 @@ func (h *mcpHub) keepLocked(name string, tools []mcpTool) {
 	delete(h.unkept, name)
 }
 
+// begin counts an exchange in work, unless the hub closed: then it
+// starts none.
+func (h *mcpHub) begin() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return false
+	}
+	h.work.Add(1)
+	return true
+}
+
+// isClosed says whether close ran.
+func (h *mcpHub) isClosed() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.closed
+}
+
 // keptErr is why the tools server name listed last are not kept, nil
 // when they are.
 func (h *mcpHub) keptErr(name string) error {
@@ -439,8 +509,18 @@ func (h *mcpHub) connectAll(ctx context.Context) {
 func mayPass(err error) bool {
 	var oauthErr *oauth.OAuthError
 	var auth *mcp.McpAuthRequiredError
+	if errors.As(err, &oauthErr) {
+		return oauthTransient(oauthErr)
+	}
 	return !errors.Is(err, errMCPNeedsHeader) && !errors.Is(err, errMCPNotSignedIn) && !errors.Is(err, errMCPSignIn) &&
-		!errors.As(err, &oauthErr) && !errors.As(err, &auth) && !errors.Is(err, errMCPScope)
+		!errors.As(err, &auth) && !errors.Is(err, errMCPScope)
+}
+
+// oauthTransient says whether an authorization server's refusal says it
+// cannot answer now (RFC 6749's temporarily_unavailable and
+// server_error), rather than that it refuses pocketd's sign-in.
+func oauthTransient(err *oauth.OAuthError) bool {
+	return err.Code == "temporarily_unavailable" || err.Code == "server_error"
 }
 
 // retryLater connects c again after wait, and again after twice the wait,
@@ -474,9 +554,10 @@ func (h *mcpHub) retryLater(c *mcpConn, wait time.Duration) {
 	})
 }
 
-// close ends every connection and every retry, at once, and returns once
-// each ended or ctx did. A connection being made is left to end with
-// pocketd.
+// close ends every retry, every dial under way and every connection, and
+// returns once each ended or ctx did. From then on the hub keeps no
+// listing and takes no connection: pocketd's lock on the data folder may
+// be let go.
 func (h *mcpHub) close(ctx context.Context) {
 	if h == nil {
 		return
@@ -492,11 +573,13 @@ func (h *mcpHub) close(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// The exchanges under way end first, the dials with the hub's
+		// context: they take no connection and write no listing once it
+		// closed.
+		h.work.Wait()
 		var wg sync.WaitGroup
 		for _, c := range h.conns {
-			if !c.mu.TryLock() {
-				continue
-			}
+			c.mu.Lock()
 			client := c.client
 			c.client = nil
 			c.mu.Unlock()
@@ -720,6 +803,8 @@ var (
 	// errMCPScope is a call the server refused for a scope pocketd's
 	// sign-in lacks (403 insufficient_scope): a step up needs the owner.
 	errMCPScope = errors.New("needs a scope its sign-in lacks")
+	// errMCPClosed is a connection made as pocketd closes.
+	errMCPClosed = errors.New("was connected as pocketd closed")
 	// errMCPList is a tool list that is no list.
 	errMCPList = errors.New("answered its tool list with no list")
 )
@@ -745,8 +830,14 @@ func (c *mcpConn) connect(ctx context.Context, list bool) (*mcp.Client, error) {
 		client := c.client
 		c.mu.Unlock()
 		if list {
+			unpin := c.hub.store.pin()
+			defer unpin()
+			// A listing that failed for itself alone keeps the connection,
+			// which calls of every session may be using.
 			if err := c.list(ctx, client); err != nil {
-				c.drop(client)
+				if !requestLocal(ctx, err) {
+					c.drop(client)
+				}
 				return nil, err
 			}
 		}
@@ -754,6 +845,10 @@ func (c *mcpConn) connect(ctx context.Context, list bool) (*mcp.Client, error) {
 	}
 	attempt := c.attempt
 	if attempt == nil {
+		if !c.hub.begin() {
+			c.mu.Unlock()
+			return nil, errMCPClosed
+		}
 		attempt = &mcpAttempt{done: make(chan struct{})}
 		c.attempt = attempt
 		if c.client != nil {
@@ -774,18 +869,27 @@ func (c *mcpConn) connect(ctx context.Context, list bool) (*mcp.Client, error) {
 // dial makes attempt: the connection, and the listing of the server's
 // tools, within the server's timeout, under the hub's context.
 func (c *mcpConn) dial(attempt *mcpAttempt) {
+	defer c.hub.work.Done()
 	parent := c.hub.ctx
 	if parent == nil {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(parent, c.server.Timeout)
 	defer cancel()
+	unpin := c.hub.store.pin()
+	defer unpin()
 	client, err := c.open(ctx)
 	if err == nil {
 		if err = c.list(ctx, client); err != nil {
 			_ = client.Close()
 			client = nil
 		}
+	}
+	// A hub that closed meanwhile takes no connection: it would outlive
+	// pocketd's close.
+	if err == nil && c.hub.isClosed() {
+		_ = client.Close()
+		client, err = nil, errMCPClosed
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -805,7 +909,7 @@ func (c *mcpConn) open(ctx context.Context) (*mcp.Client, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("%w: %s (pocketd mcp set-header %s %s)", errMCPNeedsHeader, missing[0], server.Name, missing[0])
 	}
-	options := mcp.StreamableHTTPTransportOptions{URL: server.URL, Headers: headers, Fetch: mcpClient(server.Timeout), OpenGetStream: new(false),
+	options := mcp.StreamableHTTPTransportOptions{URL: server.URL, Headers: headers, Fetch: mcpClient(server.Timeout, server.URL), OpenGetStream: new(false),
 		MaxMessageBytes: maxMCPMessage}
 	if server.OAuth != nil {
 		if !store.signedIn(server.Name, server.URL) {
@@ -854,13 +958,16 @@ func (c *mcpConn) list(ctx context.Context, client *mcp.Client) error {
 			return err
 		}
 		var result struct {
-			Tools      []mcp.Tool `json:"tools"`
-			NextCursor *string    `json:"nextCursor"`
+			Tools      *[]mcp.Tool `json:"tools"`
+			NextCursor *string     `json:"nextCursor"`
 		}
-		if err := json.Unmarshal(raw, &result); err != nil {
+		// Every page names its tools, an empty list included: one that
+		// names none is no list, and the last listing stays.
+		if err := json.Unmarshal(raw, &result); err != nil || result.Tools == nil {
 			return errMCPList
 		}
-		listed = append(listed, result.Tools[:min(len(result.Tools), maxMCPTools-len(listed))]...)
+		got := *result.Tools
+		listed = append(listed, got[:min(len(got), maxMCPTools-len(listed))]...)
 		if result.NextCursor == nil || *result.NextCursor == "" {
 			break
 		}
@@ -926,6 +1033,14 @@ func (c *mcpConn) setStateLocked(state string, err error) {
 // connection is every session's: a call stopped, or past its own timeout,
 // ends that call alone, and only a failure of the connection drops it.
 func (c *mcpConn) call(ctx context.Context, tool string, args any) durable.ToolExecutionResult {
+	// The credentials this call goes out with stay redacted until its
+	// answer is: a refresh may replace them while it waits.
+	unpin := c.hub.store.pin()
+	defer unpin()
+	if !c.hub.begin() {
+		return c.errorResult(errMCPClosed)
+	}
+	defer c.hub.work.Done()
 	if args == nil {
 		args = map[string]any{}
 	}
@@ -942,10 +1057,6 @@ func (c *mcpConn) call(ctx context.Context, tool string, args any) durable.ToolE
 		}
 		var expired *mcp.McpSessionExpiredError
 		var rpc *mcp.McpError
-		var abort *mcp.McpAbortError
-		var timeout *mcp.McpTimeoutError
-		var status *mcp.McpHttpError
-		var oauthErr *oauth.OAuthError
 		switch {
 		case errors.As(err, &expired) && attempt == 0:
 			c.drop(client)
@@ -953,17 +1064,31 @@ func (c *mcpConn) call(ctx context.Context, tool string, args any) durable.ToolE
 		case errors.As(err, &rpc):
 			// The server's own answer to the call: the connection holds.
 			return toolText("", fmt.Errorf("MCP server %s refused the call: %s", c.server.Name, c.serverText(rpc.Message)))
-		case ctx.Err() != nil, errors.As(err, &abort), errors.As(err, &timeout), errors.As(err, &status), errors.As(err, &oauthErr),
-			errors.Is(err, errMCPScope), errors.Is(err, errMCPRefresh), errors.Is(err, errMCPSignIn):
-			// This call alone ended, or the server refused it alone (an
-			// HTTP status, a 401 included, or its sign-in, which the next
-			// request tries again): the connection holds.
+		case requestLocal(ctx, err):
 			return c.errorResult(err)
 		}
 		c.drop(client)
 		c.note(err)
 		return c.errorResult(err)
 	}
+}
+
+// requestLocal says whether err ended one request alone, the connection
+// holding: a request stopped or past its own timeout, refused by the
+// server with an HTTP status of its own (a 401 included), or refused for
+// a sign-in the next request tries again. Only another failure is the
+// connection's, which every session of the server shares.
+func requestLocal(ctx context.Context, err error) bool {
+	var abort *mcp.McpAbortError
+	var timeout *mcp.McpTimeoutError
+	var status *mcp.McpHttpError
+	var oauthErr *oauth.OAuthError
+	var expired *mcp.McpSessionExpiredError
+	if errors.As(err, &expired) {
+		return false
+	}
+	return ctx.Err() != nil || errors.As(err, &abort) || errors.As(err, &timeout) || errors.As(err, &status) ||
+		errors.As(err, &oauthErr) || errors.Is(err, errMCPScope) || errors.Is(err, errMCPRefresh) || errors.Is(err, errMCPSignIn)
 }
 
 // serverText is what a server said, with no secret in it, then cut to its
@@ -993,6 +1118,8 @@ func (c *mcpConn) failure(err error) string {
 		return "is not connected: it " + c.redact(err.Error())
 	case errors.Is(err, errMCPNotSignedIn):
 		return "is not connected: it is not signed in: the owner signs in with pocketd mcp login " + name
+	case errors.As(err, &oauthErr) && oauthTransient(oauthErr):
+		return "could not refresh pocketd's sign-in: its authorization server cannot answer now: try again later"
 	case errors.Is(err, errMCPSignIn), errors.As(err, &oauthErr):
 		return "refused pocketd's sign-in, and its refresh: the owner signs in again with pocketd mcp login " + name
 	case errors.Is(err, errMCPRefresh):
@@ -1185,15 +1312,24 @@ func (g scopeGuard) OnUnauthorized(ctx context.Context, unauthorized mcp.Unautho
 var mcpImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 // mcpImage says whether an image of a result goes to the model: one of
-// mcpImageTypes, its data base64 that decodes, and neither holding a
-// secret the store keeps. A server's image is never redacted inside; one
-// that fails is left out.
+// mcpImageTypes, its data base64 that decodes to an image of that type
+// (http.DetectContentType reads its first bytes), and holding no secret
+// the store keeps, encoded or decoded. A server's image is never redacted
+// inside; one that fails is left out.
 func mcpImage(mimeType, data string, secrets []string) bool {
 	if !slices.Contains(mcpImageTypes, mimeType) || holdsSecret(data, secrets) {
 		return false
 	}
-	_, err := base64.StdEncoding.DecodeString(data)
-	return err == nil
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil || http.DetectContentType(decoded) != mimeType {
+		return false
+	}
+	for _, secret := range secrets {
+		if secret != "" && bytes.Contains(decoded, []byte(secret)) {
+			return false
+		}
+	}
+	return true
 }
 
 // refreshOnly is the OAuth sign-in a serving pocketd connects with: it

@@ -37,10 +37,10 @@ func TestOnlyACheckedImageGoesToTheModel(t *testing.T) {
 	e := f.openMCP(fauxModels(), mcpServers(t), map[string][]string{"chani": {"notes"}})
 	c := e.mcp.conns["notes"]
 	got := c.result(&mcp.CallToolResult{Content: []mcp.ContentBlock{
-		{Type: "image", Data: "aGk=", MimeType: "image/png"},
+		{Type: "image", Data: pngImage, MimeType: "image/png"},
 		{Type: "image", Data: "QUJDREVGR0hJSks=", MimeType: "image/png"},
-		{Type: "image", Data: "aGk=", MimeType: "image/png; QUJDREVGR0hJSks="},
-		{Type: "image", Data: "aGk=", MimeType: "text/plain"},
+		{Type: "image", Data: pngImage, MimeType: "image/png; QUJDREVGR0hJSks="},
+		{Type: "image", Data: pngImage, MimeType: "text/plain"},
 		{Type: "image", Data: "not base64!", MimeType: "image/png"},
 	}})
 	images := 0
@@ -48,7 +48,7 @@ func TestOnlyACheckedImageGoesToTheModel(t *testing.T) {
 		switch b := block.(type) {
 		case ai.ImageContent:
 			images++
-			if b.Data != "aGk=" || b.MimeType != "image/png" {
+			if b.Data != pngImage || b.MimeType != "image/png" {
 				t.Fatalf("an image went %+v", b)
 			}
 		case ai.TextContent:

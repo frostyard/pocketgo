@@ -77,6 +77,10 @@ type fakeMCP struct {
 	// perPage, when set, makes tools/list answer pages of that many tools,
 	// each with a next cursor, and pages counts them.
 	perPage, pages int
+	// noList answers tools/list with no tools array, listBusy with a
+	// 429, and tokenError answers every refresh with that OAuth error.
+	noList, listBusy bool
+	tokenError       string
 }
 
 func newFakeMCP(t *testing.T) *fakeMCP {
@@ -189,6 +193,10 @@ func (f *fakeMCP) token(w http.ResponseWriter, form url.Values) {
 		f.access["acc-1"], f.refresh, f.next = true, "ref-1", "acc-2"
 		writeJSON(w, map[string]any{"access_token": "acc-1", "refresh_token": "ref-1", "token_type": "Bearer", "expires_in": 3600})
 	case "refresh_token":
+		if f.tokenError != "" {
+			refuse(f.tokenError)
+			return
+		}
 		if f.revoked || form.Get("refresh_token") != f.refresh {
 			refuse("invalid_grant")
 			return
@@ -227,6 +235,14 @@ func (f *fakeMCP) serveMCP(w http.ResponseWriter, r *http.Request, body []byte) 
 		w.Header().Set("Mcp-Session-Id", "s1")
 		result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "fake", "version": "1"}}
 	case "tools/list":
+		if f.listBusy {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		if f.noList {
+			result = map[string]any{}
+			break
+		}
 		if f.perPage > 0 {
 			f.pages++
 			var page []map[string]any
@@ -261,7 +277,7 @@ func (f *fakeMCP) serveMCP(w http.ResponseWriter, r *http.Request, body []byte) 
 		content := []map[string]any{{"type": "text", "text": text}}
 		if message.Params.Name == "pictures" {
 			for range f.images {
-				content = append(content, map[string]any{"type": "image", "data": "aGk=", "mimeType": "image/png"})
+				content = append(content, map[string]any{"type": "image", "data": pngImage, "mimeType": "image/png"})
 			}
 		}
 		result = map[string]any{"content": content}
@@ -874,3 +890,6 @@ func TestTheFileToolsCannotReadTheMCPStore(t *testing.T) {
 		t.Fatalf("result %+v", got)
 	}
 }
+
+// pngImage is an image a provider takes: base64 of a PNG's first bytes.
+var pngImage = base64.StdEncoding.EncodeToString([]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d})

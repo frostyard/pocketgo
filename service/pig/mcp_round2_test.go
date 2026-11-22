@@ -235,7 +235,7 @@ func TestTheCutMarkFitsWithTheImagesNotice(t *testing.T) {
 	c := e.mcp.conns["notes"]
 	content := []mcp.ContentBlock{{Type: "text", Text: strings.Repeat("a", maxMCPOutput-200)}, {Type: "text", Text: strings.Repeat("b", 1000)}}
 	for range 10 {
-		content = append(content, mcp.ContentBlock{Type: "image", Data: "aGk=", MimeType: "image/png"})
+		content = append(content, mcp.ContentBlock{Type: "image", Data: pngImage, MimeType: "image/png"})
 	}
 	got := c.result(&mcp.CallToolResult{Content: content})
 	size := 0

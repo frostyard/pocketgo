@@ -178,3 +178,65 @@ func TestANewSessionsMCPToolsAreWrittenUnderTheLockOfThePasses(t *testing.T) {
 		t.Fatalf("a new session's MCP tools were written outside mcpMu (held %v, %v)", held, h.engine.mcpTools)
 	}
 }
+
+// fakeMCPTimers holds the retries the server schedules, to run by hand.
+type fakeMCPTimers struct {
+	waits   []time.Duration
+	runs    []func()
+	stopped int
+}
+
+func (f *fakeMCPTimers) timer(d time.Duration, run func()) func() {
+	f.waits, f.runs = append(f.waits, d), append(f.runs, run)
+	return func() { f.stopped++ }
+}
+
+// A new session whose MCP tools could not be written has its profile's
+// pass tried again later: no other pass may come (Codex review of #126,
+// round 4).
+func TestANewSessionsFailedMCPToolsAreTriedAgain(t *testing.T) {
+	h := newTeamHarness(t)
+	h.engine.mcpProfiles = []string{"duncan"}
+	h.engine.mcpFails = 1
+	timers := &fakeMCPTimers{}
+	h.server.mcpTimer = timers.timer
+	own, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "own", Profile: "duncan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timers.runs) != 1 || len(h.engine.mcpTools[own.ID]) != 0 {
+		t.Fatalf("retries %v, tools %v", timers.waits, h.engine.mcpTools[own.ID])
+	}
+	timers.runs[0]()
+	h.server.passes.Wait()
+	if got := h.engine.mcpTools[own.ID]; !slices.Equal(got, []string{"duncan"}) {
+		t.Fatalf("tools %v", got)
+	}
+}
+
+// A scope waits on one retry at most, however many passes fail, and a
+// pass that succeeds ends the retry it waits on (Codex review of #126,
+// round 4).
+func TestMCPRetriesAreOneAScope(t *testing.T) {
+	h := newTeamHarness(t)
+	mcpSessions(t, h)
+	h.engine.mcpProfiles = []string{"duncan"}
+	h.engine.mcpFails = 4
+	timers := &fakeMCPTimers{}
+	h.server.mcpTimer = timers.timer
+	h.server.MCPToolsChanged("duncan")
+	h.server.passes.Wait()
+	h.server.MCPToolsChanged("duncan")
+	h.server.passes.Wait()
+	if len(timers.runs) != 1 {
+		t.Fatalf("%d retries for one scope", len(timers.runs))
+	}
+	h.server.MCPToolsChanged("duncan")
+	h.server.passes.Wait()
+	h.server.sessionMu.Lock()
+	pending := len(h.server.mcpRetries)
+	h.server.sessionMu.Unlock()
+	if pending != 0 || timers.stopped != 1 {
+		t.Fatalf("after a pass that succeeded: %d pending, %d stopped", pending, timers.stopped)
+	}
+}

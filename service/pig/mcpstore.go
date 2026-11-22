@@ -67,10 +67,39 @@ type mcpStore struct {
 	// exchange that went out with one may answer after a refresh replaced
 	// it, and its answer is redacted all the same (secrets).
 	former []string
+	// pinned are the secrets each exchange under way went out with, by
+	// pin, kept however many former ones come after them (pin).
+	pinned map[int][]string
+	pins   int
 }
 
 // maxFormerSecrets bounds mcpStore.former.
 const maxFormerSecrets = 256
+
+// pin keeps the secrets the store holds now among those it redacts
+// (secrets) until unpin is called, however many it replaces meanwhile:
+// an exchange pins the credentials it goes out with until its answer is
+// sanitized, since the server may echo them after a refresh replaced
+// them.
+func (s *mcpStore) pin() (unpin func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var held []string
+	for _, c := range s.creds {
+		held = append(held, credentialSecrets(c)...)
+	}
+	if s.pinned == nil {
+		s.pinned = map[int][]string{}
+	}
+	s.pins++
+	id := s.pins
+	s.pinned[id] = held
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.pinned, id)
+	}
+}
 
 // retireLocked keeps each secret of c, about to be replaced or dropped,
 // among the former ones; mu is held.
@@ -332,6 +361,11 @@ func (s *mcpStore) secrets() []string {
 	}
 	for _, c := range s.creds {
 		for _, secret := range credentialSecrets(c) {
+			add(secret)
+		}
+	}
+	for _, held := range s.pinned {
+		for _, secret := range held {
 			add(secret)
 		}
 	}

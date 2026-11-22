@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Try a profile's MCP tools pass again when a new session's tools could not be written: no other pass may come.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 4 (codex-cli 0.169.0) of head df472f2: [P2] Retry a failed post-create tool update",
+  "promoted_to": "service/internal/api/mcp_test.go"
+}

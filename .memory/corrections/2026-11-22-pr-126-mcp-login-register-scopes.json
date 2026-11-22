@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep a dynamic client registration for pocketd mcp login only when it was registered for every scope asked for now.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 4 (codex-cli 0.169.0) of head df472f2: [P2] Re-register an OAuth client when its scopes no longer suffice",
+  "promoted_to": "service/pig/mcp_round4_test.go"
+}

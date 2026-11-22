@@ -607,10 +607,10 @@ type Server struct {
 	pullTimer    func(d time.Duration, f func()) (cancel func())
 	pullStop     func()
 	// mcpTimer schedules an MCP tools' pass tried again (mcpUpgrade;
-	// tests replace it), and mcpStops cancel the ones set; sessionMu
-	// guards mcpStops.
-	mcpTimer func(d time.Duration, f func()) (cancel func())
-	mcpStops []func()
+	// tests replace it), and mcpRetries cancel the one each scope waits on,
+	// by profile ("" for all); sessionMu guards mcpRetries.
+	mcpTimer   func(d time.Duration, f func()) (cancel func())
+	mcpRetries map[string]func()
 	// consultTimer wakes a delivery pass at a consult's deadline
 	// (armConsults; tests replace it), and consultCancel stops the one
 	// set; sessionMu guards consultCancel.
@@ -885,10 +885,10 @@ func (s *Server) Stop() {
 			s.launchCancel()
 			s.launchCancel = nil
 		}
-		for _, stop := range s.mcpStops {
+		for _, stop := range s.mcpRetries {
 			stop()
 		}
-		s.mcpStops = nil
+		s.mcpRetries = nil
 		s.sessionMu.Unlock()
 		// A delivery pass, or a round of pull requests, that runs ends
 		// before the engine and the stores close.

@@ -60,25 +60,51 @@ func (s *Server) mcpGo(f func(context.Context)) {
 }
 
 // mcpUpgrade runs a pass (upgradeMCPTools) under mcpMu. A pass that
-// failed for a session is tried again after wait, then twice the wait
-// each time, up to mcpRetryMost, until it succeeds: no new listing may
-// come to start another.
+// failed for a session is tried again after wait (mcpRetryLater); one that
+// succeeds ends the retry its scope waits on.
 func (s *Server) mcpUpgrade(ctx context.Context, only string, wait time.Duration) {
 	s.mcpMu.Lock()
 	err := s.upgradeMCPTools(ctx, only)
 	s.mcpMu.Unlock()
-	if err == nil || ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return
 	}
-	s.log.Warn("give sessions their profiles' MCP tools; tried again later", "err", err, "in", wait)
+	if err != nil {
+		s.log.Warn("give sessions their profiles' MCP tools; tried again later", "err", err, "in", wait)
+		s.mcpRetryLater(only, wait)
+		return
+	}
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if stop, ok := s.mcpRetries[only]; ok {
+		stop()
+		delete(s.mcpRetries, only)
+	}
+}
+
+// mcpRetryLater runs a pass for only's sessions (every profile's for "")
+// after wait, then after twice the wait each time it fails, up to
+// mcpRetryMost, until it succeeds: no new listing may come to start
+// another. A scope waits on one retry at most; a retry that fired lets go
+// of its place.
+func (s *Server) mcpRetryLater(only string, wait time.Duration) {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
 	if s.stopped {
 		return
 	}
-	s.mcpStops = append(s.mcpStops, s.mcpTimer(wait, func() {
+	if _, ok := s.mcpRetries[only]; ok {
+		return
+	}
+	if s.mcpRetries == nil {
+		s.mcpRetries = map[string]func(){}
+	}
+	s.mcpRetries[only] = s.mcpTimer(wait, func() {
+		s.sessionMu.Lock()
+		delete(s.mcpRetries, only)
+		s.sessionMu.Unlock()
 		s.mcpGo(func(ctx context.Context) { s.mcpUpgrade(ctx, only, min(2*wait, mcpRetryMost)) })
-	}))
+	})
 }
 
 // mcpAfterCreate gives session id, just recorded, its profile's MCP tools
@@ -92,13 +118,17 @@ func (s *Server) mcpAfterCreate(ctx context.Context, id int64, profile string, r
 	if profile == "" || !slices.Contains(s.engine.MCPProfiles(), profile) {
 		return
 	}
+	scope := profile
 	if !team.MayUseMCP(role) {
 		profile = ""
 	}
 	s.mcpMu.Lock()
-	defer s.mcpMu.Unlock()
-	if _, err := s.engine.SetMCPTools(ctx, id, profile); err != nil {
-		s.log.Warn("give a new session its profile's MCP tools", "session", id, "err", err)
+	_, err := s.engine.SetMCPTools(ctx, id, profile)
+	s.mcpMu.Unlock()
+	if err != nil {
+		// No other pass may come: its profile's pass is tried again.
+		s.log.Warn("give a new session its profile's MCP tools; tried again later", "session", id, "err", err)
+		s.mcpRetryLater(scope, mcpRetryFirst)
 	}
 }
 

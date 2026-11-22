@@ -153,12 +153,24 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	if err != nil {
 		return fmt.Errorf("server %s's url is no URL", server.Name)
 	}
+	// The headers mcp.json names go with the probe of the server alone,
+	// never to the authorization server: a gateway may want one before it
+	// answers its challenge.
+	headers, missing := store.headers(server.Name, server.URL, server.Headers)
+	if len(missing) > 0 {
+		return fmt.Errorf("server %s needs its header %s first: pocketd mcp set-header %s %s; nothing was changed", server.Name, missing[0], server.Name, missing[0])
+	}
+	fetch := mcpClient(mcpLoginTimeout, server.URL)
+	challenge := probeChallenge(ctx, fetch, server.URL, headers)
+	scope := loginScope(ctx, fetch, server, challenge)
 	// The sign-in runs on a copy: only a sign-in that ends reaches the
-	// store. A client pocketd registered before, for this redirect URI,
-	// is kept.
+	// store. A client pocketd registered before is kept when it was
+	// registered for this redirect URI and for every scope asked for now:
+	// an authorization server may refuse a client a scope it did not
+	// register.
 	seed := oauth.McpOAuthState{ServerURL: resource.Href()}
 	if old := store.oauthState(server.Name, server.URL); old != nil && server.OAuth.ClientID == "" && old.ClientInformation != nil &&
-		slices.Contains(old.ClientInformation.RedirectURIs, server.OAuth.CallbackURL) {
+		slices.Contains(old.ClientInformation.RedirectURIs, server.OAuth.CallbackURL) && registeredFor(old.ClientInformation.Scope, scope) {
 		seed.ClientInformation = old.ClientInformation
 	}
 	memory := &oauth.MemoryOAuthStateStore{}
@@ -175,17 +187,8 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	if err != nil {
 		return err
 	}
-	// The headers mcp.json names go with the probe of the server alone,
-	// never to the authorization server: a gateway may want one before it
-	// answers its challenge.
-	headers, missing := store.headers(server.Name, server.URL, server.Headers)
-	if len(missing) > 0 {
-		return fmt.Errorf("server %s needs its header %s first: pocketd mcp set-header %s %s; nothing was changed", server.Name, missing[0], server.Name, missing[0])
-	}
-	fetch := mcpClient(mcpLoginTimeout)
-	challenge := probeChallenge(ctx, fetch, server.URL, headers)
 	flow := oauth.OAuthFlowOptions{ServerURL: server.URL, Fetch: fetch, ResourceMetadataURL: challenge.ResourceMetadataURL,
-		Scope: loginScope(ctx, fetch, server, challenge), SkipRefresh: true}
+		Scope: scope, SkipRefresh: true}
 	result, err := oauth.AuthorizeMcp(ctx, provider, flow)
 	if err != nil {
 		return fmt.Errorf("the sign-in to %s did not start: %s; nothing was changed", server.Name, oauthWords(err))
@@ -279,6 +282,22 @@ func loginScope(ctx context.Context, fetch *http.Client, server profiles.MCPServ
 		}
 	}
 	return mergeScopes(wanted, server.OAuth.Scope)
+}
+
+// registeredFor says whether a client registered for the scopes
+// registered may ask for wanted: it registered none, which bounds
+// nothing, or every one of wanted.
+func registeredFor(registered, wanted string) bool {
+	if strings.TrimSpace(registered) == "" {
+		return true
+	}
+	have := strings.Fields(registered)
+	for _, scope := range strings.Fields(wanted) {
+		if !slices.Contains(have, scope) {
+			return false
+		}
+	}
+	return true
 }
 
 // mergeScopes are the scopes of every list, each once, in order.
