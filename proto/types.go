@@ -55,12 +55,12 @@ type Usage struct {
 }
 
 // Tokens is the tokens a usage counts: its Total, as the provider reported
-// it, else its parts summed when the provider reported none.
+// it, or its parts summed when they are more. One answer's total is its
+// parts, or more; a sum of answers whose providers reported a total for
+// some alone, as PiG's ledger sums a model's answers, has a Total below its
+// parts, which count every answer (Codex review of #107, round 2).
 func (u Usage) Tokens() int64 {
-	if u.Total > 0 {
-		return u.Total
-	}
-	return max(0, u.Input) + max(0, u.Output) + max(0, u.CacheRead) + max(0, u.CacheWrite)
+	return max(u.Total, max(0, u.Input)+max(0, u.Output)+max(0, u.CacheRead)+max(0, u.CacheWrite))
 }
 
 // Add returns u plus v. Its Total is the two sides' Tokens: a side whose

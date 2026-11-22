@@ -577,7 +577,8 @@ func (s *Store) apply(ev proto.Event) {
 	if ev.Type == proto.EventAsk && ev.Ask != nil && ev.Ask.State != "" && ev.Ask.State != proto.AskOpen {
 		s.askLeft(*ev.Ask)
 	}
-	switch s.Data.Apply(ev) {
+	refetch := s.Data.Apply(ev)
+	switch refetch {
 	case RefetchAll:
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
 		// An ask that left the open list meanwhile has no event to say how:
@@ -588,6 +589,9 @@ func (s *Store) apply(ev proto.Event) {
 	case RefetchSchedules:
 		s.refetchSchedules()
 	case RefetchUsage:
+		s.refetchUsage()
+	}
+	if s.Data.takeUsageMoved() && refetch != RefetchUsage && refetch != RefetchAll {
 		s.refetchUsage()
 	}
 	s.settleAborts()
@@ -822,6 +826,11 @@ func (s *Store) doWithin(what string, timeout time.Duration, fn func(ctx context
 			}
 			if done != nil {
 				done(err)
+			}
+			// A session's model the answer brought moves the totals of
+			// its answers that name no model (ADR-0052).
+			if s.Data.takeUsageMoved() {
+				s.refetchUsage()
 			}
 		})
 	}()

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The usage report keeps each answer's cost as PiG priced it and prices it at the report, by the provider of the model it counts under (Engine.Metered), so an answer with no model on a subscription's session reads no cost and a warm report agrees with a fresh one.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 2 (codex-cli 0.169.0) of head 123190d: [P2] Price daily usage after resolving its effective provider",
+  "promoted_to": "service/internal/api/usage_test.go"
+}

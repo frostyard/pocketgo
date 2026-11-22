@@ -26,9 +26,9 @@ func meteredBy(cred ai.Credential, kept, oauthFlow bool) bool {
 	return !oauthFlow
 }
 
-// metered says provider's usage is charged per token (meteredBy); the
+// Metered says provider's usage is charged per token (meteredBy); the
 // owner's providers always are.
-func (e *Engine) metered(provider string) bool {
+func (e *Engine) Metered(provider string) bool {
 	if _, own := ownIDs(e.opts.Own.Providers)[provider]; own {
 		return true
 	}
@@ -61,7 +61,7 @@ func (e *Engine) priceEntry(entry *proto.Entry) {
 	if entry == nil || entry.Usage == nil || entry.Model == nil {
 		return
 	}
-	u := priced(*entry.Usage, entry.Model.Provider, e.metered)
+	u := priced(*entry.Usage, entry.Model.Provider, e.Metered)
 	entry.Usage = &u
 }
 

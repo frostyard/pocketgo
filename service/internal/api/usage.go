@@ -168,13 +168,20 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, usageReport(days, since, b, s.zone))
 }
 
-// sumUsage sums the answers of every session updated since since, an
-// instant, by day and model; an answer that names no model counts under
-// its session's model. It reads each session's answers once: it keeps
-// their sums, and reads on after the newest entry it read; a session it
-// holds from a day after since is read again from since. A session not
-// updated since since has no answer since then, as its time is its
-// newest entry's (rule 16b), and is not read. It stops when ctx ends.
+// sumUsage sums the answers of the sessions since since, an instant, by
+// day and model. An answer that names no model counts under its session's
+// model, and its cost only when that model's provider is metered
+// (Engine.Metered), both as they are now: the sums kept are as PiG keeps
+// the answers, so no report depends on when they were read (Codex review
+// of #107, round 2). It reads each session's answers once: it keeps their
+// sums, and reads on after the newest entry it read; a session it holds
+// from a day after since is read again from since.
+//
+// It reads every session kept or updated since the oldest day a since may
+// name, its transcript, not its time, deciding whether it has an answer
+// since since: a stop between an answer's commit and the write of its
+// session's time leaves the time behind the transcript (Codex review of
+// #107, round 2). It stops when ctx ends.
 func (s *Server) sumUsage(ctx context.Context, since time.Time, b usageBounds) (usageDays, error) {
 	rows, err := s.store.Sessions(ctx)
 	if err != nil {
@@ -186,9 +193,21 @@ func (s *Server) sumUsage(ctx context.Context, since time.Time, b usageBounds) (
 		s.usageSums = map[int64]*sessionUsage{}
 	}
 	s.pruneUsage(rows, b)
+	metered := map[string]bool{}
+	priced := func(model proto.ModelRef, u proto.Usage) proto.Usage {
+		m, ok := metered[model.Provider]
+		if !ok {
+			m = s.engine.Metered(model.Provider)
+			metered[model.Provider] = m
+		}
+		if !m {
+			u.Cost = 0
+		}
+		return u
+	}
 	sum := usageDays{}
 	for _, row := range rows {
-		if row.UpdatedAt.Before(since) {
+		if _, held := s.usageSums[row.ID]; !held && row.UpdatedAt.Before(b.oldestStarts) {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
@@ -204,7 +223,7 @@ func (s *Server) sumUsage(ctx context.Context, since time.Time, b usageBounds) (
 				if model == (proto.ModelRef{}) {
 					model = session
 				}
-				sum.addTo(day, model, u)
+				sum.addTo(day, model, priced(model, u))
 			}
 		}
 	}

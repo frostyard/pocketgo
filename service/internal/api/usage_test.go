@@ -101,8 +101,8 @@ func TestUsageTakesOnlyADayItCanSum(t *testing.T) {
 
 // Each answer is read once: a later report reads each session on after the
 // newest entry the last one read, from the day that one began at, and
-// reads a session from the start again only for an earlier since; a
-// session not updated since since is not read (ADR-0052).
+// reads a session from the start again only for an earlier since
+// (ADR-0052).
 func TestUsageReadsEachAnswerOnce(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -129,14 +129,62 @@ func TestUsageReadsEachAnswerOnce(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reads %+v, want %+v", got, want)
 	}
-	// The session's time is the harness's now: a since after it skips it.
-	if _, err := h.client.Usage(ctx, "2026-11-19"); err != nil {
+}
+
+// A session whose time lags its transcript, as a stop between an answer's
+// commit and the write of its session's time leaves it, is read for the
+// answer all the same (Codex review of #107, round 2).
+func TestASessionWhoseTimeLagsItsTranscriptIsRead(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	id := h.usageSession("r1", answerAt(1, h.clock.Now(), &model, proto.Usage{Output: 1, Total: 1}))
+	// A day on, an answer is in the transcript, and the session's time
+	// still says the day before.
+	h.clock.Advance(24 * time.Hour)
+	h.engine.mu.Lock()
+	h.engine.transcripts[id] = append(h.engine.transcripts[id], answerAt(2, h.clock.Now().Add(-time.Hour), &model, proto.Usage{Output: 2, Total: 2}))
+	h.engine.mu.Unlock()
+	r, err := h.client.Usage(ctx, "2026-11-19")
+	if err != nil || len(r.Days) != 1 || r.Days[0].Day != "2026-11-19" || r.Days[0].Models[0].Usage.Output != 2 {
+		t.Fatalf("report %+v, %v", r, err)
+	}
+}
+
+// A session kept by no report and not updated since the oldest day a
+// since may name is not read: no report can ask for its answers.
+func TestASessionIdleSinceTheOldestDayIsNotRead(t *testing.T) {
+	h := newHarness(t)
+	h.usageSession("r1", answerAt(1, h.clock.Now(), &model, proto.Usage{Output: 1, Total: 1}))
+	h.clock.Advance(proto.MaxUsageDays * 24 * time.Hour)
+	if _, err := h.client.Usage(context.Background(), "2027-02-18"); err != nil {
 		t.Fatal(err)
 	}
 	h.engine.mu.Lock()
 	defer h.engine.mu.Unlock()
-	if len(h.engine.usageReads) != len(want) {
-		t.Fatalf("a session not updated since since was read: %+v", h.engine.usageReads)
+	if len(h.engine.usageReads) != 0 {
+		t.Fatalf("an idle session was read: %+v", h.engine.usageReads)
+	}
+}
+
+// An answer's cost is priced at the report, by the provider of the model
+// it counts under: an answer that names none counts its session's model's,
+// and a provider's sign-in as it is now decides, also for sums kept from
+// before (Codex review of #107, round 2).
+func TestAnAnswersCostIsPricedAtTheReportByItsProvider(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.usageSession("r1", answerAt(1, h.clock.Now(), nil, proto.Usage{Output: 1, Total: 1, Cost: 0.5}))
+	h.engine.mu.Lock()
+	h.engine.unmetered = map[string]bool{model.Provider: true}
+	h.engine.mu.Unlock()
+	if r, err := h.client.Usage(ctx, "2026-11-18"); err != nil || r.Days[0].Models[0].Usage.Cost != 0 || r.Days[0].Models[0].Usage.Total != 1 {
+		t.Fatalf("a subscription's report %+v, %v", r, err)
+	}
+	h.engine.mu.Lock()
+	h.engine.unmetered = nil
+	h.engine.mu.Unlock()
+	if r, err := h.client.Usage(ctx, "2026-11-18"); err != nil || r.Days[0].Models[0].Usage.Cost != 0.5 {
+		t.Fatalf("a metered provider's report from the sums kept %+v, %v", r, err)
 	}
 }
 

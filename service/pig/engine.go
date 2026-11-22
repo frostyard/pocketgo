@@ -1164,7 +1164,7 @@ func (e *Engine) Usage(ctx context.Context, id int64) (proto.Usage, error) {
 	if err != nil {
 		return proto.Usage{}, err
 	}
-	return wireUsageState(state, e.metered), nil
+	return wireUsageState(state, e.Metered), nil
 }
 
 // UsageEntries are session id's answers with usage after entry after, read
@@ -1175,7 +1175,8 @@ func (e *Engine) Usage(ctx context.Context, id int64) (proto.Usage, error) {
 // read, as entriesBetween does. It reads only entries after after: the
 // first one read is the newest, and a session with none new reads an
 // empty page, never its newest records again (Codex review of #107, round
-// 1). Each answer's cost is kept only when its provider is metered.
+// 1). Each answer's usage is as PiG keeps it: the report prices it once it
+// resolved the answer's model (Metered; Codex review of #107, round 2).
 func (e *Engine) UsageEntries(ctx context.Context, id, after int64, since time.Time) ([]api.UsageEntry, int64, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
@@ -1199,7 +1200,6 @@ func (e *Engine) UsageEntries(ctx context.Context, id, after int64, since time.T
 			if entry.At.Before(since) {
 				return out, newest, nil
 			}
-			e.priceEntry(&entry)
 			u := api.UsageEntry{ID: entry.ID, At: entry.At, Usage: *entry.Usage}
 			if entry.Model != nil {
 				u.Model = *entry.Model

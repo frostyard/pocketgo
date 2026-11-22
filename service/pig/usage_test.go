@@ -42,7 +42,7 @@ func TestASubscriptionsCostIsNoSpend(t *testing.T) {
 		"openai-codex": false,
 		"faux":         true,
 	} {
-		if got := e.metered(provider); got != want {
+		if got := e.Metered(provider); got != want {
 			t.Errorf("metered(%s) = %v, want %v", provider, got, want)
 		}
 	}
@@ -62,11 +62,24 @@ func TestASubscriptionsCostIsNoSpend(t *testing.T) {
 	ledger := harness.NewUsageState()
 	ledger.Models["anthropic/claude-opus-5-5"] = ai.Usage{Input: 100, TotalTokens: 100, Cost: ai.UsageCost{Total: 3}}
 	ledger.Models["deepseek/deepseek-v4"] = ai.Usage{Input: 50, TotalTokens: 50, Cost: ai.UsageCost{Total: 0.5}}
-	if got := wireUsageState(&ledger, e.metered); got.Cost != 0.5 || got.Total != 150 {
+	if got := wireUsageState(&ledger, e.Metered); got.Cost != 0.5 || got.Total != 150 {
 		t.Errorf("the session's usage %+v", got)
 	}
 	if !meteredBy(ai.Credential{Type: ai.CredentialAPIKey}, true, true) || meteredBy(ai.Credential{Type: ai.CredentialOAuth}, true, false) {
 		t.Error("a kept sign-in does not decide")
+	}
+}
+
+// A session's tokens count an answer whose provider reported no total:
+// PiG's ledger sums a model's answers, so a total of 60 and an answer of
+// 40 input tokens with none sum to a total of 60 and parts of 100 (Codex
+// review of #107, round 2).
+func TestASessionsTokensCountAnswersWithoutATotal(t *testing.T) {
+	ledger := harness.NewUsageState()
+	ledger.Models["deepseek/deepseek-v4"] = ai.Usage{Input: 100, TotalTokens: 60}
+	got := wireUsageState(&ledger, func(string) bool { return true })
+	if got.Tokens() != 100 || got.Total != 100 {
+		t.Fatalf("the session's usage %+v counts %d tokens", got, got.Tokens())
 	}
 }
 

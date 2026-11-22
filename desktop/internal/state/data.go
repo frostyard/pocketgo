@@ -55,6 +55,10 @@ type Data struct {
 	usage     proto.UsageReport
 	usageList list
 	usageOwed map[int64]bool
+	// usageMoved says a session's model changed, from whatever brought it:
+	// the totals count an answer that names no model under its session's
+	// model now (takeUsageMoved).
+	usageMoved bool
 
 	open *OpenSession
 	// terminals are the owner's shells, oldest first, replaced whole by
@@ -514,6 +518,9 @@ func (d *Data) SetSessions(f Fetch, list []proto.Session) {
 		if cur, ok := d.Session(s.ID); ok && !d.takesSummary(s.ID, f) {
 			s = cur
 		} else {
+			if ok && cur.Model != s.Model {
+				d.usageMoved = true
+			}
 			d.appliedSummary(s.ID, f)
 		}
 		out = append(out, s)
@@ -799,6 +806,9 @@ func (d *Data) putSession(s proto.Session) {
 		// builds the view's rows again (ADR-0048).
 		if d.open != nil && d.open.ID == s.ID && !sameQuestion(d.sessions[i].Question, s.Question) {
 			d.open.rev++
+		}
+		if d.sessions[i].Model != s.Model {
+			d.usageMoved = true
 		}
 		d.sessions[i] = s
 	} else {

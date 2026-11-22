@@ -197,6 +197,15 @@ func TestUsageAdd(t *testing.T) {
 	if got := (Usage{Input: 3, Output: 2, CacheRead: -1}).Tokens(); got != 5 {
 		t.Fatalf("Tokens = %d", got)
 	}
+	// A model's ledger sums an answer of 40 input tokens and no total with
+	// one whose total is 60: its parts count both (Codex review of #107,
+	// round 2).
+	if got := (Usage{Input: 100, Total: 60}).Tokens(); got != 100 {
+		t.Fatalf("Tokens of a sum with and without totals = %d", got)
+	}
+	if got := (Usage{Input: 10, Output: 5, Total: 20}).Tokens(); got != 20 {
+		t.Fatalf("Tokens of a total above its parts = %d", got)
+	}
 }
 
 // handlerTransport serves requests with a handler in memory, so unit tests

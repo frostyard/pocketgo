@@ -155,6 +155,8 @@ type fakeEngine struct {
 	usageReads   []usageRead
 	usageReadErr error
 	onUsageRead  func(id int64)
+	// unmetered are the providers Metered says are subscriptions.
+	unmetered map[string]bool
 }
 
 // usageRead is one read of UsageEntries: its session, the entry it read
@@ -764,6 +766,14 @@ func (f *fakeEngine) Usage(context.Context, int64) (proto.Usage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.usage, f.usageErr
+}
+
+// Metered says a provider is metered unless a test made it a
+// subscription's.
+func (f *fakeEngine) Metered(provider string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.unmetered[provider]
 }
 
 // UsageEntries reads a test's transcript as PiG's does: its answers with

@@ -141,8 +141,13 @@ type Engine interface {
 	// after entry after, read newest first, down to the first one before
 	// since, which it leaves out with every older one; newest is the
 	// session's newest entry, which the next read goes on after
-	// (ADR-0052).
+	// (ADR-0052). Their usage is as PiG keeps it, its cost unpriced
+	// (Metered).
 	UsageEntries(ctx context.Context, id, after int64, since time.Time) (entries []UsageEntry, newest int64, err error)
+	// Metered says provider's usage is charged per token, so its cost is
+	// spend: an API key's, or the owner's own provider's; a subscription's
+	// is not (ADR-0052).
+	Metered(provider string) bool
 	// RunIdentity names the session's current run by its first entry.
 	RunIdentity(ctx context.Context, id int64) (first int64, busy bool, err error)
 	// RunStarter is the request key of the submission that started the

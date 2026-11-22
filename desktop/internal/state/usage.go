@@ -18,10 +18,10 @@ import (
 // only draw it.
 
 // ContextTokens is the context an answer's usage measured: its total, as
-// the provider reported it, else the sum of its input, its output and the
-// cache it read and wrote. It is the measure PiG compacts a session on
-// (ai.CalculateContextTokens): the answer's request and the answer itself,
-// which the next request carries.
+// the provider reported it, or the sum of its input, its output and the
+// cache it read and wrote when that is more (proto.Usage.Tokens). It is
+// the measure PiG compacts a session on (ai.CalculateContextTokens): the
+// answer's request and the answer itself, which the next request carries.
 func ContextTokens(u proto.Usage) int64 { return u.Tokens() }
 
 // MeterLevel is how near a session's context is to where it is compacted.
@@ -60,7 +60,7 @@ type ContextFill struct {
 	Measured proto.Usage
 	// Window is the session's model's context window, 0 when unknown;
 	// CompactAt the standing session's threshold, 0 for none of its own
-	// below the window.
+	// below a known window.
 	Window    int
 	CompactAt int
 	// Percent is Tokens of Window, rounded down, -1 when the window is
@@ -74,9 +74,13 @@ type ContextFill struct {
 // the reply being written included, against the model's window and the
 // standing session's compactAt. A compaction or a reset after that answer
 // changed the context whole, so it is not known until the next answer.
+//
+// The compactAt counts only below a known window, as pocketd compacts at
+// it only then (team.ShouldCompact): with the model's window unknown, the
+// meter claims no threshold (Codex review of #107, round 2).
 func Fill(entries []proto.Entry, live proto.Live, window, compactAt int) ContextFill {
 	f := ContextFill{Window: max(0, window), Percent: -1, Why: FillUnmeasured}
-	if compactAt > 0 && (f.Window == 0 || compactAt < f.Window) {
+	if compactAt > 0 && compactAt < f.Window {
 		f.CompactAt = compactAt
 	}
 	var measured *proto.Usage
@@ -478,6 +482,17 @@ func (d *Data) usageChanged(s proto.Session) bool {
 		return owed || s.Usage != (proto.Usage{})
 	}
 	return owed || held.Usage != s.Usage
+}
+
+// takeUsageMoved says, once, that a session's model changed since it was
+// last asked, whatever brought the change: an event, a list, a detail or
+// an action's answer. The totals count an answer that names no model under
+// its session's model now (protocol rule 63), so they are fetched again
+// (Codex review of #107, round 2).
+func (d *Data) takeUsageMoved() bool {
+	moved := d.usageMoved
+	d.usageMoved = false
+	return moved
 }
 
 // refetchUsage follows a session event that changes the totals: one fetch

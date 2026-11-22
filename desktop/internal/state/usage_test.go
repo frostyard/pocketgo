@@ -92,7 +92,9 @@ func TestTheMetersLevels(t *testing.T) {
 		{"near compactAt", 96_000, 200_000, 120_000, MeterNear, 48, 96_000, 120_000},
 		{"at compactAt", 120_000, 200_000, 120_000, MeterFull, 60, 96_000, 120_000},
 		{"a compactAt past the window", 170_000, 200_000, 250_000, MeterNear, 85, 160_000, 200_000},
-		{"compactAt with no window", 100_000, 0, 120_000, MeterNear, -1, 96_000, 120_000},
+		// pocketd compacts at compactAt only below a known window
+		// (Codex review of #107, round 2).
+		{"compactAt with no window", 100_000, 0, 120_000, MeterCalm, -1, 0, 0},
 		{"no limit", 100_000, 0, 0, MeterCalm, -1, 0, 0},
 	} {
 		f := Fill(at(c.tokens), proto.Live{}, c.window, c.compactAt)
@@ -418,6 +420,42 @@ func TestATotalsAnswerAChangeCameAfterIsNotShown(t *testing.T) {
 	releaseNext()
 	h.loop.RunUntil(t, func() bool { today, _, shown := h.store.UsageTotals(); return shown && today.Usage.Total == 2 })
 	h.settle(t)
+}
+
+// A session's model that changed fetches the totals again, whatever brought
+// the change first, as an answer that names no model counts under its
+// session's model now (Codex review of #107, round 2).
+func TestAModelChangeFetchesTheTotalsAgain(t *testing.T) {
+	h := newHarness(t)
+	s := session(1, "Work", -time.Minute)
+	h.srv.AddSession(s)
+	h.connect(t)
+	usages := func() int { return len(h.srv.RequestsTo(http.MethodGet, proto.PathUsage)) }
+	before := usages()
+	// The session's detail brings the new model before any event does.
+	moved := s
+	moved.Model = proto.ModelRef{Provider: "deepseek", ID: "deepseek-v4"}
+	h.srv.AddSession(moved)
+	h.store.Open(1)
+	h.loop.RunUntil(t, func() bool { o := h.store.Data.Open(); return o != nil && o.Loaded })
+	h.settle(t)
+	if got := usages() - before; got != 1 {
+		t.Fatalf("%d usage fetches after a detail brought a new model, want 1", got)
+	}
+	// Its event, with the same usage and the model the client has, asks
+	// for nothing more; an event that moves it again does.
+	last := emitSession(h, moved)
+	h.loop.RunUntil(t, func() bool { return h.store.lastSeq == last.Seq })
+	h.settle(t)
+	if got := usages() - before; got != 1 {
+		t.Fatalf("%d usage fetches after the event of a model the client had, want 1", got)
+	}
+	last = emitSession(h, s)
+	h.loop.RunUntil(t, func() bool { return h.store.lastSeq == last.Seq })
+	h.settle(t)
+	if got := usages() - before; got != 2 {
+		t.Fatalf("%d usage fetches after an event moved the model back, want 2", got)
+	}
 }
 
 // emitSession emits a session event of a copy of s: the fake writes the

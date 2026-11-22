@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The context meter counts a standing session's compactAt only below a known window, as team.ShouldCompact compacts at it only then: with the window unknown, the meter claims no threshold.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 2 (codex-cli 0.169.0) of head 123190d: [P2] Require a known window before advertising early compaction",
+  "promoted_to": "desktop/internal/state/usage_test.go"
+}

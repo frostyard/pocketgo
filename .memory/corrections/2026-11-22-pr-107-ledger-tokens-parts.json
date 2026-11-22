@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "proto",
+  "correction": "proto.Usage.Tokens is the larger of the total and the parts summed: PiG's ledger sums a model's answers, so its total misses an answer whose provider reported none.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 2 (codex-cli 0.169.0) of head 123190d: [P2] Apply the token fallback before same-model ledger aggregation",
+  "promoted_to": "service/pig/usage_test.go"
+}

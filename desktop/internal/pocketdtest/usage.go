@@ -43,7 +43,7 @@ func (s *Server) usageRoutes(mux *http.ServeMux) {
 			return
 		}
 		if report.TodayEnds.IsZero() {
-			report.TodayEnds = time.Date(today.Year(), today.Month(), today.Day()+1, 0, 0, 0, 0, zone).UTC()
+			report.TodayEnds = dayStart(today.AddDate(0, 0, 1), zone).UTC()
 		}
 		// The since pocketd takes (protocol rule 63): a day, at most
 		// proto.MaxUsageDays-1 days before today.
@@ -68,4 +68,18 @@ func (s *Server) usageRoutes(mux *http.ServeMux) {
 		report.Days = days
 		writeJSON(w, http.StatusOK, report)
 	})
+}
+
+// dayStart is the first instant of date day in zone, as pocketd's: a zone
+// whose clocks skip midnight that day starts it as they move on (Codex
+// review of #107, round 2).
+func dayStart(day time.Time, zone *time.Location) time.Time {
+	y, m, d := day.Date()
+	t := time.Date(y, m, d, 0, 0, 0, 0, zone)
+	if ty, tm, td := t.Date(); ty != y || tm != m || td != d {
+		if _, end := t.ZoneBounds(); !end.IsZero() {
+			t = end
+		}
+	}
+	return t
 }

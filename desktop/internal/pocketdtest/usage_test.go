@@ -32,4 +32,11 @@ func TestTheFakesUsageIsPocketds(t *testing.T) {
 	if _, err := client.Usage(ctx, "2026-08-18"); !errors.As(err, &pe) || pe.Status != http.StatusBadRequest || pe.Code != proto.ErrorCodeBadRequest {
 		t.Fatalf("a since 92 days back: %v", err)
 	}
+	// A day whose midnight the zone's clocks skip ends the day before as
+	// they move on: America/Santiago's 2026-09-06 starts at 01:00 (Codex
+	// review of #107, round 2).
+	s.SetUsage(proto.UsageReport{Zone: "America/Santiago", Today: "2026-09-05"})
+	if r, err := client.Usage(ctx, "2026-09-01"); err != nil || !r.TodayEnds.Equal(time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC)) {
+		t.Fatalf("the end of a day before a skipped midnight: %+v, %v", r, err)
+	}
 }
