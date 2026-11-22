@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's restore without the current folder sets the restored auth.json aside and signs in again to the models still used, since a new sign-in leaves the other restored entries.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 6 (codex-cli 0.169.0) of head aa1dac0: [P2] Start with empty model credentials when only the backup survives",
+  "promoted_to": "docs/design/setup.md"
+}

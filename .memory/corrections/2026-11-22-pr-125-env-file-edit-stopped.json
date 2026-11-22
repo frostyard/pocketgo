@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide edits pocketd.env with pocketd stopped: the sandbox binds that file read-only but does not watch it, so a file an editor puts in its place could be changed by running agents before systemd reads it.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 6 (codex-cli 0.169.0) of head aa1dac0: [P1] Stop pocketd before replacing its environment file",
+  "promoted_to": "docs/design/setup.md"
+}

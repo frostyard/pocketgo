@@ -1,7 +1,7 @@
 {
   "date": "2026-11-22",
   "scope": "setup",
-  "correction": "The setup guide's restore has the owner list the restored devices and revoke again every device revoked after the backup, before pocketd starts: the restored work.sqlite holds the old token hash.",
+  "correction": "The setup guide's restore lists the current devices before it, and before pocketd starts revokes every active restored device that is not active with the same ID in that list, since the restored work.sqlite holds every token as it was at the backup; without the current folder it revokes every active restored device.",
   "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P1] Reapply device revocations before serving a restored backup",
   "promoted_to": "docs/design/setup.md"
 }

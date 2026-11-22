@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The round 2 restore record states the final rule: revoke every active restored device not active with the same ID now, or every active one without the current folder.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 6 (codex-cli 0.169.0) of head aa1dac0: [P3] Bring the earlier restore record up to the final rule",
+  "promoted_to": "docs/design/setup.md"
+}
