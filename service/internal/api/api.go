@@ -423,7 +423,16 @@ type Server struct {
 	// afterConfirmRead, in tests, runs between a confirmation's read of a
 	// pull request and its answer.
 	afterConfirmRead func()
-	reviewMu         sync.Mutex
+	cleanMu          sync.Mutex
+	// cleanQueue holds closed threads to clean, under cleanMu.
+	cleanQueue map[int64]bool
+	// cleanDone holds threads decided in this run, under cleanMu.
+	cleanDone map[int64]bool
+	// cleansDue holds cleanup retries, under reviewMu.
+	cleansDue map[int64]bool
+	// cleanNotes holds kept-worktree notes not yet written, under reviewMu.
+	cleanNotes map[int64]string
+	reviewMu   sync.Mutex
 	// abortsDue are the ended reviews' sessions whose run a stop did not
 	// end, or could not tell; each review pass tries again. reviewMu
 	// guards it.

@@ -111,3 +111,11 @@ func (s *Store) MarkWorktree(ctx context.Context, key string, step int) error {
 	}
 	return nil
 }
+
+// SessionWorktreeAt says whether path is the path or the real place of an
+// owner's session worktree (ADR-0027): pocketd never removes one.
+func (s *Store) SessionWorktreeAt(ctx context.Context, path string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM session_worktrees WHERE path = ? OR dest = ?)`, path, path).Scan(&exists)
+	return exists, err
+}

@@ -122,3 +122,17 @@ func TestAWorktreesClaimReservesItsRequest(t *testing.T) {
 		t.Fatal("a refused claim was kept")
 	}
 }
+
+func TestSessionWorktreeAtFindsItsPathAndRealPlace(t *testing.T) {
+	s, _ := open(t)
+	w := claim("/checkout--owner-session", "owner/session", "/checkout")
+	if err := s.ClaimWorktree(ctx, "owner-request", w); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{w.Path, w.Dest, "/another"} {
+		got, err := s.SessionWorktreeAt(ctx, path)
+		if err != nil || got != (path != "/another") {
+			t.Fatalf("SessionWorktreeAt(%q) = %v, %v", path, got, err)
+		}
+	}
+}

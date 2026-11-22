@@ -366,3 +366,9 @@ func CheckoutKey(p profiles.Profile, repository string) (key string, ok bool) {
 	}
 	return "", false
 }
+
+// WorktreeKept is the line a closed thread's report gets for a worktree
+// pocketd keeps (ADR-0054).
+func WorktreeKept(path, reason string) string {
+	return "pocketd kept the worktree " + path + ": " + reason + "."
+}

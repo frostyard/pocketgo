@@ -588,3 +588,33 @@ func TestAThreadKeepsOneWorker(t *testing.T) {
 		t.Fatalf("a closed thread's worker: %v", err)
 	}
 }
+
+func TestNoteClosedThreadAppendsOnlyToAClosedReport(t *testing.T) {
+	s, _ := open(t)
+	row, _, err := s.CreateThread(ctx, ThreadRow{Key: "note", Title: "Task", Agent: "vera", SupervisorSession: 1, Task: "Build it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AttachThread(ctx, row.ID, 9, "/work", "agent/task", "brief"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.OpenThread(ctx, row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, changed, err := s.NoteClosedThread(ctx, row.ID, "not closed")
+	if err != nil || changed || got.Report != before.Report || !got.UpdatedAt.Equal(before.UpdatedAt) || got.State != ThreadOpen {
+		t.Fatalf("open note = %+v, %v, %v", got, changed, err)
+	}
+	if _, err := s.CloseThread(ctx, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, changed, err = s.NoteClosedThread(ctx, row.ID, "first")
+	if err != nil || !changed || got.Report != "first" {
+		t.Fatalf("first note = %+v, %v, %v", got, changed, err)
+	}
+	got, changed, err = s.NoteClosedThread(ctx, row.ID, "second")
+	if err != nil || !changed || got.Report != "first\n\nsecond" {
+		t.Fatalf("appended note = %+v, %v, %v", got, changed, err)
+	}
+}

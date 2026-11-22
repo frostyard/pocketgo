@@ -62,6 +62,7 @@ Docs are split by the question they answer:
 - [0047 — Carry a shift's ci on a proposal to its launch](adr/0047-carry-a-shifts-ci-on-a-proposal-to-its-launch.md)
 - [0048 — Put the supervisor's and a private agent's questions to the owner inline, in code](adr/0048-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)
 - [0051 — Start a new worktree's branch from a fresh fetch of the remote's default branch](adr/0051-start-a-new-worktrees-branch-from-a-fresh-fetch-of-the-remotes-default-branch.md)
+- [0054 — Remove a closed thread's worktree in code, with no GitHub write](adr/0054-remove-a-closed-threads-worktree-in-code-with-no-github-write.md)
 
 ### Org-wide decisions
 
