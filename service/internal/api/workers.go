@@ -165,13 +165,6 @@ func (s *Server) workerOf(ctx context.Context, id int64, briefKey, briefText str
 // thread's reports.
 const workerMessagePrefix = team.WorkerMessagePrefix
 
-// isWorkerReport says whether a report's key is a message between a
-// thread's worker and its specialist: it goes only while the thread is
-// open.
-func isWorkerReport(key string) bool {
-	return strings.HasPrefix(key, workerReplyPrefix) || strings.HasPrefix(key, workerMessagePrefix)
-}
-
 // queueWorkerMessage keeps text for thread's worker, by key, under
 // outboxMu, which every close holds as it commits: a thread that closed
 // refuses it, so no message to a worker is kept, or sent, after a close
