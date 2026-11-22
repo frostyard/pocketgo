@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide describes compactAt as the tokens past which pocketd compacts a standing session once it is idle and has an older part to summarize; a run can go past it.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 23 (codex-cli 0.169.0) of head f031651: [P3] Describe compactAt as an idle-session threshold",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's host move puts the new host's own tailnet address in POCKETD_LISTEN when one is set, and its service URL on the devices, rather than the old host's.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 23 (codex-cli 0.169.0) of head f031651: [P1] Adapt the listen address when moving to a new host",
+  "promoted_to": "docs/design/setup.md"
+}

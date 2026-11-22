@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says the team account's write access lets agents push and merge with gh, which neither pocketd's label nor the desktop's gates bind, and points to branch rules on GitHub for merges that must wait for the owner.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 23 (codex-cli 0.169.0) of head f031651: [P2] Distinguish desktop merge gates from GitHub branch protection",
+  "promoted_to": "docs/design/setup.md"
+}

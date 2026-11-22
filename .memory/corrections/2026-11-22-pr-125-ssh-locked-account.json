@@ -1,7 +1,7 @@
 {
   "date": "2026-11-22",
   "scope": "setup",
-  "correction": "The setup guide unlocks the service user without a password (usermod -p '*') where sshd runs with UsePAM no, since sshd refuses a locked account before it looks at a key.",
+  "correction": "The setup guide sends a host whose sshd runs with UsePAM no to the incus deploy, since sshd refuses the locked account useradd makes before it looks at a key, and gives an ssh command no XDG_RUNTIME_DIR.",
   "evidence": "frostyard/pocketgo#125, Codex CLI review round 22 (codex-cli 0.169.0) of head 2db1c44: [P1] Account for locked users on the SSH deploy path",
   "promoted_to": "docs/design/setup.md"
 }

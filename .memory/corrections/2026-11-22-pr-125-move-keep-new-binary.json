@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's host move leaves what make deploy installed (~/.local/bin/pocketd, ~/.config/systemd/user) out of the copied folders, even when a home holds them, since the old program may be built for another architecture.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 23 (codex-cli 0.169.0) of head f031651: [P1] Preserve the destination binary when copying working folders",
+  "promoted_to": "docs/design/setup.md"
+}
