@@ -201,6 +201,9 @@ Built in this order, one pull request each:
 31. [ ] **Rename a private agent's session** ([ADR-0058](../adr/0058-rename-a-private-agents-session-from-the-desktop-checked-in-code.md), [architecture: renaming a private agent's session](../design/architecture.md#service), [architecture: desktop client](../design/architecture.md#desktop-client), [specs: protocol rules 5, 9 and 68](../specs/protocol.md#rules)). Asked for in frostyard/pocketgo#78, scoped by the owner on 2026-11-21 to a private profile's sessions.
     - Built: `POST /v1/sessions/{id}/title`, protocol 31, checked in code against the profile as pocketd reads it then (`team.CheckRename`), the title alone written with its request, the session keeping its place in Recent; a session's `renamable`; the header's Rename button and double click, the sidebar's Rename… and F2, and on the iPhone the top bar's Rename and a row's Rename….
     - Still to see, through the desktop, on the team VM: Chani's session renamed from its header and from the sidebar, the new title showing at once on a second device, and a team session offering no rename.
+32. [ ] **The setup guide** ([design: setup guide](../design/setup.md), [architecture: operational notes](../design/architecture.md#operational-notes)). Asked for in frostyard/pocketgo#45: someone other than the owner runs pocketgo from this repository alone.
+    - Written: the service host and its sandbox, `make deploy`, `tailscale serve` or `POCKETD_LISTEN`, the data folder, model sign-ins, devices, the profile folder with every file in it and two example profiles, `workers.json` and `schedules.json` in `examples/profiles/`, GitHub for the agents and the desktop's own App, the desktop and the phone, a first delegated thread, backups, starting over and the sandbox's start check. No code change.
+    - Still to see: someone other than the owner goes from a clone of this repository to a delegated thread on a host of their own by following the guide.
 
 - **Policies enforced in code:** see the [architecture](../design/architecture.md#policies-enforced-in-code).
 - [x] **Tools run without approval** in a bubblewrap sandbox that hides pocketd's data folder and keeps its start files read-only ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [architecture: operational notes](../design/architecture.md#operational-notes)). Done 2026-11-19.
@@ -261,5 +264,5 @@ The owner's shifts from pi-pocket-team, started by the supervisor first, with no
 
 ## References
 
-- Implements: [design: system architecture](../design/architecture.md)
+- Implements: [design: system architecture](../design/architecture.md), [design: setup guide](../design/setup.md)
 - Decisions: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md) to [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)
