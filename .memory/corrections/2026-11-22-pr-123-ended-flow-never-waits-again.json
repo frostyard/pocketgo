@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The sheet takes the later of two copies of its flow (state.laterFlow): an ended copy wins over a waiting row, so a flow never shows as waiting again once ended.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 3 (codex-cli 0.169.0) of head 38299fd: [P2] Keep terminal flow replies ahead of cached waiting rows",
+  "promoted_to": "desktop/internal/state/signins_round3_test.go"
+}

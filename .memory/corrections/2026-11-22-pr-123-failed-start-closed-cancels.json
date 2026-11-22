@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "Closing a sign-in sheet whose start failed with no answer from pocketd sends the start again with its request id and cancels the flow pocketd names, as for a sheet closed while its start went.",
+  "evidence": "frostyard/pocketgo#123, Codex CLI review round 3 (codex-cli 0.169.0) of head 38299fd: [P2] Cancel a sign-in when its failed start sheet is dismissed",
+  "promoted_to": "desktop/internal/state/signins_round3_test.go"
+}

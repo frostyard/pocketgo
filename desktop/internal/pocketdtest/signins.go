@@ -1,7 +1,6 @@
 package pocketdtest
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -48,6 +47,7 @@ func (s *Server) SetSignIns(rows []proto.SignIn) {
 func (s *Server) SignIns() []proto.SignIn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.signInLocked("")
 	return slices.Clone(s.signin.rows)
 }
 
@@ -165,9 +165,10 @@ func (s *Server) signInRoutes(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, *s.signin.rows[i].Flow)
 	})
 	mux.HandleFunc("POST "+proto.PathCancelSignIn, func(w http.ResponseWriter, r *http.Request) {
+		// The body is read as pocketd reads it (Codex review of #123,
+		// round 3).
 		var request proto.CancelSignIn
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
-			writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
+		if !decodeStrict(w, r, &request, &request.RequestID) {
 			return
 		}
 		s.mu.Lock()
@@ -197,8 +198,7 @@ func (s *Server) signInRoutes(mux *http.ServeMux) {
 // waits; a request id seen before answers its flow as it is now.
 func (s *Server) startSignIn(w http.ResponseWriter, r *http.Request) {
 	var request proto.StartSignIn
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RequestID == "" {
-		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, "bad body")
+	if !decodeStrict(w, r, &request, &request.RequestID) {
 		return
 	}
 	s.mu.Lock()

@@ -116,6 +116,12 @@ type Poll struct {
 	Refused string
 }
 
+// do's errors, which quote nothing GitHub sent.
+var (
+	errUnreachable = errors.New("the request to GitHub failed")
+	errTimedOut    = errors.New("GitHub did not answer in time")
+)
+
 // errTransient is a poll that did not reach an answer: GitHub could not be
 // reached, or failed (5xx, 429). The flow polls again (maxFailures).
 var errTransient = errors.New("GitHub could not be reached")
@@ -201,7 +207,7 @@ func (g *GitHub) Poll(ctx context.Context, deviceCode string) (Poll, error) {
 		if ctx.Err() != nil {
 			return Poll{}, ctx.Err()
 		}
-		return Poll{}, fmt.Errorf("%w: %v", errTransient, err)
+		return Poll{}, fmt.Errorf("%w: %w", errTransient, err)
 	}
 	if status >= 500 || status == http.StatusTooManyRequests {
 		return Poll{}, fmt.Errorf("%w: it answered %d", errTransient, status)
@@ -336,15 +342,25 @@ func (g *GitHub) post(ctx context.Context, target string, form url.Values) ([]by
 	return g.do(request)
 }
 
+// do sends request and reads at most maxBody of the answer. Its errors are
+// its own words: Go's client error can quote what GitHub
+// sent, as a redirect's Location, which could hold the device code, and a
+// flow's error goes to every client (Codex review of #123, round 3).
 func (g *GitHub) do(request *http.Request) ([]byte, int, error) {
 	response, err := g.client().Do(request)
 	if err != nil {
-		return nil, 0, err
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, 0, errTimedOut
+		}
+		if request.Context().Err() != nil {
+			return nil, 0, request.Context().Err()
+		}
+		return nil, 0, errUnreachable
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxBody+1))
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, errUnreachable
 	}
 	if len(body) > maxBody {
 		return nil, 0, fmt.Errorf("GitHub's answer is over %d bytes", maxBody)

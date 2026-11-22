@@ -25,6 +25,10 @@ type signInData struct {
 	rows    []proto.SignIn
 	list    list
 	touched map[string]uint64
+	// applied is the token of the answer each provider's row came from, a
+	// fetch's or a sign-out's: an older answer never replaces it (Codex
+	// review of #123, round 3).
+	applied map[string]uint64
 }
 
 // SignIns are pocketd's sign-ins, in its order, GitHub Copilot first. The
@@ -61,14 +65,33 @@ func (d *Data) SetSignIns(f Fetch, rows []proto.SignIn) (moved bool) {
 	out := make([]proto.SignIn, 0, len(rows))
 	for _, row := range rows {
 		before, had := d.SignIn(row.Provider)
-		if had && newer(d.signIns.touched[row.Provider], f) {
+		if had && d.signInNewer(row.Provider, f) {
 			row = before
+		} else {
+			d.signInApplied(row.Provider, f)
 		}
-		moved = moved || had && modelsMoved(before, row)
+		// A provider the client did not know counts as changed: the
+		// models were fetched before it was seen (Codex review of #123,
+		// round 3).
+		moved = moved || !had || modelsMoved(before, row)
 		out = append(out, row)
 	}
 	d.signIns.rows = out
 	return moved
+}
+
+// signInNewer says whether provider's row came after fetch f began: from
+// an event, or from an answer of a request begun after f.
+func (d *Data) signInNewer(provider string, f Fetch) bool {
+	return newer(d.signIns.touched[provider], f) || d.signIns.applied[provider] > f.epoch
+}
+
+// signInApplied notes that provider's row is fetch f's answer.
+func (d *Data) signInApplied(provider string, f Fetch) {
+	if d.signIns.applied == nil {
+		d.signIns.applied = map[string]uint64{}
+	}
+	d.signIns.applied[provider] = f.epoch
 }
 
 // SetSignInsError records that the sign-ins' fetch f failed, unless a
@@ -177,8 +200,9 @@ type signInSheet struct {
 	start    Pending
 	// closed says the owner closed the sheet while its start was on its
 	// way: it shows no more, and the flow the start answers is canceled,
-	// unless the owner opens it again first.
-	closed bool
+	// unless the owner opens it again first. gone says pocketd answered
+	// that the start's flow is gone.
+	closed, gone bool
 	// checking says the sheet asks pocketd for its flow, which the
 	// provider's row no longer names, and lost that pocketd answered it
 	// keeps it no more (settleSheet); rev counts the copies of the flow
@@ -232,7 +256,7 @@ func (s *Store) SignInSheet() SheetView {
 	}
 	v.Flow = sh.flow
 	if known && row.Flow != nil && row.Flow.ID == sh.flow.ID {
-		v.Flow = *row.Flow
+		v.Flow = laterFlow(sh.flow, *row.Flow)
 	}
 	if sh.lost && !v.Flow.State.Ended() {
 		v.Phase, v.Text = SheetFailed, "pocketd no longer runs this sign-in: it may have restarted. Try again."
@@ -243,6 +267,16 @@ func (s *Store) SignInSheet() SheetView {
 		v.Left = max(0, v.Flow.ExpiresAt.Sub(s.now()))
 	}
 	return v
+}
+
+// laterFlow is the later of two copies of one flow: an ended one over a
+// waiting one, which a flow never goes back to, else b, the newer copy
+// (Codex review of #123, round 3).
+func laterFlow(a, b proto.SignInFlow) proto.SignInFlow {
+	if a.State.Ended() && !b.State.Ended() {
+		return a
+	}
+	return b
 }
 
 // sheetPhase is the phase a flow shows in, and what it says once ended.
@@ -333,8 +367,9 @@ func (s *Store) StartSignIn(provider string) {
 		return
 	}
 	// A closed start whose answer never came is the owner's again: this
-	// start, with its request id, shows its flow.
-	if s.orphan != nil && s.orphan.provider == provider && !s.orphan.busy {
+	// start, with its request id, shows its flow, and a replay on its way
+	// cancels nothing (Codex review of #123, round 3).
+	if s.orphan != nil && s.orphan.provider == provider {
 		s.orphan = nil
 	}
 	sh := &signInSheet{provider: provider}
@@ -360,6 +395,7 @@ func (s *Store) StartSignIn(provider string) {
 			// round 1). An answer that never came keeps it.
 			if gone(err) {
 				s.ids.Done(key)
+				sh.gone = true
 			} else if sh.closed {
 				// No answer came, and the owner canceled: the start goes
 				// again, now and after each event, fetch or reconnect
@@ -397,8 +433,16 @@ func (s *Store) CancelSignIn() {
 		return
 	}
 	s.sheet = nil
-	if sh.flow.ID != "" {
+	switch {
+	case sh.flow.ID != "":
 		s.cancelFlow(sh.provider, sh.flow)
+	case sh.start.Err != "" && !sh.gone:
+		// The start failed with no word of what pocketd did: it goes again
+		// with its request id, and the flow it names is canceled, as for
+		// a sheet closed while its start went (Codex review of #123,
+		// round 3).
+		s.orphan = &orphanStart{provider: sh.provider}
+		s.settleOrphan()
 	}
 }
 
@@ -425,8 +469,8 @@ func (s *Store) settleSheet() {
 		return
 	}
 	if row.Flow != nil && row.Flow.ID == sh.flow.ID {
-		if *row.Flow != sh.flow {
-			sh.flow = *row.Flow
+		if later := laterFlow(sh.flow, *row.Flow); later != sh.flow {
+			sh.flow = later
 			sh.rev++
 		}
 		return
@@ -539,11 +583,13 @@ func (s *Store) SignOutOf(provider string) {
 }
 
 // signedOut applies a sign-out's answer, unless the provider's event came
-// since the request went.
+// since the request went, or a fetch begun after it answered; a fetch
+// begun before it never undoes it (Codex review of #123, round 3).
 func (d *Data) signedOut(f Fetch, row proto.SignIn) {
-	if newer(d.signIns.touched[row.Provider], f) {
+	if d.signInNewer(row.Provider, f) {
 		return
 	}
+	d.signInApplied(row.Provider, f)
 	d.rev++
 	if i := slices.IndexFunc(d.signIns.rows, func(r proto.SignIn) bool { return r.Provider == row.Provider }); i >= 0 {
 		d.signIns.rows[i] = row
