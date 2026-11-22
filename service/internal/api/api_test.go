@@ -105,8 +105,9 @@ type fakeEngine struct {
 	starters   map[int64]string
 	starterErr error
 	// questionTool are the sessions SetQuestionTool gave the question
-	// tool.
-	questionTool map[int64]bool
+	// tool; taskEndedFails fails that many TaskEnded calls.
+	questionTool   map[int64]bool
+	taskEndedFails int
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
 	// before it reads.
@@ -463,6 +464,10 @@ func (f *fakeEngine) SetQuestionTool(_ context.Context, id int64) (bool, error) 
 func (f *fakeEngine) TaskEnded(_ context.Context, task int64) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.taskEndedFails > 0 {
+		f.taskEndedFails--
+		return false, errors.New("the durable store is busy")
+	}
 	return f.ended[task], nil
 }
 

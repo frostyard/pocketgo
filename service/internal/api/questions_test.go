@@ -15,6 +15,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 	"github.com/frostyard/pocketgo/service/internal/auth"
+	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
@@ -609,6 +610,37 @@ func TestARunsEndSkipsItsEndedQuestion(t *testing.T) {
 	}
 }
 
+// A run's end whose skip of its question fails tries again later, the
+// task checked again, since no other path may be left to skip it (Codex
+// review of #95, round 2).
+func TestARunsEndTriesItsQuestionsSkipAgain(t *testing.T) {
+	h := newQuestionHarness(t)
+	ctx := context.Background()
+	if _, _, err := h.store.PutQuestion(ctx, store.QuestionRow{SessionID: h.super.ID, TaskID: 21, CallID: "q1", Question: "Wait?", Deadline: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.ended[21], h.engine.taskEndedFails = true, 1
+	h.engine.mu.Unlock()
+	ended := make(chan int64, 4)
+	h.server.afterRunEnded = func(id int64) { ended <- id }
+	h.server.PublishLive(proto.Live{SessionID: h.super.ID, Busy: true})
+	h.server.PublishLive(proto.Live{SessionID: h.super.ID})
+	select {
+	case <-ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no run's end")
+	}
+	if _, err := h.store.WaitingQuestion(ctx, h.super.ID); err != nil {
+		t.Fatalf("the failed skip settled the question: %v", err)
+	}
+	h.runScheduled(10)
+	row, err := h.store.Question(ctx, store.QuestionID(21, "q1"))
+	if err != nil || row.State != store.QuestionSkipped || row.Reason != proto.SkippedAborted {
+		t.Fatalf("the question after the retry %+v, %v", row, err)
+	}
+}
+
 // team_inbox lists the sessions whose question waits, as the desktop's
 // Inbox counts them, by session and agent alone (Codex review of #95,
 // round 1).
@@ -642,6 +674,46 @@ func TestTeamInboxListsTheSessionsWhoseQuestionWaits(t *testing.T) {
 	}
 	if text, err := h.server.TeamInbox(ctx, TeamCall{Session: h.super.ID, Task: 1, CallID: "i2"}); err != nil || !strings.Contains(text, "Questions waiting in sessions: none.") {
 		t.Fatalf("team_inbox once answered: %v\n%s", err, text)
+	}
+}
+
+// countingProfiles counts each profile's reads.
+type countingProfiles struct {
+	ProfileSource
+	mu    sync.Mutex
+	finds map[string]int
+}
+
+func (c *countingProfiles) Find(id string) (profiles.Profile, error) {
+	c.mu.Lock()
+	c.finds[id]++
+	c.mu.Unlock()
+	return c.ProfileSource.Find(id)
+}
+
+// The start's pass reads each profile once, however many sessions it has,
+// since serving waits for it (Codex review of #95, round 2).
+func TestTheQuestionToolsPassReadsEachProfileOnce(t *testing.T) {
+	h := newQuestionHarness(t)
+	ctx := context.Background()
+	for _, key := range []string{"d1", "d2", "d3"} {
+		if _, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: key, Profile: "duncan"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "super2", Profile: "odrade"}); err != nil {
+		t.Fatal(err)
+	}
+	counting := &countingProfiles{ProfileSource: h.server.profiles, finds: map[string]int{}}
+	h.server.SetProfiles(counting)
+	if err := h.server.upgradeQuestionTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if counting.finds["duncan"] != 1 || counting.finds["odrade"] != 1 {
+		t.Fatalf("profile reads %v, want one each", counting.finds)
+	}
+	if len(h.engine.questionTool) != 2 {
+		t.Fatalf("sessions given the tool %v, want odrade's two", h.engine.questionTool)
 	}
 }
 

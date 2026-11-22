@@ -26,8 +26,10 @@ type Questions struct {
 	now     func() time.Time
 	// timer runs f once after d, unless cancel is called first.
 	timer func(d time.Duration, f func()) (cancel func())
-	// skipQuestion is store.SkipQuestion; tests make it fail.
+	// skipQuestion is store.SkipQuestion, and readQuestion store.Question;
+	// tests make them fail.
 	skipQuestion func(ctx context.Context, id, reason string) (store.QuestionRow, error)
+	readQuestion func(ctx context.Context, id string) (store.QuestionRow, error)
 	mu           sync.Mutex
 	waiters      map[string]*waiter
 }
@@ -50,7 +52,8 @@ const (
 // NewQuestions returns the questions of s, which publish each change of a
 // session's question, on the clock now with its timer.
 func NewQuestions(s *store.Store, publish func(session int64), now func() time.Time, timer func(time.Duration, func()) func()) *Questions {
-	return &Questions{store: s, publish: publish, now: now, timer: timer, skipQuestion: s.SkipQuestion, waiters: map[string]*waiter{}}
+	return &Questions{store: s, publish: publish, now: now, timer: timer, skipQuestion: s.SkipQuestion, readQuestion: s.Question,
+		waiters: map[string]*waiter{}}
 }
 
 // Put records row as its call's waiting question, or finds the one its
@@ -73,24 +76,39 @@ func (q *Questions) Put(ctx context.Context, row store.QuestionRow) (store.Quest
 // The wait skips the question at its deadline itself, woken by its timer:
 // a skip that fails is tried again, later, until it holds or ctx ends,
 // so a run never waits past its deadline for a store that failed once
-// (Codex review of #95, round 1).
+// (Codex review of #95, round 1). A read of the question that fails is
+// tried again the same way: the question is published, and a call that
+// left it would leave the owner an answer no one takes, or the agent an
+// error in place of an answer made (round 2).
 func (q *Questions) Await(ctx context.Context, id string) (store.QuestionRow, error) {
 	retry := expiryRetry
+	backoff := func() time.Duration {
+		wait := retry
+		retry = min(2*retry, expiryRetryMax)
+		return wait
+	}
 	for {
 		wake := q.waiter(id)
 		// Read after registering, so a change made in between is not
 		// missed.
-		row, err := q.store.Question(ctx, id)
-		if err != nil {
+		row, err := q.readQuestion(ctx, id)
+		var wait time.Duration
+		switch {
+		case errors.Is(err, store.ErrNotFound):
 			q.release(id, wake)
 			return store.QuestionRow{}, err
-		}
-		if row.State != store.QuestionWaiting {
+		case err != nil && ctx.Err() != nil:
+			q.release(id, wake)
+			return store.QuestionRow{}, ctx.Err()
+		case err != nil:
+			wait = backoff()
+		case row.State != store.QuestionWaiting:
 			q.release(id, wake)
 			return row, nil
+		default:
+			wait = row.Deadline.Sub(q.now())
 		}
-		wait := row.Deadline.Sub(q.now())
-		if wait <= 0 {
+		if err == nil && wait <= 0 {
 			err := q.expire(ctx, id)
 			if err == nil {
 				continue
@@ -99,7 +117,7 @@ func (q *Questions) Await(ctx context.Context, id string) (store.QuestionRow, er
 				q.release(id, wake)
 				return store.QuestionRow{}, ctx.Err()
 			}
-			wait, retry = retry, min(2*retry, expiryRetryMax)
+			wait = backoff()
 		}
 		cancel := q.timer(wait, func() { q.wake(id) })
 		select {

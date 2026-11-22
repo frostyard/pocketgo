@@ -100,31 +100,12 @@ func (s *Server) newQuestion(ctx context.Context, call TeamCall, q team.Question
 // profile pocketd cannot read now is an error, and a later call tries
 // again.
 func (s *Server) questionCaller(ctx context.Context, session int64) (*profiles.Profile, team.SessionRole, error) {
-	var role team.SessionRole
 	row, err := s.store.Session(ctx, session)
 	if err != nil {
-		return nil, role, err
+		return nil, team.SessionRole{}, err
 	}
-	thread, err := s.store.ThreadOfSession(ctx, session)
-	switch {
-	case err == nil:
-		role.Thread, role.Review = true, thread.ReviewPull != 0
-	case !errors.Is(err, store.ErrNotFound):
-		return nil, role, err
-	}
-	if _, err := s.store.ThreadOfWorker(ctx, session); err == nil {
-		role.Worker = true
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return nil, role, err
-	}
-	if _, err := s.store.ConsultOfSession(ctx, session); err == nil {
-		role.Consult = true
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return nil, role, err
-	}
-	if _, err := s.store.GatherAskOfSession(ctx, session); err == nil {
-		role.Gather = true
-	} else if !errors.Is(err, store.ErrNotFound) {
+	role, err := s.sessionRole(ctx, session)
+	if err != nil {
 		return nil, role, err
 	}
 	if row.Profile == "" || s.profiles == nil {
@@ -137,6 +118,35 @@ func (s *Server) questionCaller(ctx context.Context, session int64) (*profiles.P
 		return nil, role, nil
 	}
 	return &p, role, nil
+}
+
+// sessionRole is what session works as: a thread's specialist (a review
+// included), a thread's worker, a consult or a gather's proposal session.
+func (s *Server) sessionRole(ctx context.Context, session int64) (team.SessionRole, error) {
+	var role team.SessionRole
+	thread, err := s.store.ThreadOfSession(ctx, session)
+	switch {
+	case err == nil:
+		role.Thread, role.Review = true, thread.ReviewPull != 0
+	case !errors.Is(err, store.ErrNotFound):
+		return role, err
+	}
+	if _, err := s.store.ThreadOfWorker(ctx, session); err == nil {
+		role.Worker = true
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return role, err
+	}
+	if _, err := s.store.ConsultOfSession(ctx, session); err == nil {
+		role.Consult = true
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return role, err
+	}
+	if _, err := s.store.GatherAskOfSession(ctx, session); err == nil {
+		role.Gather = true
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return role, err
+	}
+	return role, nil
 }
 
 // publishQuestion sends session id's summary after its question changed:
@@ -154,12 +164,33 @@ func (s *Server) RetireQuestions(ctx context.Context) error {
 // questionsRunEnded skips session id's waiting question once its task
 // ended with the run: an abort that a restart cut off, which PiG finishes
 // as the tasks resume, leaves no handler and no wait to skip it, and its
-// task looked alive at the start's retire. One that fails is logged; the
-// next run's end tries again.
+// task looked alive at the start's retire. One that fails is tried again
+// after retryDelay, the task checked again, until it holds or the server
+// stops: no other path may be left to skip it (Codex review of #95,
+// round 2).
 func (s *Server) questionsRunEnded(id int64) {
-	if err := s.questions.RetireEnded(s.passCtx, id, s.engine.TaskEnded); err != nil {
-		s.log.Warn("skip an ended run's question", "session", id, "err", err)
+	err := s.questions.RetireEnded(s.passCtx, id, s.engine.TaskEnded)
+	if err == nil {
+		return
 	}
+	s.log.Warn("skip an ended run's question", "session", id, "err", err)
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.stopped {
+		return
+	}
+	s.retry(func() {
+		// A pass of its own, which Stop waits for.
+		s.sessionMu.Lock()
+		if s.stopped {
+			s.sessionMu.Unlock()
+			return
+		}
+		s.passes.Add(1)
+		s.sessionMu.Unlock()
+		defer s.passes.Done()
+		s.questionsRunEnded(id)
+	})
 }
 
 // answerQuestion is POST /v1/sessions/{id}/question/{qid} (rule 62): the

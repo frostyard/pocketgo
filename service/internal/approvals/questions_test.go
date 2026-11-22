@@ -262,6 +262,44 @@ func TestAFailedTimeoutIsTriedAgain(t *testing.T) {
 	}
 }
 
+// A read of the question that fails, as right after an answer woke the
+// call, is tried again later: the call gets the answer made, never an
+// error in its place (Codex review of #95, round 2). A question that is
+// gone ends the wait.
+func TestAFailedReadIsTriedAgain(t *testing.T) {
+	f := setupQuestions(t)
+	ctx := context.Background()
+	// The second read, the one after the answer's wake, fails.
+	reads := 0
+	f.q.readQuestion = func(ctx context.Context, id string) (store.QuestionRow, error) {
+		f.mu.Lock()
+		reads++
+		failing := reads == 2
+		f.mu.Unlock()
+		if failing {
+			return store.QuestionRow{}, errors.New("database is locked")
+		}
+		return f.s.Question(ctx, id)
+	}
+	q := f.put(t, 7, time.Hour)
+	done := f.await(ctx, q.ID)
+	f.waitTimer(t, 1)
+	if _, _, err := f.q.Answer(ctx, "u:d:r1", 2, q.ID, "b", []int{1}, false, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	retry, d := f.waitTimer(t, 2)
+	if d != expiryRetry {
+		t.Fatalf("the retry waits %v", d)
+	}
+	retry()
+	if row := got(t, done); row.State != store.QuestionAnswered || row.Answer != "b" {
+		t.Fatalf("Await = %+v", row)
+	}
+	if row := got(t, f.await(ctx, "qnone")); row.State != "error: "+store.ErrNotFound.Error() {
+		t.Fatalf("a question that is gone: %+v", row)
+	}
+}
+
 // An answer after the deadline is refused, as late, and skips the
 // question, whether or not its timer fired: the call's result is the
 // timeout, never the late answer (Codex review of #95, round 1).
