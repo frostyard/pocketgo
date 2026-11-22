@@ -294,3 +294,41 @@ func TestTheOwnerDropsAProposal(t *testing.T) {
 		t.Fatalf("the board %+v", list)
 	}
 }
+
+// A launch item's shift takes its proposal's ci, and its brief says so
+// only then (ADR-0047).
+func TestALaunchCarriesEachProposalsCI(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming"})
+	ask := h.askOf(1, "duncan")
+	for i, title := range []string{"With CI", "Without CI"} {
+		f := fields(title)
+		if i == 0 {
+			yes := true
+			f.CI = &yes
+		}
+		if _, err := h.server.TeamPropose(ctx, TeamCall{Session: ask.Session, Task: 2, CallID: title}, team.ProposeCall{Action: team.ProposeAdd, ProposalFields: f}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.server.StartLaunches()
+	if _, err := h.client.Launch(ctx, proto.CreateLaunch{RequestID: "l1", Proposals: []int64{1, 2}, End: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	h.runLaunchPasses()
+	threads := h.launchThreads()
+	if len(threads) != 2 {
+		t.Fatalf("threads %+v", threads)
+	}
+	for _, thread := range threads {
+		want := thread.Title == "With CI"
+		shift, err := h.store.Shift(ctx, thread.ID)
+		if err != nil || shift.CI != want {
+			t.Fatalf("shift %+v %v, want CI %v", shift, err, want)
+		}
+		if strings.Contains(thread.Brief, "Done also needs CI green") != want {
+			t.Fatalf("brief %q, want CI %v", thread.Brief, want)
+		}
+	}
+}

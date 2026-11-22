@@ -157,3 +157,33 @@ func TestGatherTexts(t *testing.T) {
 		t.Errorf("a note with no proposal names the board:\n%s", got)
 	}
 }
+
+// A proposal's ci is false unless an add names it, kept by an edit that
+// leaves it out, and an edit may name it alone (ADR-0047).
+func TestProposalCIFields(t *testing.T) {
+	f := ProposalFields{Title: ptrTo("A"), Task: ptrTo("Do it"), StopWhen: ptrTo("Done")}
+	p, err := f.Apply(Proposal{}, nil, true)
+	if err != nil || p.CI {
+		t.Fatalf("default: %+v %v", p, err)
+	}
+	f.CI = ptrTo(true)
+	p, err = f.Apply(Proposal{}, nil, true)
+	if err != nil || !p.CI {
+		t.Fatalf("add: %+v %v", p, err)
+	}
+	p, err = (ProposalFields{Title: ptrTo("B")}).Apply(p, nil, false)
+	if err != nil || !p.CI {
+		t.Fatalf("edit keeps CI: %+v %v", p, err)
+	}
+	f = ProposalFields{CI: ptrTo(false)}
+	if err := CheckPropose(ProposeCall{Action: ProposeEdit, Row: 1, Rev: 1, ProposalFields: f}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckBoard(BoardCall{Action: BoardEdit, Row: 1, Rev: 1, ProposalFields: f}); err != nil {
+		t.Fatal(err)
+	}
+	p, err = f.Apply(p, nil, false)
+	if err != nil || p.CI {
+		t.Fatalf("clear: %+v %v", p, err)
+	}
+}

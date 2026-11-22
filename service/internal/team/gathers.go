@@ -126,6 +126,7 @@ type ProposalFields struct {
 	Task       *string `json:"task,omitempty"`
 	StopWhen   *string `json:"stop_when,omitempty"`
 	MaxRounds  *int    `json:"max_rounds,omitempty"`
+	CI         *bool   `json:"ci,omitempty"`
 	Note       *string `json:"note,omitempty"`
 }
 
@@ -133,6 +134,7 @@ type ProposalFields struct {
 type Proposal struct {
 	Repository, Title, Task, StopWhen, Note string
 	MaxRounds                               int
+	CI                                      bool
 }
 
 // Apply checks f against p, the proposal as it is (zero for an add), for
@@ -140,7 +142,8 @@ type Proposal struct {
 // characters, the task 1 to MaxTask, the stop condition 1 to
 // MaxProposalStop, the rounds 1 to MaxShiftRounds (DefaultShiftRounds on an
 // add), a repository of the agent's or none, and a note of at most
-// MaxProposalNote.
+// MaxProposalNote. ci is false when an add leaves it out, and an edit that
+// leaves it out keeps it (ADR-0047).
 func (f ProposalFields) Apply(p Proposal, repos []string, adding bool) (Proposal, error) {
 	set := func(dst *string, v *string) {
 		if v != nil {
@@ -156,6 +159,9 @@ func (f ProposalFields) Apply(p Proposal, repos []string, adding bool) (Proposal
 		p.MaxRounds = *f.MaxRounds
 	} else if adding {
 		p.MaxRounds = DefaultShiftRounds
+	}
+	if f.CI != nil {
+		p.CI = *f.CI
 	}
 	count := utf8.RuneCountInString
 	switch {
@@ -314,7 +320,7 @@ func ProposalBrief(gather int64, supervisor, skill, skillText, note string, repo
 	} else {
 		b.WriteString("You have no repository: your proposals are work in your home.\n\n")
 	}
-	fmt.Fprintf(&b, "File each proposal with team_propose add: a title (at most %d characters); the task in full (at most %d), which is all the shift's brief will say; stop_when, when the work is done, in words you can check (at most %d); max_rounds, 1 to %d (%d when left out); the repository it works in, one of yours, or none for your home; and a note for the owner (at most %d). ",
+	fmt.Fprintf(&b, "File each proposal with team_propose add: a title (at most %d characters); the task in full (at most %d), which is all the shift's brief will say; stop_when, when the work is done, in words you can check (at most %d); max_rounds, 1 to %d (%d when left out); ci, true when done also needs CI green on the thread's pull requests (false when left out), and name green CI in stop_when only with ci true, since without it nothing waits for CI; the repository it works in, one of yours, or none for your home; and a note for the owner (at most %d). ",
 		MaxTitle, MaxTask, MaxProposalStop, MaxShiftRounds, DefaultShiftRounds, MaxProposalNote)
 	b.WriteString("Change or drop one of yours with team_propose edit or drop, naming its row and its rev as team_propose list shows them. ")
 	fmt.Fprintf(&b, "When you have nothing more to propose, call team_propose done; nothing at all is a fine answer. You have %d minutes.", int(GatherLimit/time.Minute))

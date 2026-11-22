@@ -67,6 +67,7 @@ type ProposalRow struct {
 	// The proposal's text (team.Proposal).
 	Repository, Title, Task, StopWhen, Note string
 	MaxRounds                               int
+	CI                                      bool
 	// Kind is the gather's skill.
 	Kind  string
 	Order int
@@ -82,7 +83,7 @@ type ProposalRow struct {
 
 // Text is the proposal's text, as team.Proposal checks it.
 func (p ProposalRow) Text() team.Proposal {
-	return team.Proposal{Repository: p.Repository, Title: p.Title, Task: p.Task, StopWhen: p.StopWhen, Note: p.Note, MaxRounds: p.MaxRounds}
+	return team.Proposal{Repository: p.Repository, Title: p.Title, Task: p.Task, StopWhen: p.StopWhen, Note: p.Note, MaxRounds: p.MaxRounds, CI: p.CI}
 }
 
 // GatherFacts is a gather with its asks and its proposals not dropped,
@@ -127,12 +128,12 @@ func scanGatherAsk(scan func(...any) error) (GatherAskRow, error) {
 	return row, nil
 }
 
-const proposalColumns = `id, key, gather_id, ask_id, agent, repository, title, task, stop_when, max_rounds, kind, note, ord, rev, state, by, launch_id, thread_id, created_at, updated_at`
+const proposalColumns = `id, key, gather_id, ask_id, agent, repository, title, task, stop_when, max_rounds, ci, kind, note, ord, rev, state, by, launch_id, thread_id, created_at, updated_at`
 
 func scanProposal(scan func(...any) error) (ProposalRow, error) {
 	var row ProposalRow
 	var created, updated int64
-	if err := scan(&row.ID, &row.Key, &row.GatherID, &row.AskID, &row.Agent, &row.Repository, &row.Title, &row.Task, &row.StopWhen, &row.MaxRounds,
+	if err := scan(&row.ID, &row.Key, &row.GatherID, &row.AskID, &row.Agent, &row.Repository, &row.Title, &row.Task, &row.StopWhen, &row.MaxRounds, &row.CI,
 		&row.Kind, &row.Note, &row.Order, &row.Rev, &row.State, &row.By, &row.LaunchID, &row.ThreadID, &created, &updated); err != nil {
 		return ProposalRow{}, err
 	}
@@ -537,8 +538,8 @@ func (s *Store) AddProposal(ctx context.Context, key string, askID int64, p team
 		return ProposalRow{}, "", false, fmt.Errorf("%w: G%d takes no proposal of yours now: you said you were done, or its %d minutes passed", ErrConflict, g.ID, int(team.GatherLimit/time.Minute))
 	}
 	at := now.UnixMilli()
-	result, err := tx.ExecContext(ctx, `INSERT INTO proposals (key, gather_id, ask_id, agent, repository, title, task, stop_when, max_rounds, kind, note, ord, state, by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`, key, g.ID, ask.ID, ask.Agent, p.Repository, p.Title, p.Task, p.StopWhen, p.MaxRounds, g.Skill, p.Note,
+	result, err := tx.ExecContext(ctx, `INSERT INTO proposals (key, gather_id, ask_id, agent, repository, title, task, stop_when, max_rounds, ci, kind, note, ord, state, by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`, key, g.ID, ask.ID, ask.Agent, p.Repository, p.Title, p.Task, p.StopWhen, p.MaxRounds, p.CI, g.Skill, p.Note,
 		team.ProposalProposed, by, at, at)
 	if err != nil {
 		return ProposalRow{}, "", false, err
@@ -643,8 +644,8 @@ func (s *Store) ChangeProposal(ctx context.Context, c ProposalChange) (ProposalR
 	if err != nil {
 		return ProposalRow{}, "", false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE proposals SET repository = ?, title = ?, task = ?, stop_when = ?, max_rounds = ?, note = ?, state = ?, rev = rev + 1, updated_at = ? WHERE id = ?`,
-		changed.Repository, changed.Title, changed.Task, changed.StopWhen, changed.MaxRounds, changed.Note, changed.State, now, row.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE proposals SET repository = ?, title = ?, task = ?, stop_when = ?, max_rounds = ?, ci = ?, note = ?, state = ?, rev = rev + 1, updated_at = ? WHERE id = ?`,
+		changed.Repository, changed.Title, changed.Task, changed.StopWhen, changed.MaxRounds, changed.CI, changed.Note, changed.State, now, row.ID); err != nil {
 		return ProposalRow{}, "", false, err
 	}
 	row, err = scanProposal(tx.QueryRowContext(ctx, `SELECT `+proposalColumns+` FROM proposals WHERE id = ?`, c.ID).Scan)
@@ -739,13 +740,13 @@ func boardColumns(summary bool) string {
 	if summary {
 		text = `'', '', ''`
 	}
-	return `p.id, p.key, p.gather_id, p.ask_id, p.agent, p.repository, p.title, ` + text + `, p.max_rounds, p.kind, p.ord, p.rev, p.state, p.by, p.launch_id, p.thread_id, p.created_at, p.updated_at, g.created_at`
+	return `p.id, p.key, p.gather_id, p.ask_id, p.agent, p.repository, p.title, ` + text + `, p.max_rounds, p.ci, p.kind, p.ord, p.rev, p.state, p.by, p.launch_id, p.thread_id, p.created_at, p.updated_at, g.created_at`
 }
 
 func scanBoard(scan func(...any) error) (BoardRow, error) {
 	var row BoardRow
 	var created, updated, gathered int64
-	if err := scan(&row.ID, &row.Key, &row.GatherID, &row.AskID, &row.Agent, &row.Repository, &row.Title, &row.Task, &row.StopWhen, &row.Note, &row.MaxRounds,
+	if err := scan(&row.ID, &row.Key, &row.GatherID, &row.AskID, &row.Agent, &row.Repository, &row.Title, &row.Task, &row.StopWhen, &row.Note, &row.MaxRounds, &row.CI,
 		&row.Kind, &row.Order, &row.Rev, &row.State, &row.By, &row.LaunchID, &row.ThreadID, &created, &updated, &gathered); err != nil {
 		return BoardRow{}, err
 	}

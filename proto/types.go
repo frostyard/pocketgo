@@ -1034,6 +1034,9 @@ type Proposal struct {
 	Task       string    `json:"task"`
 	StopWhen   string    `json:"stopWhen"`
 	MaxRounds  int       `json:"maxRounds"`
+	// CI says its shift's done also needs CI green on the thread's pull
+	// requests, as a shift's CI does (ADR-0047).
+	CI bool `json:"ci,omitempty"`
 	// Kind is the gather's skill.
 	Kind string `json:"kind"`
 	Note string `json:"note,omitempty"`

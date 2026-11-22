@@ -250,7 +250,7 @@ func (s *Server) startLaunchItem(ctx context.Context, launch store.LaunchRow, it
 	}
 	row := store.ThreadRow{Title: p.Title, Agent: target.ID, Repository: p.Repository, Task: p.Task}
 	s.workMu.Lock()
-	thread, facts, proposal, started, err := s.store.StartLaunchItem(ctx, item.ID, row, store.ShiftRow{Stop: p.StopWhen, MaxRounds: p.MaxRounds})
+	thread, facts, proposal, started, err := s.store.StartLaunchItem(ctx, item.ID, row, store.ShiftRow{Stop: p.StopWhen, MaxRounds: p.MaxRounds, CI: p.CI})
 	if err == nil {
 		if started {
 			s.publishThread(thread)

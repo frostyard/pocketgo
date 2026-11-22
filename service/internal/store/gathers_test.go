@@ -1,8 +1,10 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +94,8 @@ func TestTheLastAskEndsTheGatherOnce(t *testing.T) {
 // gather's time lasts; it changes once per key, at its rev, while it is
 // proposed; an order puts named proposals first.
 func TestProposalsChangeOnceAtTheirRev(t *testing.T) {
+	aProposal := aProposal
+	aProposal.CI = true
 	receipt := func(p ProposalRow) string { return fmt.Sprintf("proposed %s at rev %d", p.Title, p.Rev) }
 	s, _ := open(t)
 	facts, _, err := s.StartGather(ctx, gatherStart("g"))
@@ -106,7 +110,7 @@ func TestProposalsChangeOnceAtTheirRev(t *testing.T) {
 		t.Fatal(err)
 	}
 	row, text, replayed, err := s.AddProposal(ctx, "p1", ask.ID, aProposal, "duncan", receipt)
-	if err != nil || replayed || row.Agent != "duncan" || row.Kind != "grooming" || row.State != team.ProposalProposed || row.Rev != 1 || row.Order != int(row.ID)*10 || row.GatherID != facts.Gather.ID {
+	if err != nil || !row.CI || !row.Text().CI || replayed || row.Agent != "duncan" || row.Kind != "grooming" || row.State != team.ProposalProposed || row.Rev != 1 || row.Order != int(row.ID)*10 || row.GatherID != facts.Gather.ID {
 		t.Fatalf("filed %+v %v %v", row, replayed, err)
 	}
 	// Past the gather's time by the store's own clock, read in the
@@ -129,11 +133,11 @@ func TestProposalsChangeOnceAtTheirRev(t *testing.T) {
 		t.Fatal(err)
 	}
 	retitle := func(title string) func(ProposalRow) (ProposalRow, error) {
-		return func(p ProposalRow) (ProposalRow, error) { p.Title = title; return p, nil }
+		return func(p ProposalRow) (ProposalRow, error) { p.Title = title; p.CI = false; return p, nil }
 	}
 	answer := func(p ProposalRow) string { return "edited #" + p.Title }
 	edited, text, replayed, err := s.ChangeProposal(ctx, ProposalChange{Key: "e1", ID: row.ID, Rev: 1, Change: retitle("Fix A2"), Answer: answer})
-	if err != nil || replayed || edited.Title != "Fix A2" || edited.Rev != 2 || text != "edited #Fix A2" {
+	if err != nil || edited.CI || replayed || edited.Title != "Fix A2" || edited.Rev != 2 || text != "edited #Fix A2" {
 		t.Fatalf("edited %+v %q %v %v", edited, text, replayed, err)
 	}
 	if _, text, replayed, err := s.ChangeProposal(ctx, ProposalChange{Key: "e1", ID: row.ID, Rev: 1, Change: retitle("other"), Answer: answer}); err != nil || !replayed || text != "edited #Fix A2" {
@@ -277,5 +281,45 @@ func TestGatherQueriesUseTheirIndexes(t *testing.T) {
 		if plan := planOf(t, s, query); !strings.Contains(plan, index) {
 			t.Errorf("%s: plan %q does not use %s", query, plan, index)
 		}
+	}
+}
+
+// Migration 21 gives proposals ci: one filed before it reads false
+// (ADR-0047).
+func TestTheProposalCIMigrationUpgradesADatabaseAt20(t *testing.T) {
+	if SchemaVersion < 21 || !strings.Contains(migrations[20], "ADD COLUMN ci") || !strings.Contains(migrations[19], "withdrawn_by") {
+		t.Fatalf("schema version %d: proposal CI is not migration 21", SchemaVersion)
+	}
+	path := filepath.Join(t.TempDir(), "work.sqlite")
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := []string{`CREATE TABLE schema_version (version INTEGER NOT NULL)`}
+	steps = append(steps, migrations[:20]...)
+	steps = append(steps, `INSERT INTO schema_version (version) VALUES (20)`,
+		`INSERT INTO gathers (id, key, owner, supervisor_session, skill, skill_text, state, deadline, created_at) VALUES (1, 'g', 'o', 1, 'grooming', 'Find work', 'running', 100, 1)`,
+		`INSERT INTO gather_asks (id, gather_id, owner, agent, state, created_at) VALUES (1, 1, 'a', 'duncan', 'running', 1)`,
+		`INSERT INTO proposals (id, key, gather_id, ask_id, agent, title, task, stop_when, max_rounds, kind, ord, state, by, created_at, updated_at) VALUES (1, 'p', 1, 1, 'duncan', 'A', 'Do it', 'Done', 5, 'grooming', 10, 'proposed', 'duncan', 1, 1)`)
+	for i, step := range steps {
+		if _, err := db.Exec(step); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	_ = db.Close()
+	s, err := Open(ctx, path, func() time.Time { return at })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	var version int
+	if err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil || version != SchemaVersion {
+		t.Fatalf("schema version %d, %v", version, err)
+	}
+	if p, err := s.Proposal(ctx, 1); err != nil || p.CI {
+		t.Fatalf("proposal %+v %v", p, err)
+	}
+	if rows, err := s.Board(ctx); err != nil || len(rows) != 1 || rows[0].CI {
+		t.Fatalf("board %+v %v", rows, err)
 	}
 }
