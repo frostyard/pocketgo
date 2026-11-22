@@ -28,21 +28,25 @@ type questionsFixture struct {
 
 func setupQuestions(t *testing.T) *questionsFixture {
 	t.Helper()
-	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "w.sqlite"), nil)
+	f := &questionsFixture{now: time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC), armed: make(chan struct{}, 16)}
+	now := func() time.Time {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.now
+	}
+	// The store and the questions share the fixture's clock, as pocketd's
+	// share the service's.
+	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "w.sqlite"), now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	f := &questionsFixture{s: s, now: time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC), armed: make(chan struct{}, 16)}
+	f.s = s
 	f.q = NewQuestions(s, func(session int64) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.published = append(f.published, session)
-	}, func() time.Time {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		return f.now
-	}, func(d time.Duration, fire func()) func() {
+	}, now, func(d time.Duration, fire func()) func() {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.timers, f.durations = append(f.timers, fire), append(f.durations, d)
@@ -216,5 +220,95 @@ func TestAnAbortedRunsQuestionIsSkippedOnceItsTaskEnded(t *testing.T) {
 	}
 	if row, _ := f.s.Question(bg, q.ID); row.State != store.QuestionSkipped || row.Reason != proto.SkippedAborted || row.SettledBy != "pocketd" {
 		t.Fatalf("the aborted run's question %+v", row)
+	}
+}
+
+// A skip at the deadline that fails, as a store busy past its timeout, is
+// tried again later, the wait doubling, until it holds: the run never
+// waits past its deadline for good (Codex review of #95, round 1).
+func TestAFailedTimeoutIsTriedAgain(t *testing.T) {
+	f := setupQuestions(t)
+	ctx := context.Background()
+	q := f.put(t, 7, 30*time.Minute)
+	fails := 2
+	f.q.skipQuestion = func(ctx context.Context, id, reason string) (store.QuestionRow, error) {
+		f.mu.Lock()
+		failing := fails > 0
+		fails--
+		f.mu.Unlock()
+		if failing {
+			return store.QuestionRow{}, errors.New("database is locked")
+		}
+		return f.s.SkipQuestion(ctx, id, reason)
+	}
+	done := f.await(ctx, q.ID)
+	fire, _ := f.waitTimer(t, 1)
+	f.mu.Lock()
+	f.now = f.now.Add(30 * time.Minute)
+	f.mu.Unlock()
+	fire()
+	retry, d := f.waitTimer(t, 2)
+	if d != expiryRetry {
+		t.Fatalf("the first retry waits %v", d)
+	}
+	retry()
+	retry, d = f.waitTimer(t, 3)
+	if d != 2*expiryRetry {
+		t.Fatalf("the second retry waits %v", d)
+	}
+	retry()
+	if row := got(t, done); row.State != store.QuestionSkipped || row.Reason != proto.SkippedTimeout {
+		t.Fatalf("Await = %+v", row)
+	}
+}
+
+// An answer after the deadline is refused, as late, and skips the
+// question, whether or not its timer fired: the call's result is the
+// timeout, never the late answer (Codex review of #95, round 1).
+func TestALateAnswerSkipsTheQuestion(t *testing.T) {
+	f := setupQuestions(t)
+	ctx := context.Background()
+	q := f.put(t, 7, 30*time.Minute)
+	done := f.await(ctx, q.ID)
+	f.waitTimer(t, 1)
+	f.mu.Lock()
+	f.now = f.now.Add(30 * time.Minute)
+	f.mu.Unlock()
+	_, _, err := f.q.Answer(ctx, "u:d:r1", 2, q.ID, "a", []int{0}, false, "laptop")
+	if !errors.Is(err, store.ErrQuestionLate) || !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("a late answer: %v", err)
+	}
+	if row := got(t, done); row.State != store.QuestionSkipped || row.Reason != proto.SkippedTimeout || row.Answer != "" {
+		t.Fatalf("Await = %+v", row)
+	}
+	// The refused answer left its key free.
+	if _, existed, err := f.s.LookupRequest(ctx, "u:d:r1", "question:"+q.ID); err != nil || existed {
+		t.Fatalf("a late answer kept its key: %v %v", existed, err)
+	}
+}
+
+// A wait that ends, by an answer, a settled question found at once, or its
+// ctx, leaves no wake behind (Codex review of #95, round 1).
+func TestAWaitThatEndsKeepsNoWake(t *testing.T) {
+	f := setupQuestions(t)
+	ctx := context.Background()
+	q := f.put(t, 7, time.Hour)
+	done := f.await(ctx, q.ID)
+	f.waitTimer(t, 1)
+	if _, _, err := f.q.Answer(ctx, "u:d:r1", 2, q.ID, "a", nil, false, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	got(t, done)
+	got(t, f.await(ctx, q.ID)) // a call run again, settled already
+	stopped, cancel := context.WithCancel(ctx)
+	other := f.put(t, 8, time.Hour)
+	done = f.await(stopped, other.ID)
+	f.waitTimer(t, 2)
+	cancel()
+	got(t, done)
+	f.q.mu.Lock()
+	defer f.q.mu.Unlock()
+	if len(f.q.waiters) != 0 {
+		t.Fatalf("wakes left: %v", f.q.waiters)
 	}
 }

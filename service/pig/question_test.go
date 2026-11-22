@@ -185,6 +185,44 @@ func TestSetQuestionToolGivesItToAnOlderSession(t *testing.T) {
 	}
 }
 
+// A private agent's session made before the tool with no tool at all
+// (tools: []) gets the question tool alone: its empty list is a selection
+// of none, which a new extension adds nothing to (Codex review of #95,
+// round 1).
+func TestSetQuestionToolGivesItToASessionOfNoTools(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	chani := &profiles.Profile{ID: "chani", Name: "Chani", Role: profiles.RoleAgent, Private: true, Home: f.work, Tools: []string{}}
+	id, err := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef, Profile: chani})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extensions := slices.DeleteFunc(slices.Clone(agent.Extensions), func(x *durable.Extension) bool { return x.Name == e.questionExt.Name })
+	if err := conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: []*durable.ToolRegistration{}}),
+		Extensions: harness.SetTo(harness.ExtensionChange{List: extensions})}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentTools(t, e, id); len(got) != 0 {
+		t.Fatalf("the older session's tools %q", got)
+	}
+	if changed, err := e.SetQuestionTool(ctx, id); err != nil || !changed {
+		t.Fatalf("SetQuestionTool = %v, %v", changed, err)
+	}
+	if got := agentTools(t, e, id); !slices.Equal(got, []string{toolQuestion}) {
+		t.Fatalf("tools %q, want the question tool alone", got)
+	}
+}
+
 // Over HTTP, with pocketd's own team: in a supervisor's session, a run the
 // owner's message started shows the question on its session, the owner's
 // answer is the tool's result and the run goes on with it, and the asks

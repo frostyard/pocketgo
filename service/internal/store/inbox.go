@@ -22,6 +22,10 @@ type InboxRows struct {
 	Plans     []PlanFacts
 	Lessons   []LessonRow
 	Approvals []ApprovalRow
+	// Questions are the questions that wait for the owner in sessions
+	// (ADR-0047), oldest first, each with its session's profile: GET
+	// /v1/sessions answers them, and the desktop's Inbox counts them.
+	Questions []InboxQuestionRow
 	// Answered and Closed are SettledAsks and SettledPulls.
 	Answered []AskRow
 	Closed   []PullRow
@@ -54,6 +58,9 @@ func (s *Store) Inbox(ctx context.Context, since time.Time) (InboxRows, error) {
 		return InboxRows{}, err
 	}
 	if in.Approvals, err = pendingApprovalsIn(ctx, tx); err != nil {
+		return InboxRows{}, err
+	}
+	if in.Questions, err = waitingQuestionsIn(ctx, tx); err != nil {
 		return InboxRows{}, err
 	}
 	if s.inboxRead != nil {

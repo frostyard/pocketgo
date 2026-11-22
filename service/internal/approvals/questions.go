@@ -25,15 +25,32 @@ type Questions struct {
 	publish func(session int64)
 	now     func() time.Time
 	// timer runs f once after d, unless cancel is called first.
-	timer   func(d time.Duration, f func()) (cancel func())
-	mu      sync.Mutex
-	waiters map[string]chan struct{}
+	timer func(d time.Duration, f func()) (cancel func())
+	// skipQuestion is store.SkipQuestion; tests make it fail.
+	skipQuestion func(ctx context.Context, id, reason string) (store.QuestionRow, error)
+	mu           sync.Mutex
+	waiters      map[string]*waiter
 }
+
+// waiter is the wake of a question's waits: closed when the question
+// changes, and dropped by the last wait that leaves it unclosed.
+type waiter struct {
+	ch chan struct{}
+	n  int
+}
+
+// expiryRetry is how long a wait waits to skip a question at its deadline
+// again after a skip that failed, at first; each failure doubles it, to
+// expiryRetryMax.
+const (
+	expiryRetry    = time.Second
+	expiryRetryMax = 30 * time.Second
+)
 
 // NewQuestions returns the questions of s, which publish each change of a
 // session's question, on the clock now with its timer.
 func NewQuestions(s *store.Store, publish func(session int64), now func() time.Time, timer func(time.Duration, func()) func()) *Questions {
-	return &Questions{store: s, publish: publish, now: now, timer: timer, waiters: map[string]chan struct{}{}}
+	return &Questions{store: s, publish: publish, now: now, timer: timer, skipQuestion: s.SkipQuestion, waiters: map[string]*waiter{}}
 }
 
 // Put records row as its call's waiting question, or finds the one its
@@ -52,29 +69,43 @@ func (q *Questions) Put(ctx context.Context, row store.QuestionRow) (store.Quest
 // its deadline passed, a deadline that passed while the service stopped
 // included. ctx ending, as an abort or the service's stop does, ends the
 // wait with ctx's error and settles nothing.
+//
+// The wait skips the question at its deadline itself, woken by its timer:
+// a skip that fails is tried again, later, until it holds or ctx ends,
+// so a run never waits past its deadline for a store that failed once
+// (Codex review of #95, round 1).
 func (q *Questions) Await(ctx context.Context, id string) (store.QuestionRow, error) {
+	retry := expiryRetry
 	for {
 		wake := q.waiter(id)
 		// Read after registering, so a change made in between is not
 		// missed.
 		row, err := q.store.Question(ctx, id)
 		if err != nil {
+			q.release(id, wake)
 			return store.QuestionRow{}, err
 		}
 		if row.State != store.QuestionWaiting {
+			q.release(id, wake)
 			return row, nil
 		}
-		left := row.Deadline.Sub(q.now())
-		if left <= 0 {
-			if err := q.expire(ctx, id); err != nil {
-				return store.QuestionRow{}, err
+		wait := row.Deadline.Sub(q.now())
+		if wait <= 0 {
+			err := q.expire(ctx, id)
+			if err == nil {
+				continue
 			}
-			continue
+			if ctx.Err() != nil {
+				q.release(id, wake)
+				return store.QuestionRow{}, ctx.Err()
+			}
+			wait, retry = retry, min(2*retry, expiryRetryMax)
 		}
-		cancel := q.timer(left, func() { _ = q.expire(context.Background(), id) })
+		cancel := q.timer(wait, func() { q.wake(id) })
 		select {
 		case <-ctx.Done():
 			cancel()
+			q.release(id, wake)
 			return store.QuestionRow{}, ctx.Err()
 		case <-wake:
 			cancel()
@@ -91,7 +122,7 @@ func (q *Questions) expire(ctx context.Context, id string) error {
 // skip skips question id, by pocketd, for reason, while it waits, then
 // wakes its call and publishes it.
 func (q *Questions) skip(ctx context.Context, id, reason string) error {
-	row, err := q.store.SkipQuestion(ctx, id, reason)
+	row, err := q.skipQuestion(ctx, id, reason)
 	if errors.Is(err, store.ErrConflict) {
 		q.wake(id)
 		return nil
@@ -108,9 +139,15 @@ func (q *Questions) skip(ctx context.Context, id, reason string) error {
 // with the key, then wakes the call that waits for it and publishes it.
 // A retry with the same key returns the question without publishing again
 // (replayed true). The answer and the options picked are as
-// team.CheckAnswer gives them.
+// team.CheckAnswer gives them. An answer after the deadline is
+// store.ErrQuestionLate, and skips the question as its timer would have
+// (Codex review of #95, round 1).
 func (q *Questions) Answer(ctx context.Context, key string, session int64, id, answer string, option []int, skipped bool, by string) (store.QuestionRow, bool, error) {
 	row, replayed, err := q.store.AnswerQuestion(ctx, key, session, id, answer, option, skipped, by)
+	if errors.Is(err, store.ErrQuestionLate) {
+		// A skip that fails here is the wait's to try again.
+		_ = q.expire(ctx, id)
+	}
 	if err != nil {
 		return store.QuestionRow{}, false, err
 	}
@@ -149,22 +186,39 @@ func (q *Questions) RetireEnded(ctx context.Context, sessionID int64, ended func
 	return nil
 }
 
+// waiter is question id's wake, which the caller waits on until it is
+// closed, or releases (release).
 func (q *Questions) waiter(id string) chan struct{} {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	ch, ok := q.waiters[id]
+	w, ok := q.waiters[id]
 	if !ok {
-		ch = make(chan struct{})
-		q.waiters[id] = ch
+		w = &waiter{ch: make(chan struct{})}
+		q.waiters[id] = w
 	}
-	return ch
+	w.n++
+	return w.ch
 }
 
+// release leaves the wake ch of question id, which no wake closed: the
+// last wait to leave it drops it, so a settled question keeps no wake
+// (Codex review of #95, round 1).
+func (q *Questions) release(id string, ch chan struct{}) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if w, ok := q.waiters[id]; ok && w.ch == ch {
+		if w.n--; w.n <= 0 {
+			delete(q.waiters, id)
+		}
+	}
+}
+
+// wake wakes every wait of question id.
 func (q *Questions) wake(id string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if ch, ok := q.waiters[id]; ok {
-		close(ch)
+	if w, ok := q.waiters[id]; ok {
+		close(w.ch)
 		delete(q.waiters, id)
 	}
 }

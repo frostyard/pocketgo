@@ -119,6 +119,10 @@ type Inbox struct {
 	Plans     []proto.Plan
 	Lessons   []proto.Lesson
 	Approvals []proto.Approval
+	// Questions are the questions that wait for the owner in sessions,
+	// oldest first, as GET /v1/sessions gives them and the desktop's Inbox
+	// counts them (ADR-0047).
+	Questions []InboxQuestion
 	// Answered are asks answered or withdrawn, and Closed pull requests
 	// merged or closed, at least those settled within the window.
 	Answered []InboxAsk
@@ -198,6 +202,7 @@ func (in Inbox) lists(since time.Time) (waiting, settled []inboxList) {
 		{"Plans to approve", in.planLines()},
 		{"Lessons to decide", in.lessonLines()},
 		{"Tool calls to approve", in.approvalLines()},
+		{"Questions waiting in sessions", in.questionLines()},
 	}
 	settled = []inboxList{
 		{"Asks answered or withdrawn", in.answeredLines(since)},
@@ -333,6 +338,33 @@ func (in Inbox) approvalLines() []string {
 			continue
 		}
 		out = append(out, fmt.Sprintf("%s · session %d · %s · asked %s", a.ID, a.SessionID, flat(a.Tool, inboxTitle), in.ago(a.RequestedAt)))
+	}
+	return out
+}
+
+// InboxQuestion is a question that waits for the owner, with the profile
+// of its session, "" for none.
+type InboxQuestion struct {
+	proto.Question
+	Profile string
+}
+
+// questionLines name each session whose question waits for the owner, as
+// the desktop's Inbox lists it (state.Data.QuestionsWaiting), and never
+// the question's words: a private agent's session is the owner's alone
+// (ADR-0042, ADR-0047).
+func (in Inbox) questionLines() []string {
+	var out []string
+	for _, q := range in.Questions {
+		if q.State != proto.QuestionWaiting {
+			continue
+		}
+		agent := q.Profile
+		if agent == "" {
+			agent = "no profile"
+		}
+		out = append(out, fmt.Sprintf("session %d · %s · waits for the owner's answer since %s; skipped at %s if none comes",
+			q.SessionID, agent, in.ago(q.CreatedAt), in.when(q.Deadline)))
 	}
 	return out
 }

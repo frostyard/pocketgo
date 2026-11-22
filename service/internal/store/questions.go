@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -46,6 +48,10 @@ type QuestionRow struct {
 // ErrQuestionWaits refuses a question while another of its session waits:
 // a session has at most one.
 var ErrQuestionWaits = errors.New("a question already waits in this session")
+
+// ErrQuestionLate refuses an answer to a question whose deadline passed:
+// it is skipped, as its timer skips it. It is an ErrConflict.
+var ErrQuestionLate = fmt.Errorf("%w: the question's time ran out", ErrConflict)
 
 // QuestionID is the id of the question of one tool call of one task: the
 // same call shows the same question after a restart.
@@ -155,6 +161,35 @@ func (s *Store) WaitingQuestions(ctx context.Context) (map[int64]QuestionRow, er
 	return out, rows.Err()
 }
 
+// InboxQuestionRow is a waiting question with its session's profile, ""
+// for none.
+type InboxQuestionRow struct {
+	QuestionRow
+	Profile string
+}
+
+// waitingQuestionsIn are the questions that wait, oldest first, each with
+// its session's profile, read in tx (Inbox).
+func waitingQuestionsIn(ctx context.Context, tx *sql.Tx) ([]InboxQuestionRow, error) {
+	columns := "q." + strings.ReplaceAll(questionColumns, ", ", ", q.")
+	rows, err := tx.QueryContext(ctx, `SELECT `+columns+`, COALESCE(s.profile, '') FROM questions q LEFT JOIN sessions s ON s.id = q.session_id
+		WHERE q.state = 'waiting' ORDER BY q.created_at, q.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []InboxQuestionRow
+	for rows.Next() {
+		var profile string
+		row, err := scanQuestion(func(dest ...any) error { return rows.Scan(append(dest, &profile)...) })
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, InboxQuestionRow{QuestionRow: row, Profile: profile})
+	}
+	return out, rows.Err()
+}
+
 // WaitingQuestion is the question that waits in session, ErrNotFound for
 // none.
 func (s *Store) WaitingQuestion(ctx context.Context, session int64) (QuestionRow, error) {
@@ -169,7 +204,8 @@ func (s *Store) WaitingQuestion(ctx context.Context, session int64) (QuestionRow
 // it (answer and chosen) or skipped it (skipped), by device by, and
 // records the request key in the same transaction. A retry with the same
 // key returns the question as it is (replayed true). A question that is
-// settled already is ErrConflict; one of another session, or none,
+// settled already is ErrConflict, and one whose deadline passed
+// ErrQuestionLate, writing nothing; one of another session, or none,
 // ErrNotFound; a key used for another request, ErrRequestReused.
 func (s *Store) AnswerQuestion(ctx context.Context, key string, session int64, id, answer string, chosen []int, skipped bool, by string) (row QuestionRow, replayed bool, err error) {
 	now := s.millis()
@@ -193,6 +229,11 @@ func (s *Store) AnswerQuestion(ctx context.Context, key string, session int64, i
 	}
 	if row.State != QuestionWaiting {
 		return QuestionRow{}, false, ErrConflict
+	}
+	// Its deadline passed: it is skipped, whether or not its timer did it
+	// yet (Codex review of #95, round 1).
+	if now >= row.Deadline.UnixMilli() {
+		return QuestionRow{}, false, ErrQuestionLate
 	}
 	state, reason := QuestionAnswered, ""
 	if skipped {

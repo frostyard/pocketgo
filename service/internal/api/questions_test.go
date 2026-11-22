@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,9 @@ type questionHarness struct {
 	*teamHarness
 	timerMu sync.Mutex
 	timers  []questionTimer
+	// armed gets a note as each timer is armed: a call arms it only once
+	// it waits, after its question's event went out.
+	armed chan struct{}
 }
 
 type questionTimer struct {
@@ -38,7 +42,7 @@ type questionTimer struct {
 
 func newQuestionHarness(t *testing.T) *questionHarness {
 	t.Helper()
-	h := &questionHarness{teamHarness: newTeamHarness(t)}
+	h := &questionHarness{teamHarness: newTeamHarness(t), armed: make(chan struct{}, 64)}
 	if err := os.WriteFile(filepath.Join(h.profileDir, "chani.md"), []byte("---\nmodel: faux/faux-1\nhome: ~\nprivate: true\nquestionMinutes: 45\n---\n# Chani\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +52,10 @@ func newQuestionHarness(t *testing.T) *questionHarness {
 		defer h.timerMu.Unlock()
 		cancelled := new(bool)
 		h.timers = append(h.timers, questionTimer{d: d, f: f, cancelled: cancelled})
+		select {
+		case h.armed <- struct{}{}:
+		default:
+		}
 		return func() {
 			h.timerMu.Lock()
 			defer h.timerMu.Unlock()
@@ -57,18 +65,28 @@ func newQuestionHarness(t *testing.T) *questionHarness {
 	return h
 }
 
-// lastTimer is the newest question timer that is not cancelled.
+// lastTimer is the newest question timer that is not cancelled, once one
+// is armed: the call arms it once it waits, which may come after the
+// question's event (Codex review of #95, round 1).
 func (h *questionHarness) lastTimer(t *testing.T) questionTimer {
 	t.Helper()
-	h.timerMu.Lock()
-	defer h.timerMu.Unlock()
-	for i := len(h.timers) - 1; i >= 0; i-- {
-		if !*h.timers[i].cancelled {
-			return h.timers[i]
+	deadline := time.After(10 * time.Second)
+	for {
+		h.timerMu.Lock()
+		for i := len(h.timers) - 1; i >= 0; i-- {
+			if !*h.timers[i].cancelled {
+				timer := h.timers[i]
+				h.timerMu.Unlock()
+				return timer
+			}
+		}
+		h.timerMu.Unlock()
+		select {
+		case <-h.armed:
+		case <-deadline:
+			t.Fatal("no question timer is armed")
 		}
 	}
-	t.Fatal("no question timer is armed")
-	return questionTimer{}
 }
 
 // questionCall is a question call that runs in the background.
@@ -530,6 +548,100 @@ func TestAnAbortSkipsTheWaitingQuestion(t *testing.T) {
 	}
 	if _, err := h.store.WaitingQuestion(ctx, h.super.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("an ended task's question still waits: %v", err)
+	}
+}
+
+// An answer after the deadline is refused, conflict, even before the
+// timer fired, and the call's result is the timeout (Codex review of #95,
+// round 1).
+func TestALateAnswerIsRefused(t *testing.T) {
+	h := newQuestionHarness(t)
+	ctx := context.Background()
+	c, q := h.ask(t, ctx, TeamCall{Session: h.super.ID, Task: 7, CallID: "q1"}, team.Question{Question: "Still there?"})
+	if q == nil {
+		t.Fatal("refused")
+	}
+	h.lastTimer(t) // armed, and never fired
+	h.clock.Advance(team.DefaultQuestionTimeout)
+	_, err := h.client.AnswerQuestion(ctx, h.super.ID, q.ID, proto.AnswerQuestion{RequestID: "late", Answer: "yes"})
+	asError(t, err, http.StatusConflict, proto.ErrorCodeConflict)
+	if !strings.Contains(err.Error(), "no answer came in time") {
+		t.Errorf("a late answer's conflict says %v", err)
+	}
+	if text, err := c.result(t); err != nil || text != `{"skipped":true,"reason":"timeout"}` {
+		t.Fatalf("the call's result %q, %v", text, err)
+	}
+}
+
+// A run that ends, as an abort a restart cut off ends once the tasks
+// resume, skips its question whose task ended, with no abort request and
+// no wait left to do it; a question whose task lives stays (Codex review
+// of #95, round 1).
+func TestARunsEndSkipsItsEndedQuestion(t *testing.T) {
+	h := newQuestionHarness(t)
+	ctx := context.Background()
+	if _, _, err := h.store.PutQuestion(ctx, store.QuestionRow{SessionID: h.super.ID, TaskID: 21, CallID: "q1", Question: "Wait?", Deadline: h.clock.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan int64, 4)
+	h.server.afterRunEnded = func(id int64) { ended <- id }
+	runEnds := func() {
+		t.Helper()
+		h.server.PublishLive(proto.Live{SessionID: h.super.ID, Busy: true})
+		h.server.PublishLive(proto.Live{SessionID: h.super.ID})
+		select {
+		case <-ended:
+		case <-time.After(10 * time.Second):
+			t.Fatal("no run's end")
+		}
+	}
+	runEnds()
+	if row, err := h.store.WaitingQuestion(ctx, h.super.ID); err != nil || row.TaskID != 21 {
+		t.Fatalf("a live task's question: %+v, %v", row, err)
+	}
+	h.engine.mu.Lock()
+	h.engine.ended[21] = true
+	h.engine.mu.Unlock()
+	runEnds()
+	row, err := h.store.Question(ctx, store.QuestionID(21, "q1"))
+	if err != nil || row.State != store.QuestionSkipped || row.Reason != proto.SkippedAborted {
+		t.Fatalf("an ended run's question %+v, %v", row, err)
+	}
+}
+
+// team_inbox lists the sessions whose question waits, as the desktop's
+// Inbox counts them, by session and agent alone (Codex review of #95,
+// round 1).
+func TestTeamInboxListsTheSessionsWhoseQuestionWaits(t *testing.T) {
+	h := newQuestionHarness(t)
+	ctx := context.Background()
+	chani, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "chani", Profile: "chani"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.starters[chani.ID] = "u:" + h.device + ":m2"
+	c, q := h.ask(t, ctx, TeamCall{Session: chani.ID, Task: 4, CallID: "q1"}, team.Question{Question: "Tea or coffee?"})
+	if q == nil {
+		t.Fatal("refused")
+	}
+	text, err := h.server.TeamInbox(ctx, TeamCall{Session: h.super.ID, Task: 1, CallID: "i1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Questions waiting in sessions (1):\n- session " + strconv.FormatInt(chani.ID, 10) + " · chani · waits for the owner's answer since"; !strings.Contains(text, want) {
+		t.Fatalf("team_inbox lacks %q:\n%s", want, text)
+	}
+	if strings.Contains(text, "Tea or coffee") {
+		t.Fatalf("team_inbox shows a private agent's question:\n%s", text)
+	}
+	if _, err := h.client.AnswerQuestion(ctx, chani.ID, q.ID, proto.AnswerQuestion{RequestID: "a1", Answer: "Tea"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.result(t); err != nil {
+		t.Fatal(err)
+	}
+	if text, err := h.server.TeamInbox(ctx, TeamCall{Session: h.super.ID, Task: 1, CallID: "i2"}); err != nil || !strings.Contains(text, "Questions waiting in sessions: none.") {
+		t.Fatalf("team_inbox once answered: %v\n%s", err, text)
 	}
 }
 

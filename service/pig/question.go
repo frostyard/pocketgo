@@ -130,9 +130,11 @@ func (e *Engine) SetQuestionTool(ctx context.Context, id int64) (bool, error) {
 	if !slices.Contains(names, e.questionExt.Name) {
 		change.Extensions = harness.SetTo(harness.ExtensionChange{List: append(slices.Clone(agent.Extensions), e.questionExt)})
 	}
-	// A list of no tools is every tool of the extensions, the new one's
-	// included; a list names each tool it gives.
-	if len(agent.Tools) > 0 && !slices.Contains(toolNames(agent.Tools), toolQuestion) {
+	// The agent's tools are the ones it is offered, resolved: an empty
+	// list is a selection of none, which a new extension adds nothing to,
+	// so the tool is named in the list always (Codex review of #95,
+	// round 1).
+	if !slices.Contains(toolNames(agent.Tools), toolQuestion) {
 		change.Tools = harness.SetTo(harness.ToolChange{List: append(slices.Clone(agent.Tools), e.questionExt.Tools...)})
 	}
 	return true, conversation.Configure(ctx, change)

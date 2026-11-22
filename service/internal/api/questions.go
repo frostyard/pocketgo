@@ -151,6 +151,17 @@ func (s *Server) RetireQuestions(ctx context.Context) error {
 	return s.questions.RetireEnded(ctx, 0, s.engine.TaskEnded)
 }
 
+// questionsRunEnded skips session id's waiting question once its task
+// ended with the run: an abort that a restart cut off, which PiG finishes
+// as the tasks resume, leaves no handler and no wait to skip it, and its
+// task looked alive at the start's retire. One that fails is logged; the
+// next run's end tries again.
+func (s *Server) questionsRunEnded(id int64) {
+	if err := s.questions.RetireEnded(s.passCtx, id, s.engine.TaskEnded); err != nil {
+		s.log.Warn("skip an ended run's question", "session", id, "err", err)
+	}
+}
+
 // answerQuestion is POST /v1/sessions/{id}/question/{qid} (rule 62): the
 // owner's answer to a waiting question of the session, or the owner's
 // skip. Any device answers, and the first answer stands: the question is
@@ -205,6 +216,10 @@ func settledText(ctx context.Context, s *store.Store, id string) string {
 		return "the question is no longer waiting"
 	}
 	switch {
+	case row.State == store.QuestionWaiting:
+		// Refused while it waits: its deadline passed, and the skip that
+		// follows is to come.
+		return "the question was skipped already: no answer came in time"
 	case row.State == store.QuestionAnswered:
 		return fmt.Sprintf("the question was answered already, on %s: the first answer stands", row.SettledBy)
 	case row.Reason == proto.SkippedByOwner:
