@@ -400,13 +400,15 @@ func (d *Data) Session(id int64) (proto.Session, bool) {
 
 // StateOf is the state a session's row shows: the service's state, except
 // where the client knows better by protocol rule 11 itself. A session with
-// an approval pending in the client's list is waiting, and else the open
-// session is running while its live state is busy: the approval's and the
-// live state's events come before the session's own, and a refetch reads
-// the lists in separate requests.
+// an approval pending in the client's list, or whose question waits for the
+// owner (ADR-0047), is waiting, and else the open session is running while
+// its live state is busy: the approval's and the live state's events come
+// before the session's own, and a refetch reads the lists in separate
+// requests. A question's run is busy while it waits: the question wins.
 func (d *Data) StateOf(id int64) proto.SessionState {
-	waiting := slices.ContainsFunc(d.approvals, func(a proto.Approval) bool { return a.SessionID == id })
 	s, _ := d.Session(id)
+	_, asked := WaitingQuestion(s)
+	waiting := asked || slices.ContainsFunc(d.approvals, func(a proto.Approval) bool { return a.SessionID == id })
 	return d.stateOf(id, s.State, waiting)
 }
 
@@ -513,6 +515,17 @@ func (d *Data) SetSessions(f Fetch, list []proto.Session) {
 	for _, s := range d.sessions {
 		if !seen[s.ID] && !d.takesSummary(s.ID, f) {
 			out = append(out, s)
+		}
+	}
+	if o := d.open; o != nil {
+		// The open session's view shows its question (ADR-0047).
+		was, _ := d.Session(o.ID)
+		var now *proto.Question
+		if i := slices.IndexFunc(out, func(s proto.Session) bool { return s.ID == o.ID }); i >= 0 {
+			now = out[i].Question
+		}
+		if !sameQuestion(was.Question, now) {
+			o.rev++
 		}
 	}
 	d.sessions = out
@@ -767,6 +780,11 @@ func (d *Data) Created(f Fetch, s proto.Session) {
 
 func (d *Data) putSession(s proto.Session) {
 	if i := slices.IndexFunc(d.sessions, func(x proto.Session) bool { return x.ID == s.ID }); i >= 0 {
+		// The open session's view shows its question: a change of it
+		// builds the view's rows again (ADR-0047).
+		if d.open != nil && d.open.ID == s.ID && !sameQuestion(d.sessions[i].Question, s.Question) {
+			d.open.rev++
+		}
 		d.sessions[i] = s
 	} else {
 		d.sessions = append(d.sessions, s)
@@ -819,7 +837,7 @@ func (o *OpenSession) addEntry(e proto.Entry) {
 // InboxKind is one kind of thing the Inbox lists: how many wait, and
 // whether its list loaded.
 type InboxKind struct {
-	// List names the list ("questions"); One and Many name what it holds.
+	// List names the list ("asks"); One and Many name what it holds.
 	List, One, Many string
 	Count           int
 	Status          ListStatus
@@ -827,8 +845,10 @@ type InboxKind struct {
 
 // Inbox is what the Inbox lists, in its order: the plans that wait for
 // the owner's approval, the open asks, the lessons that wait, the pull
-// requests that wait for review, and the pending approvals.
+// requests that wait for review, the pending approvals, and the sessions
+// whose question waits for the owner's answer (QuestionsWaiting).
 func (d *Data) Inbox() []InboxKind {
+	sessions, _ := d.SessionsStatus()
 	plans, _ := d.PlansStatus()
 	asks, _ := d.AsksStatus()
 	lessons, _ := d.LessonsStatus()
@@ -836,10 +856,13 @@ func (d *Data) Inbox() []InboxKind {
 	pulls, _ := d.PullsStatus()
 	return []InboxKind{
 		{List: "plans", One: "plan", Many: "plans", Count: len(d.PlansToApprove()), Status: plans},
-		{List: "questions", One: "question", Many: "questions", Count: len(d.asks), Status: asks},
+		{List: "asks", One: "ask", Many: "asks", Count: len(d.asks), Status: asks},
 		{List: "lessons", One: "lesson", Many: "lessons", Count: len(d.Lessons()), Status: lessons},
 		{List: "pull requests", One: "pull request", Many: "pull requests", Count: len(d.PullsToReview()), Status: pulls},
 		{List: "approvals", One: "tool call", Many: "tool calls", Count: len(d.approvals), Status: approvals},
+		// A session whose question waits for the owner (ADR-0047): never
+		// one of the asks above, it is known from the sessions' list.
+		{List: "sessions", One: "session", Many: "sessions", Count: len(d.QuestionsWaiting()), Status: sessions},
 	}
 }
 

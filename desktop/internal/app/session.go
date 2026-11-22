@@ -20,7 +20,13 @@ type transcriptView struct {
 	rows []state.Row
 	id   int64
 	rev  uint64
-	open map[string]bool // folds the owner opened: thinking and tool calls
+	// question is the waiting question the rows show (ADR-0047), its id
+	// and state: a change of it builds them again.
+	question string
+	open     map[string]bool // folds the owner opened: thinking and tool calls
+	// picks are the options checked on a question's card that takes
+	// several, by question.
+	picks map[string]map[int]bool
 }
 
 // composer is the message field's state: a draft for each session.
@@ -115,9 +121,16 @@ func (a *App) sessionPane(c *ui.Context) {
 	if tr.open == nil {
 		tr.open = map[string]bool{}
 	}
-	if o.ID != tr.id || o.Rev() != tr.rev || tr.rows == nil {
-		tr.id, tr.rev = o.ID, o.Rev()
-		tr.rows = state.BuildRows(o.Entries, o.Live, a.st.Data.ApprovalsFor(o.ID))
+	// The session's question that waits shows in its transcript, after
+	// its call (ADR-0047).
+	var question *proto.Question
+	shown := ""
+	if q, ok := a.st.Data.Question(o.ID); ok {
+		question, shown = &q, q.ID+":"+string(q.State)
+	}
+	if o.ID != tr.id || o.Rev() != tr.rev || tr.rows == nil || shown != tr.question {
+		tr.id, tr.rev, tr.question = o.ID, o.Rev(), shown
+		tr.rows = state.BuildRows(o.Entries, o.Live, a.st.Data.ApprovalsFor(o.ID), question)
 	}
 	ui.Column(c).Grow(1).AlignItems(ui.Stretch).Background(t.Background).Children(func() {
 		switch {
@@ -223,6 +236,8 @@ func (a *App) rowView(c *ui.Context, r *state.Row) {
 		a.fold(c, r.Key+":summary", "Compacted the context", strings.TrimLeft(firstLine(r.Text), "# "), func() {
 			markdown.View(c.Key(r.Key), r.Text, &a.md)
 		})
+	case state.RowQuestion:
+		a.questionCard(c, *r.Question)
 	case state.RowWorking:
 		text := r.Text
 		if text == "" {
@@ -444,6 +459,17 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			if sending.Err != "" {
 				frostui.Problem(c, capitalize(sending.Err)+".").Wrap()
 			}
+			// While the session's question waits, the field answers it
+			// (the owner's decision, ADR-0047).
+			composing := a.st.Data.ComposerOf(id)
+			if refused, ok := a.st.QuestionRefusal(id); ok {
+				ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+					frostui.Problem(c, "Your answer was not taken: "+strings.TrimSuffix(refused.Why, ".")+".").Wrap().Grow(1)
+					if ui.Button(c.Key("question-refusal"), "Dismiss").Clicked() {
+						a.st.DismissQuestionRefusal(id)
+					}
+				})
+			}
 			if changing := a.st.ChangingModel(id); changing.Err != "" {
 				frostui.Problem(c, "Changing the model failed: "+changing.Err).Wrap()
 			}
@@ -455,9 +481,18 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				if o.Live.Busy {
 					placeholder = hints.busy
 				}
+				answering := state.Pending{}
+				if composing.Answers() {
+					placeholder = composing.Hint(a.compact)
+					answering = a.st.AnsweringQuestion(composing.Question.ID)
+				}
 				svc := c.Services()
-				input := ui.TextAreaBase(c.Key(id), draft).Lines(1, 10).Placeholder(placeholder).Label("Message").
-					Bind(&cp.field).Disabled(sending.Busy).
+				label := "Message"
+				if composing.Answers() {
+					label = "Answer"
+				}
+				input := ui.TextAreaBase(c.Key(id), draft).Lines(1, 10).Placeholder(placeholder).Label(label).
+					Bind(&cp.field).Disabled(sending.Busy || answering.Busy).
 					OnTextKey(func(k ui.TextKey) bool {
 						if k.Key == ui.KeyEnter && k.Mods == 0 {
 							a.send(id, k.Text())
@@ -466,9 +501,14 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						return false
 					}).
 					OnPaste(func(string) bool {
+						// An answer carries text alone: a pasted file is not
+						// attached to it (state.Composer.Attaches).
+						if !composing.Attaches() {
+							return false
+						}
 						return a.pasteAttachments(id, svc.ReadClipboardData(transfer.FileList, transfer.PNG))
 					})
-				if paths := input.DroppedFiles(); len(paths) > 0 {
+				if paths := input.DroppedFiles(); len(paths) > 0 && composing.Attaches() {
 					a.attachFiles(id, paths)
 				}
 				// The window's layout of this frame decides: a session the
@@ -495,14 +535,14 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						} else {
 							attach = ui.Button(c, "Attach files")
 						}
-						if attach.Disabled(cp.picking).Clicked() {
+						if attach.Disabled(cp.picking || !composing.Attaches()).Clicked() {
 							a.pickAttachments(id)
 						}
 					}
 					if !a.compact {
 						a.modelChip(c, id)
 					}
-					if sending.Busy {
+					if sending.Busy || answering.Busy {
 						ui.Spinner(c).Size(14, 14).Label("Sending")
 						frostui.Caption(c, "Sending…")
 					}
@@ -511,6 +551,13 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						if ui.Button(c, "Abort").Disabled(a.st.Aborting(id).Busy).Clicked() {
 							a.st.Abort(id)
 						}
+					}
+					if composing.Answers() {
+						// The words are the answer: files make none.
+						if frostui.LabeledButton(c, "document-send", "Send Answer", true).Disabled(strings.TrimSpace(*draft) == "" || answering.Busy).Clicked() {
+							a.send(id, *draft)
+						}
+						return
 					}
 					// Files alone make a message (ADR-0029).
 					empty := strings.TrimSpace(*draft) == "" && len(a.st.Attachments(id)) == 0
@@ -524,19 +571,121 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 }
 
 // send sends text to session id, with its attached files; the draft
-// clears when pocketd took it.
+// clears when pocketd took it. While the session's question waits, text
+// is the answer to it, not a message (state.Data.ComposerOf).
 func (a *App) send(id int64, text string) {
-	if (strings.TrimSpace(text) == "" && len(a.st.Attachments(id)) == 0) || !a.st.MaySend(id) {
-		return
-	}
-	a.st.Send(id, text, func(err error) {
+	clear := func(err error) {
 		if err != nil {
 			return
 		}
 		if d := a.composer.drafts[id]; d != nil && *d == text {
 			*d = ""
 		}
+	}
+	if composing := a.st.Data.ComposerOf(id); composing.Answers() {
+		if strings.TrimSpace(text) == "" || a.st.AnsweringQuestion(composing.Question.ID).Busy {
+			return
+		}
+		a.st.AnswerQuestion(*composing.Question, text, nil, clear)
+		return
+	}
+	if (strings.TrimSpace(text) == "" && len(a.st.Attachments(id)) == 0) || !a.st.MaySend(id) {
+		return
+	}
+	a.st.Send(id, text, clear)
+}
+
+// questionCard is a session's question that waits for the owner, inline
+// in its transcript (ADR-0047): the question, the options the agent
+// suggests, each a button that answers at once, or, when the owner may
+// pick several, checkboxes and Send; and Skip. The message box below
+// takes any other answer: the card has no field of its own. It says when
+// the question is skipped if no answer comes.
+func (a *App) questionCard(c *ui.Context, q proto.Question) {
+	t := c.Theme()
+	key := "question:" + q.ID
+	pending := a.st.AnsweringQuestion(q.ID)
+	ui.Column(c.Key(key)).Gap(frostui.SpaceS).Padding(frostui.SpaceM, frostui.SpaceL).AlignItems(ui.Stretch).
+		Radius(10).Background(frostui.Panel(t)).BorderWidth(1, 1, 1, 1).BorderColor(frostui.ToneColor(t, frostui.Accent)).
+		Role(ui.RoleGroup).Label("Question for you").Children(func() {
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			frostui.Icon(c, "help-browser").TextColor(frostui.ToneColor(t, frostui.Accent))
+			a.headTitle(c, a.questionFrom(q.SessionID)+" waits for your answer")
+		})
+		ui.Text(c, q.Question).Wrap().Selectable()
+		switch {
+		case len(q.Options) > 0 && q.Multiple:
+			if a.tr.picks == nil {
+				a.tr.picks = map[string]map[int]bool{}
+			}
+			picks := a.tr.picks[q.ID]
+			if picks == nil {
+				picks = map[int]bool{}
+				a.tr.picks[q.ID] = picks
+			}
+			ui.Column(c).Gap(frostui.SpaceXS).AlignItems(ui.Start).Children(func() {
+				// Keyed by place: options may repeat.
+				for i, option := range q.Options {
+					checked := picks[i]
+					if ui.Checkbox(c.Key(key+":pick:"+itoa(i)), &checked, option).Disabled(pending.Busy).Changed() {
+						picks[i] = checked
+					}
+				}
+			})
+			var picked []int
+			for i := range q.Options {
+				if picks[i] {
+					picked = append(picked, i)
+				}
+			}
+			ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+				if ui.PrimaryButton(c.Key(key+":send"), "Send Choices").Disabled(pending.Busy || len(picked) == 0).Clicked() {
+					a.st.AnswerQuestion(q, "", picked, func(error) {})
+				}
+			})
+		case len(q.Options) > 0:
+			ui.Row(c).Gap(frostui.SpaceS).Wrap().Children(func() {
+				for i, option := range q.Options {
+					if ui.Button(c.Key(key+":option:"+itoa(i)), option).Disabled(pending.Busy).Tooltip("Answer “" + option + "”").Clicked() {
+						a.st.AnswerQuestion(q, "", []int{i}, func(error) {})
+					}
+				}
+			})
+		}
+		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+			hint := "Type your answer in the message box below."
+			if len(q.Options) > 0 {
+				hint = "Or type another answer in the message box below."
+			}
+			if !q.Deadline.IsZero() {
+				hint += " Skipped " + state.ClockAt(q.Deadline, a.opts.Now()) + " if no answer comes."
+			}
+			frostui.Caption(c, hint).Wrap().Grow(1)
+			if ui.Button(c.Key(key+":skip"), "Skip").Disabled(pending.Busy).Tooltip("Go on without an answer").Clicked() {
+				a.st.SkipQuestion(q)
+			}
+		})
+		if pending.Busy {
+			frostui.Loading(c, "Sending your answer…")
+		}
+		if pending.Err != "" {
+			frostui.Problem(c, capitalize(strings.TrimSuffix(pending.Err, "."))+".").Wrap()
+		}
 	})
+}
+
+// questionFrom names the agent of the session a question comes from: its
+// profile's name, else the session's title, else The agent.
+func (a *App) questionFrom(id int64) string {
+	if s, ok := a.st.Data.Session(id); ok {
+		if s.Profile != "" {
+			return a.agentName(s.Profile)
+		}
+		if s.Title != "" {
+			return s.Title
+		}
+	}
+	return "The agent"
 }
 
 func firstLine(s string) string {

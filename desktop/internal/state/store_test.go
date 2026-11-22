@@ -330,7 +330,7 @@ func TestAQueuedMessageShowsUntilItsEntry(t *testing.T) {
 	h.store.Send(1, "and then the tests", func(err error) { sent = err == nil })
 	queuedLast := func() bool {
 		o := h.store.Data.Open()
-		rows := BuildRows(o.Entries, o.Live, nil)
+		rows := BuildRows(o.Entries, o.Live, nil, nil)
 		last := rows[len(rows)-1]
 		return last.Kind == RowUser && last.Queued && last.Text == "and then the tests"
 	}
@@ -341,7 +341,7 @@ func TestAQueuedMessageShowsUntilItsEntry(t *testing.T) {
 	h.store.Open(1)
 	h.loop.RunUntil(t, func() bool { return h.store.Data.Open().Loaded })
 	if !queuedLast() {
-		t.Fatalf("after coming back: rows %+v", BuildRows(h.store.Data.Open().Entries, h.store.Data.Open().Live, nil))
+		t.Fatalf("after coming back: rows %+v", BuildRows(h.store.Data.Open().Entries, h.store.Data.Open().Live, nil, nil))
 	}
 	h.srv.PlaceQueued(1)
 	h.loop.RunUntil(t, func() bool { o := h.store.Data.Open(); return len(o.Entries) == 2 && len(o.Live.Queued) == 0 })
@@ -420,7 +420,7 @@ func TestASendAnswerAfterAnAbortAddsNothing(t *testing.T) {
 	release()
 	h.loop.RunUntil(t, func() bool { return sent })
 	o := h.store.Data.Open()
-	for _, row := range BuildRows(o.Entries, o.Live, nil) {
+	for _, row := range BuildRows(o.Entries, o.Live, nil, nil) {
 		if row.Queued || row.Text == "and then the tests" {
 			t.Fatalf("the late answer put the message back: %+v", row)
 		}

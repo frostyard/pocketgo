@@ -148,6 +148,12 @@ type Store struct {
 	aborts    map[int64]*Pending
 	decisions map[string]*Pending
 	answers   map[int64]*Pending
+	// questionAnswers are the owner's answers to sessions' questions, by
+	// question (ADR-0047), and questionRefusals the answers pocketd
+	// refused because their question no longer waited, by session
+	// (QuestionRefusal).
+	questionAnswers  map[string]*Pending
+	questionRefusals map[int64]QuestionRefusal
 	// answerRefusals are the owner's answers pocketd refused because their
 	// ask no longer waits, by ask (AnswerRefusals).
 	answerRefusals map[int64]AnswerRefusal
@@ -246,6 +252,8 @@ func (s *Store) resetActions() {
 	s.abortRuns = map[int64]bool{}
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
 	s.answers = map[int64]*Pending{}
+	s.questionAnswers = map[string]*Pending{}
+	s.questionRefusals = map[int64]QuestionRefusal{}
 	s.answerRefusals = map[int64]AnswerRefusal{}
 	s.answerTexts = map[int64]string{}
 	s.answerOutcomes = map[int64]proto.AskState{}
@@ -568,6 +576,7 @@ func (s *Store) apply(ev proto.Event) {
 	s.settleModels()
 	s.settleAnswers()
 	s.settleLessons()
+	s.settleQuestions()
 	s.settleCloses()
 	s.settleShifts()
 	s.settlePlans()
@@ -839,6 +848,7 @@ func (s *Store) loadSessions() {
 		s.Data.SetSessions(f, list)
 		s.settleAborts()
 		s.settleModels()
+		s.settleQuestions()
 	}))
 }
 
@@ -862,7 +872,7 @@ func (s *Store) loadAsks() {
 	resynced := s.asksResynced
 	s.asksResynced = false
 	var list []proto.Ask
-	s.do("Loading the questions", func(ctx context.Context, c *proto.Client) (err error) {
+	s.do("Loading the asks", func(ctx context.Context, c *proto.Client) (err error) {
 		list, err = c.Asks(ctx)
 		return err
 	}, s.track("asks", func(err error) {
@@ -1113,6 +1123,7 @@ func (s *Store) loadDetail(id int64) {
 		s.Data.SetDetail(f, detail)
 		s.settleAborts()
 		s.settleModels()
+		s.settleQuestions()
 	}))
 }
 
@@ -1244,6 +1255,9 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 		done(errors.New(why))
 		return
 	}
+	// A message sent says the owner moved on from an answer pocketd
+	// refused (QuestionRefusal).
+	delete(s.questionRefusals, id)
 	sent := slices.Clone(s.attachments[id])
 	var uploads []int64
 	for _, a := range sent {
@@ -1431,7 +1445,7 @@ func (s *Store) Answer(id int64, text string) {
 			delete(s.answerDrafts, id)
 			why := pe.Message
 			if pe.Code == proto.ErrorCodeNotFound || why == "" {
-				why = "pocketd no longer has this question."
+				why = "pocketd no longer has this ask."
 			}
 			s.answerRefusals[id] = AnswerRefusal{Ask: id, Answer: typed, Why: why}
 			s.loadAsks()

@@ -116,7 +116,7 @@ func TestAPullRequestInTheInboxSnapshot(t *testing.T) {
 	x.seedTeam()
 	x.connect(t)
 	x.hasAll(t, "frostyard/nsl#31 waits for your review", "T2 · Pin the runner image", "Pin the runner image to ubuntu-24.04",
-		"vera/pin-the-runner-image-t2 → main", "1 question and 1 pull request wait for you", "1 pull request waits",
+		"vera/pin-the-runner-image-t2 → main", "1 ask and 1 pull request wait for you", "1 pull request waits",
 		"Cross-review R4 by teg (gpt-6-astra): ready at cccccccccccc · CI green", "ready-for-human")
 	if x.tt.HasText("frostyard/frostread#12 waits for your review") {
 		t.Error("a draft waits for review")
@@ -134,7 +134,7 @@ func TestAPullRequestInTheInboxSnapshot(t *testing.T) {
 	if x.tt.HasText("frostyard/nsl#31 waits for your review") {
 		t.Error("a merged pull request still waits for review")
 	}
-	x.hasAll(t, "1 question waits for you")
+	x.hasAll(t, "1 ask waits for you")
 }
 
 // The owner closes a thread from the board, after confirming: the request

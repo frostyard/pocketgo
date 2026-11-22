@@ -49,12 +49,15 @@ type Server struct {
 	// URL is the service URL to sign in to (the URL constant).
 	URL string
 
-	handler   http.Handler
-	mu        sync.Mutex
-	token     string
-	models    []proto.Model
-	profiles  []proto.Profile
-	sessions  map[int64]*session
+	handler  http.Handler
+	mu       sync.Mutex
+	token    string
+	models   []proto.Model
+	profiles []proto.Profile
+	sessions map[int64]*session
+	// questions are the sessions' questions (ADR-0047), waiting and
+	// settled, by id (question.go).
+	questions map[string]proto.Question
 	approvals []proto.Approval
 	asks      []proto.Ask
 	lessons   []proto.Lesson
@@ -130,18 +133,19 @@ type reply struct {
 // New returns a server.
 func New() *Server {
 	s := &Server{
-		URL:      URL,
-		token:    Token,
-		protocol: proto.Version,
-		sessions: map[int64]*session{},
-		nextID:   1,
-		seq:      Now.UnixMilli() * 1000,
-		streams:  map[chan proto.Event]struct{}{},
-		replies:  map[string]reply{},
-		failures: map[string]int{},
-		lose:     map[string]chan struct{}{},
-		hold:     map[string]chan struct{}{},
-		holding:  map[string]int{},
+		URL:       URL,
+		token:     Token,
+		protocol:  proto.Version,
+		sessions:  map[int64]*session{},
+		questions: map[string]proto.Question{},
+		nextID:    1,
+		seq:       Now.UnixMilli() * 1000,
+		streams:   map[chan proto.Event]struct{}{},
+		replies:   map[string]reply{},
+		failures:  map[string]int{},
+		lose:      map[string]chan struct{}{},
+		hold:      map[string]chan struct{}{},
+		holding:   map[string]int{},
 	}
 	s.handler = s.routes()
 	return s
@@ -666,6 +670,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+proto.PathAbort, s.abort)
 	mux.HandleFunc("POST "+proto.PathStartOver, s.startOver)
 	mux.HandleFunc("POST "+proto.PathModel, s.changeModel)
+	mux.HandleFunc("POST "+proto.PathQuestion, s.answerQuestion)
 	mux.HandleFunc("GET "+proto.PathApprovals, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		list := []proto.Approval{}

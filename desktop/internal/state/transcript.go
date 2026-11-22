@@ -37,6 +37,9 @@ const (
 	// summary that stands for what came before it, which the view folds
 	// (ADR-0026).
 	RowCompaction
+	// RowQuestion is the session's question that waits for the owner's
+	// answer (ADR-0047): Question. It follows its tool call's row.
+	RowQuestion
 )
 
 // ToolState is where a tool call of a row stands.
@@ -47,7 +50,8 @@ const (
 	ToolQueued ToolState = iota
 	// ToolRunning: the tool runs.
 	ToolRunning
-	// ToolWaiting: the call waits for the owner's approval.
+	// ToolWaiting: the call waits for the owner's approval, or, a
+	// question's, for the owner's answer.
 	ToolWaiting
 	// ToolDone: the tool returned a result.
 	ToolDone
@@ -111,6 +115,8 @@ type Row struct {
 	// owner's, as pocketd marks its entry or its queued submission: a
 	// supervisor's (ADR-0032). nil for the owner's.
 	Sender *proto.Sender
+	// Question, on a RowQuestion, is the question that waits.
+	Question *proto.Question
 }
 
 // FromSupervisor is the supervisor's session that sent a user row, and
@@ -163,7 +169,15 @@ func userRow(key, text string, images, files int, queued bool, sender *proto.Sen
 // or takes the live tool's state. The run's busy state queues only the
 // calls of the current round, written after the last user message: a call
 // an earlier run left without a result stays without one.
-func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approval) []Row {
+//
+// question is the session's question that waits for the owner, nil for
+// none (ADR-0047): its call's outstanding occurrence waits for the owner,
+// and a RowQuestion follows its row, or ends the run's rows when no row
+// shows its call. No working line shows while it waits.
+func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approval, question *proto.Question) []Row {
+	if question != nil && question.State != "" && question.State != proto.QuestionWaiting {
+		question = nil
+	}
 	p := pairCalls(entries, live.Partial)
 	waiting := map[string]string{}
 	for _, a := range approvals {
@@ -176,11 +190,20 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		liveTools[t.CallID] = t
 	}
 	b := rowBuilder{keys: map[string]bool{}}
+	asked := false // the question's row is placed
+	questionRow := func() {
+		if question != nil && !asked {
+			asked = true
+			q := *question
+			b.add(Row{Key: "question:" + q.ID, Kind: RowQuestion, Question: &q, Live: true})
+		}
+	}
 	tool := func(at occurrence, call proto.ToolCall, livePart bool) {
 		row := &ToolRow{CallID: call.ID, Name: call.Name, Summary: ToolSummary(call.Name, call.Arguments), Arguments: IndentArguments(call.Arguments)}
 		res := p.results[at]
 		lt, inLive := liveTools[call.ID]
 		outstanding := p.outstanding[call.ID] == at
+		ask := question != nil && call.ID == question.CallID && outstanding && res == nil
 		switch {
 		case res != nil:
 			row.State, row.Result = ToolDone, res.Text
@@ -189,6 +212,8 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 			}
 		case !outstanding:
 			row.State = ToolNoResult
+		case ask:
+			row.State = ToolWaiting
 		case waiting[call.ID] != "":
 			row.State, row.ApprovalID = ToolWaiting, waiting[call.ID]
 		case inLive && lt.Status == proto.ToolRunning:
@@ -201,6 +226,9 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 			row.State = ToolNoResult
 		}
 		b.add(Row{Key: "c" + call.ID, Kind: RowTool, Tool: row, Live: livePart})
+		if ask {
+			questionRow()
+		}
 	}
 	for i, e := range entries {
 		key := fmt.Sprintf("e%d", e.ID)
@@ -266,7 +294,10 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		p.outstanding[t.CallID] = at
 		tool(at, proto.ToolCall{ID: t.CallID, Name: t.Name}, true)
 	}
-	if live.Busy && len(waiting) == 0 && !streamingText(live) {
+	// A question whose call no row shows, as one the transcript has not
+	// loaded yet, ends the run's rows.
+	questionRow()
+	if live.Busy && len(waiting) == 0 && question == nil && !streamingText(live) {
 		b.add(Row{Key: "working", Kind: RowWorking, Live: true})
 	}
 	if live.Compacting {

@@ -172,22 +172,22 @@ func TestAFileSourceIsARegularFileWithinTheLimit(t *testing.T) {
 func TestAUserRowShowsItsFiles(t *testing.T) {
 	path := pocketdtest.UploadsDir + "/1/3-shot (1).png"
 	text := proto.WithAttachments("Look.", []proto.AttachedFile{{Path: path, Name: "shot (1).png", MimeType: "image/png", Size: 9}})
-	rows := BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text, Images: 1, Files: 1}}, proto.Live{}, nil)
+	rows := BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text, Images: 1, Files: 1}}, proto.Live{}, nil, nil)
 	if len(rows) != 1 || rows[0].Text != "Look." || rows[0].Images != 1 || len(rows[0].Files) != 1 ||
 		rows[0].Files[0] != (RowFile{Name: "shot (1).png", Path: path}) {
 		t.Fatalf("rows %+v", rows)
 	}
-	rows = BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Files: 1}}}, nil)
+	rows = BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Files: 1}}}, nil, nil)
 	if len(rows) != 1 || !rows[0].Queued || rows[0].Text != "Look." || len(rows[0].Files) != 1 {
 		t.Fatalf("queued rows %+v", rows)
 	}
 	// A list the owner wrote or pasted, in a message that attached no
 	// file, is words (Codex review of #49, round 8).
-	rows = BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text}}, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text}}}, nil)
+	rows = BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text}}, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text}}}, nil, nil)
 	if len(rows) != 2 || rows[0].Text != text || rows[0].Files != nil || rows[1].Text != text || rows[1].Files != nil {
 		t.Fatalf("quoted rows %+v", rows)
 	}
-	rows = BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: "plain"}}, proto.Live{}, nil)
+	rows = BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: "plain"}}, proto.Live{}, nil, nil)
 	if rows[0].Text != "plain" || rows[0].Files != nil {
 		t.Fatalf("plain row %+v", rows[0])
 	}
@@ -202,14 +202,14 @@ func TestASupervisorsMessageNamesNoFiles(t *testing.T) {
 		t.Fatalf("the text names %d files as the owner's would", len(files))
 	}
 	odrade := &proto.Sender{Kind: proto.SenderSupervisor, Session: 2}
-	rows := BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text, Sender: odrade, Files: 1}}, proto.Live{}, nil)
+	rows := BuildRows([]proto.Entry{{ID: 1, Kind: proto.EntryUser, Text: text, Sender: odrade, Files: 1}}, proto.Live{}, nil, nil)
 	if len(rows) != 1 || rows[0].Text != text || rows[0].Files != nil {
 		t.Fatalf("rows %+v", rows)
 	}
 	if session, ok := rows[0].FromSupervisor(); !ok || session != 2 {
 		t.Fatalf("the row's sender: %d, %v", session, ok)
 	}
-	rows = BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Sender: odrade, Files: 1}}}, nil)
+	rows = BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Sender: odrade, Files: 1}}}, nil, nil)
 	if len(rows) != 1 || !rows[0].Queued || rows[0].Text != text || rows[0].Files != nil {
 		t.Fatalf("queued rows %+v", rows)
 	}
@@ -569,7 +569,7 @@ func TestASendActionIsBuiltInOneBuffer(t *testing.T) {
 // short must not look whole (Codex review of #49, round 7).
 func TestACutQueuedPreviewNamesNoFiles(t *testing.T) {
 	text := proto.WithAttachments("Look.", []proto.AttachedFile{{Path: pocketdtest.UploadsDir + "/1/3-shot.png", Name: "shot.png", MimeType: "image/png", Size: 9}})
-	rows := BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Cut: true, Files: 1}}}, nil)
+	rows := BuildRows(nil, proto.Live{Queued: []proto.QueuedMessage{{SubmissionID: 4, Text: text, Cut: true, Files: 1}}}, nil, nil)
 	if len(rows) != 1 || rows[0].Text != text+" …" || rows[0].Files != nil || !rows[0].Queued {
 		t.Fatalf("rows %+v", rows)
 	}
