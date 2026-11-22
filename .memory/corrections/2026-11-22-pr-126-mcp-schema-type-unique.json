@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep an MCP tool's schema only when each type list names each type once.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 9 (codex-cli 0.169.0) of head 219b5cd: [P2] Reject duplicate types in MCP tool schemas",
+  "promoted_to": "service/pig/mcp_round9_test.go"
+}

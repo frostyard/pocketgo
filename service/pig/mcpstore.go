@@ -69,7 +69,8 @@ type mcpStore struct {
 	// it, and its answer is redacted all the same (secrets).
 	former []string
 	// pinned are the secrets each exchange under way went out with, by
-	// pin, kept however many former ones come after them (pin).
+	// pin, and every one the store replaced while it was under way, kept
+	// however many former ones come after them (pin).
 	pinned map[int][]string
 	pins   int
 	// fenced says the engine that owns the store closed: it writes no
@@ -79,6 +80,9 @@ type mcpStore struct {
 	// dirty says the credentials file is behind what the store holds: its
 	// last write failed (saveCredsLocked).
 	dirty bool
+	// listingsRead says the store read the listings file, so it may write
+	// it (openMCPStore, not openMCPCredentials).
+	listingsRead bool
 }
 
 // errMCPStoreFenced is a write the store refuses once its engine closed.
@@ -94,11 +98,13 @@ func (s *mcpStore) fence() {
 // maxFormerSecrets bounds mcpStore.former.
 const maxFormerSecrets = 256
 
-// pin keeps the secrets the store holds now among those it redacts
-// (secrets) until unpin is called, however many it replaces meanwhile:
-// an exchange pins the credentials it goes out with until its answer is
-// sanitized, since the server may echo them after a refresh replaced
-// them.
+// pin keeps the secrets the store holds now, and every one it holds and
+// replaces until unpin is called, among those it redacts (secrets) until
+// then, however many it replaces meanwhile: an exchange pins the
+// credentials it goes out with until its answer is sanitized, since the
+// server may echo them after a refresh replaced them, and PiG may make
+// the request again with a token a refresh gave it meanwhile, which a
+// later refresh may replace before the answer comes.
 func (s *mcpStore) pin() (unpin func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -128,6 +134,13 @@ func (s *mcpStore) retireLocked(c *mcpCredential) {
 	for _, secret := range credentialSecrets(c) {
 		if !slices.Contains(s.former, secret) {
 			s.former = append(s.former, secret)
+		}
+		// An exchange under way may have gone out with it: it stays
+		// redacted until that exchange's answer is.
+		for id, held := range s.pinned {
+			if !slices.Contains(held, secret) {
+				s.pinned[id] = append(held, secret)
+			}
 		}
 	}
 	if extra := len(s.former) - maxFormerSecrets; extra > 0 {
@@ -168,6 +181,25 @@ var errMCPStoreUnreadable = errors.New("does not parse as pocketd wrote it")
 // openMCPStore reads the MCP store in the data folder dir: empty when its
 // files are not there.
 func openMCPStore(dir string) (*mcpStore, error) {
+	s, err := openMCPCredentials(dir)
+	if err != nil {
+		return nil, err
+	}
+	var tools struct {
+		Servers map[string]mcpListing `json:"servers"`
+	}
+	if err := readStoreFile(filepath.Join(dir, MCPToolsFile), &tools); err != nil {
+		return nil, err
+	}
+	maps.Copy(s.tools, tools.Servers)
+	s.listingsRead = true
+	return s, nil
+}
+
+// openMCPCredentials is the store of dir's credentials alone, for a
+// command that changes them and no listing (pocketd mcp logout): a
+// listings file it cannot read stops it not, and it writes none.
+func openMCPCredentials(dir string) (*mcpStore, error) {
 	s := &mcpStore{dir: dir, creds: map[string]*mcpCredential{}, tools: map[string]mcpListing{}}
 	var creds struct {
 		Servers map[string]*mcpCredential `json:"servers"`
@@ -180,15 +212,12 @@ func openMCPStore(dir string) (*mcpStore, error) {
 			s.creds[name] = c
 		}
 	}
-	var tools struct {
-		Servers map[string]mcpListing `json:"servers"`
-	}
-	if err := readStoreFile(filepath.Join(dir, MCPToolsFile), &tools); err != nil {
-		return nil, err
-	}
-	maps.Copy(s.tools, tools.Servers)
 	return s, nil
 }
+
+// errMCPListingsUnread is a listing kept in a store that did not read the
+// listings file (openMCPCredentials): its write would drop the others.
+var errMCPListingsUnread = errors.New("the MCP store did not read the listings: none is written")
 
 // readStoreFile reads the JSON file path into v: nothing when it is not
 // there. A file that is no regular file is refused.
@@ -378,6 +407,9 @@ func (s *mcpStore) setListing(name, url string, tools []mcpTool) error {
 	defer s.mu.Unlock()
 	if s.fenced {
 		return errMCPStoreFenced
+	}
+	if !s.listingsRead {
+		return errMCPListingsUnread
 	}
 	s.tools[name] = mcpListing{URL: url, Tools: slices.Clone(tools)}
 	return writeStoreFile(filepath.Join(s.dir, MCPToolsFile), struct {

@@ -391,7 +391,9 @@ func TestAResultsNoticesCountInItsBound(t *testing.T) {
 	c := e.mcp.conns["notes"]
 	fake.set(func() { fake.images = 500 })
 	got := c.call(context.Background(), "pictures", map[string]any{})
-	images, texts, size := 0, 0, 0
+	// The text and the notice are one text, on lines of their own (Codex
+	// review of #126, round 9).
+	images, texts, size, text := 0, 0, 0, ""
 	for _, block := range got.Output {
 		switch b := block.(type) {
 		case ai.ImageContent:
@@ -399,10 +401,11 @@ func TestAResultsNoticesCountInItsBound(t *testing.T) {
 		case ai.TextContent:
 			texts++
 			size += len(b.Text)
+			text = b.Text
 		}
 	}
-	if images != maxMCPImages || texts != 2 || size > maxMCPOutput {
-		t.Fatalf("%d images, %d texts, %d bytes", images, texts, size)
+	if images != maxMCPImages || texts != 1 || size > maxMCPOutput || !strings.Contains(text, "\n[pocketd left out 496 images") {
+		t.Fatalf("%d images, %d texts, %d bytes: %q", images, texts, size, text)
 	}
 	fake.set(func() { fake.big = 3 * maxMCPOutput; fake.images = 0 })
 	got = c.call(context.Background(), "big", map[string]any{})

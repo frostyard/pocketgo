@@ -14,7 +14,7 @@ import (
 // StartMCP connects the MCP servers the profiles name (ADR-0063), then
 // gives every session that takes its profile's servers their tools as the
 // servers listed them: a pass that serving does not wait for, and that a
-// server that is down holds up no longer than its timeout. A server that
+// server that is down holds up no longer than its timeout a request. A server that
 // is down keeps the tools it listed last, whose calls say it is down, and
 // pocketd tries it again later. The connections are made before the
 // pass, and a new session's record waits for no pass (mcpAfterCreate): no

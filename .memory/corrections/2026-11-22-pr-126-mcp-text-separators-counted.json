@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Join an MCP result's text blocks into one text, a newline between each two counted in the bound, an empty block left out.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 9 (codex-cli 0.169.0) of head 219b5cd: [P2] Count text-block separators in the MCP output budget",
+  "promoted_to": "service/pig/mcp_round9_test.go"
+}

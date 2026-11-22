@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Give each MCP tool registration output limits that take the already-bounded result whole, so PiG's defaults never cut its tail or its notices.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 9 (codex-cli 0.169.0) of head 219b5cd: [P2] Set harness output limits on MCP tool registrations",
+  "promoted_to": "service/pig/mcp_round9_test.go"
+}

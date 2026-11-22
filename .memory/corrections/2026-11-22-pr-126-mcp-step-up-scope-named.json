@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Name the scope a 403's challenge asks for in pocketd's refusal, when it is scope tokens alone, few and short, holding no secret (challengeScope), never the raw header.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 9 (codex-cli 0.169.0) of head 219b5cd: [P2] Preserve the requested scope in step-up errors",
+  "promoted_to": "service/pig/mcp_round9_test.go"
+}

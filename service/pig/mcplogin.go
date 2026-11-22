@@ -89,9 +89,11 @@ func printableValue(s string) bool {
 }
 
 // MCPLogout drops what pocketd keeps for the server named name: its
-// headers and its sign-in. It says whether there was any.
+// headers and its sign-in. It says whether there was any. It reads the
+// credentials alone: a listings file it cannot read keeps no credential
+// on disk.
 func MCPLogout(dataDir, name string) (bool, error) {
-	store, err := openMCPStore(dataDir)
+	store, err := openMCPCredentials(dataDir)
 	if err != nil {
 		return false, err
 	}

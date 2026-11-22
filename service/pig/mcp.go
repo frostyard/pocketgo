@@ -672,6 +672,10 @@ func (c *mcpConn) registration(name string, tool mcpTool) *durable.ToolRegistrat
 	return &durable.ToolRegistration{
 		ToolSchema: mcpSchema(name, description, tool.InputSchema),
 		Replay:     durable.ReplayUnsafe,
+		// The result is bounded already (result), its notices within the
+		// bound: PiG's default limits, 50 KiB and 2,000 lines, would cut
+		// its tail, notices and all.
+		OutputLimits: &durable.ToolOutputLimits{MaxBytes: ptr(maxMCPOutput), MaxLines: ptr(maxMCPOutput + 1)},
 		Execute: func(ctx context.Context, args any, _ durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
 			return c.call(ctx, tool.Name, args), nil
 		},
@@ -917,10 +921,14 @@ func schemaType(v any) bool {
 	if !ok || len(list) == 0 {
 		return false
 	}
+	// Each name once, as JSON Schema wants a list of them.
+	seen := map[string]bool{}
 	for _, item := range list {
-		if name, ok := item.(string); !ok || !slices.Contains(schemaTypes, name) {
+		name, ok := item.(string)
+		if !ok || !slices.Contains(schemaTypes, name) || seen[name] {
 			return false
 		}
+		seen[name] = true
 	}
 	return true
 }
@@ -1041,14 +1049,11 @@ func (c *mcpConn) connect(ctx context.Context, list bool) (*mcp.Client, error) {
 }
 
 // dial makes attempt: the connection, and the listing of the server's
-// tools, within the server's timeout, under the hub's context.
+// tools, each request within the server's timeout, under the hub's
+// context (setupContext).
 func (c *mcpConn) dial(attempt *mcpAttempt) {
 	defer c.hub.work.Done()
-	parent := c.hub.ctx
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parent, c.server.Timeout)
+	ctx, cancel := c.setupContext()
 	defer cancel()
 	unpin := c.hub.store.pin()
 	defer unpin()
@@ -1074,6 +1079,20 @@ func (c *mcpConn) dial(attempt *mcpAttempt) {
 		c.setStateLocked("connected", nil)
 	}
 	close(attempt.done)
+}
+
+// setupContext is the context a connection is made under: the hub's,
+// which its close ends, with no deadline of its own. Each request of it
+// is bounded by the server's timeout alone, as the client's request
+// timeout and mcpClient bound it: one deadline for the initialize, a
+// refresh and every page would leave a server that answers each in time
+// never connected.
+func (c *mcpConn) setupContext() (context.Context, context.CancelFunc) {
+	parent := c.hub.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithCancel(parent)
 }
 
 // open connects to the server with what the store keeps for it.
@@ -1127,7 +1146,7 @@ func (c *mcpConn) list(ctx context.Context, client *mcp.Client) error {
 		if cursor != nil {
 			params = map[string]string{"cursor": *cursor}
 		}
-		raw, err := client.Request(ctx, "tools/list", params, mcp.RequestOptions{})
+		raw, err := client.Request(ctx, "tools/list", params, mcp.RequestOptions{TimeoutMs: int(c.server.Timeout / time.Millisecond)})
 		if err != nil {
 			return err
 		}
@@ -1323,7 +1342,13 @@ func (c *mcpConn) failure(err error) string {
 	case errors.Is(err, errMCPRefresh):
 		return "refused pocketd's sign-in, and pocketd could not refresh it now: try again later; if it goes on, the owner signs in again with pocketd mcp login " + name
 	case errors.Is(err, errMCPScope):
-		return "refused the call for a scope pocketd's sign-in lacks (HTTP 403): the owner adds it to the server's oauth scope in mcp.json and signs in again with pocketd mcp login " + name
+		var scoped *mcpScopeError
+		asks := ""
+		if errors.As(err, &scoped) && scoped.scope != "" {
+			asks = ", which asks for " + scoped.scope
+		}
+		return "refused the call for a scope pocketd's sign-in lacks (HTTP 403)" + asks +
+			": the owner adds it to the server's oauth scope in mcp.json and signs in again with pocketd mcp login " + name
 	case errors.Is(err, errMCPList):
 		return errMCPList.Error() + ": try again later"
 	case errors.Is(err, errMCPInsecure):
@@ -1476,14 +1501,18 @@ func holdsSecret(text string, secrets []string) bool {
 
 // result is a call's result for the model: its text and images, within
 // their bounds, an error result when the server says the call failed, no
-// secret in it. The notices pocketd adds count in the text's bound: the
-// mark of a cut text, and one notice of the images left out, both kept
-// room for before any text. A structured result is redacted before PiG
-// renders it as JSON, whose escapes a secret's spelling would not match.
+// secret in it. Its text blocks are one text, each after the last on a
+// line of its own, the newline counted, an empty one left out: a
+// provider joins blocks with newlines past any bound pocketd would count
+// otherwise. The notices pocketd adds count in the text's bound: the mark
+// of a cut text, and one notice of the images left out on a line of its
+// own, both kept room for before any text. A structured result is
+// redacted before PiG renders it as JSON, whose escapes a secret's
+// spelling would not match.
 func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult {
 	const imagesNotice = "[pocketd left out %d images: a result takes at most %d, of at most %d bytes each, png, jpeg, gif or webp]"
 	cutMark := fmt.Sprintf("\n[pocketd cut the rest: the result is longer than %d bytes]", maxMCPOutput)
-	budget := maxMCPOutput - len(fmt.Sprintf(imagesNotice, 9_999_999_999, maxMCPImages, maxMCPImageBytes)) - len(cutMark)
+	budget := maxMCPOutput - len("\n") - len(fmt.Sprintf(imagesNotice, 9_999_999_999, maxMCPImages, maxMCPImageBytes)) - len(cutMark)
 	secrets := c.hub.store.secrets()
 	// PiG renders a structured result with no content blocks as indented
 	// JSON, whole, before any bound: pocketd writes it compact, redacted,
@@ -1494,7 +1523,8 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 			blocks = append(blocks, mcp.LLMContent{Type: mcp.LLMContentTypeText, Text: string(structured)})
 		}
 	}
-	var out []ai.ToolResultMessageContent
+	var images []ai.ToolResultMessageContent
+	var text strings.Builder
 	tried, dropped, done := 0, 0, false
 	for _, block := range blocks {
 		if block.Type == mcp.LLMContentTypeImage {
@@ -1511,22 +1541,33 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 				dropped++
 				continue
 			}
-			out = append(out, image)
-			continue
-		}
-		if done {
+			images = append(images, image)
 			continue
 		}
 		s := redactText(block.Text, secrets)
+		if done || s == "" {
+			continue
+		}
+		if text.Len() > 0 {
+			s = "\n" + s
+		}
 		if len(s) > budget {
 			s, done = cut(s, budget)+cutMark, true
 		}
 		budget = max(0, budget-len(s))
-		out = append(out, ai.TextContent{Text: s})
+		text.WriteString(s)
 	}
 	if dropped > 0 {
-		out = append(out, ai.TextContent{Text: fmt.Sprintf(imagesNotice, dropped, maxMCPImages, maxMCPImageBytes)})
+		if text.Len() > 0 {
+			text.WriteString("\n")
+		}
+		fmt.Fprintf(&text, imagesNotice, dropped, maxMCPImages, maxMCPImageBytes)
 	}
+	var out []ai.ToolResultMessageContent
+	if text.Len() > 0 {
+		out = append(out, ai.TextContent{Text: text.String()})
+	}
+	out = append(out, images...)
 	isError := result.IsError != nil && *result.IsError
 	if len(out) == 0 {
 		if isError {
@@ -1558,6 +1599,39 @@ type serveAuth struct {
 	provider refreshOnly
 }
 
+// mcpScopeError is a call the server refused for scope, which pocketd's
+// sign-in lacks: it is an errMCPScope, and scope ("" for none it may say)
+// is challengeScope's.
+type mcpScopeError struct{ scope string }
+
+func (e *mcpScopeError) Error() string { return errMCPScope.Error() }
+func (e *mcpScopeError) Unwrap() error { return errMCPScope }
+
+// The bounds of a scope pocketd says a server asked for (challengeScope).
+const (
+	maxChallengeScopes    = 8
+	maxChallengeScopeText = 64
+)
+
+// challengeScope is the scope a 403's challenge asks for, as pocketd may
+// say it: at most maxChallengeScopes scope tokens (RFC 6749, section 3.3:
+// printable ASCII but a space, a quote and a backslash) of at most
+// maxChallengeScopeText bytes each, none holding a secret the store
+// keeps; anything else is "", since the header is the server's text.
+func challengeScope(scope string, secrets []string) string {
+	tokens := strings.Fields(scope)
+	if len(tokens) == 0 || len(tokens) > maxChallengeScopes {
+		return ""
+	}
+	for _, token := range tokens {
+		if len(token) > maxChallengeScopeText || holdsSecret(token, secrets) ||
+			strings.ContainsFunc(token, func(r rune) bool { return r <= ' ' || r > '~' || r == '"' || r == '\\' }) {
+			return ""
+		}
+	}
+	return strings.Join(tokens, " ")
+}
+
 // authFlight is one refresh, which every request refused meanwhile waits
 // for.
 type authFlight struct {
@@ -1575,7 +1649,10 @@ func (a *serveAuth) Token(ctx context.Context) (string, error) {
 
 func (a *serveAuth) OnUnauthorized(ctx context.Context, unauthorized mcp.UnauthorizedContext) error {
 	if unauthorized.Response != nil && unauthorized.Response.StatusCode == http.StatusForbidden {
-		return errMCPScope
+		// The scope it asks for, as pocketd may say it: a call may want
+		// one that no sign-in's probe discovers.
+		asked := oauth.ParseWWWAuthenticate(strings.Join(unauthorized.Response.Header.Values("Www-Authenticate"), ", "))
+		return &mcpScopeError{scope: challengeScope(asked.Scope, a.conn.hub.store.secrets())}
 	}
 	challenge := oauth.ParseWWWAuthenticate(strings.Join(unauthorized.Response.Header.Values("Www-Authenticate"), ", "))
 	a.conn.authMu.Lock()
