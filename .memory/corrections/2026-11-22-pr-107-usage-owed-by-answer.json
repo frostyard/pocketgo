@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The desktop fetches the usage totals again at the session event that follows an answer's entry, whatever summary a session list fetched meanwhile brought: comparing summaries alone misses an answer a list brought first.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P2] Invalidate usage independently of fetched session summaries",
+  "promoted_to": "desktop/internal/state/usage_test.go"
+}

@@ -145,7 +145,7 @@ type Store struct {
 	loading map[string]bool
 	// fetching counts the fetches in flight of what the client shows, by
 	// list ("sessions", "approvals", "asks", "lessons", "threads", "pulls",
-	// "plans", "proposals", "schedules", "profiles", "terminals") or open
+	// "plans", "proposals", "schedules", "profiles", "terminals", "usage") or open
 	// session (detailKey).
 	fetching map[string]int
 	// schedulesDirty says a schedules event came while their fetch ran: one
@@ -154,6 +154,12 @@ type Store struct {
 	// schedulesEvents counts the schedules events: a fetch begun before
 	// the last one answers with a list older than it.
 	schedulesEvents int
+	// usageDirty says a session's usage changed while the usage report's
+	// fetch ran: one more fetch follows it (refetchUsage); usageEvents
+	// counts those changes: a fetch begun before the last one answers with
+	// totals older than it.
+	usageDirty  bool
+	usageEvents int
 
 	ids requestIDs
 	// abortRuns holds the sessions whose abort keeps its request id (sent
@@ -335,6 +341,7 @@ func (s *Store) resetActions() {
 	s.loading = map[string]bool{}
 	s.fetching = map[string]int{}
 	s.schedulesDirty = false
+	s.usageDirty = false
 }
 
 func (s *Store) log(level Level, format string, args ...any) {
@@ -602,7 +609,8 @@ func (s *Store) apply(ev proto.Event) {
 	if ev.Type == proto.EventEntry && ev.Entry != nil {
 		s.notes.entry(*ev.Entry)
 	}
-	switch s.Data.Apply(ev) {
+	refetch := s.Data.Apply(ev)
+	switch refetch {
 	case RefetchAll:
 		s.log(LevelWarn, "pocketd no longer has the events this client missed; loading everything again")
 		// An ask that left the open list meanwhile has no event to say how:
@@ -616,6 +624,11 @@ func (s *Store) apply(ev proto.Event) {
 		s.rereadRuns()
 	case RefetchSchedules:
 		s.refetchSchedules()
+	case RefetchUsage:
+		s.refetchUsage()
+	}
+	if s.Data.takeUsageMoved() && refetch != RefetchUsage && refetch != RefetchAll {
+		s.refetchUsage()
 	}
 	s.settleAborts()
 	s.settleModels()
@@ -813,6 +826,11 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.TerminalsStatus(); status != ListLoaded || s.fetching["terminals"] > 0 {
 		s.loadTerminals()
 	}
+	// The usage report also when its day ended while the stream was away:
+	// the ask armed for the day's end may have slept through it.
+	if status, _ := s.Data.UsageStatus(); status != ListLoaded || s.fetching["usage"] > 0 || s.usageStale() {
+		s.loadUsage()
+	}
 	if o := s.Data.Open(); o != nil && (o.Err != "" || !o.Loaded || s.fetching[detailKey(o.ID)] > 0) {
 		s.loadDetail(o.ID)
 	}
@@ -825,8 +843,9 @@ func (s *Store) retryFailed() {
 // Refresh fetches again what the client shows: the sessions, the pending
 // approvals, the open asks, the lessons, the threads, their pull requests,
 // the plans, the board's proposals and the schedules, the profiles, the
-// owner's terminals, the open session and the models the composer's chip
-// offers, and the service's hello when it has none yet.
+// owner's terminals, the usage report (ADR-0052), the open session and the
+// models the composer's chip offers, and the service's hello when it has
+// none yet.
 func (s *Store) Refresh() {
 	s.loadSessions()
 	s.loadApprovals()
@@ -840,6 +859,7 @@ func (s *Store) Refresh() {
 	// The board and the Inbox name agents by their profiles.
 	s.LoadProfiles()
 	s.loadTerminals()
+	s.loadUsage()
 	if id := s.Data.OpenID(); id != 0 {
 		s.loadDetail(id)
 	}
@@ -887,6 +907,11 @@ func (s *Store) doWithin(what string, timeout time.Duration, fn func(ctx context
 				done(err)
 			}
 			if gen == s.gen {
+				// A session's model the answer brought moves the totals
+				// of its answers that name no model (ADR-0052).
+				if s.Data.takeUsageMoved() {
+					s.refetchUsage()
+				}
 				s.changed(true)
 			}
 		})

@@ -609,7 +609,29 @@ func (a *App) saveGitHubAgain() {
 	})
 }
 
+// statusEnd is the status bar's end: what the sessions used, then the
+// service's version and the device's name.
 func (a *App) statusEnd() []frostui.StatusItem {
+	return append(a.usageStatus(), a.serviceStatus()...)
+}
+
+// usageStatus is today's usage and the last 7 days', each by provider in
+// its tooltip (ADR-0052), once the week used something.
+func (a *App) usageStatus() []frostui.StatusItem {
+	today, week, shown := a.st.UsageTotals()
+	if !shown {
+		return nil
+	}
+	zone := a.st.Data.UsageReport().Zone
+	return []frostui.StatusItem{
+		{Icon: "pocket-usage", Text: today.Line("Today"), Progress: -1, Tooltip: today.Tooltip("Today", zone)},
+		{Text: week.Line(itoa(state.WeekDays) + " days"), Progress: -1, Tooltip: week.Tooltip("The last "+itoa(state.WeekDays)+" days", zone)},
+	}
+}
+
+// serviceStatus is the service's version and the device's name, once the
+// service said them.
+func (a *App) serviceStatus() []frostui.StatusItem {
 	var items []frostui.StatusItem
 	if h := a.st.Hello(); h != nil {
 		items = append(items, frostui.StatusItem{Text: "pocketd " + h.Server + " · " + h.Device, Progress: -1,

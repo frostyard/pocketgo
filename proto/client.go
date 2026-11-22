@@ -316,6 +316,16 @@ func (c *Client) Search(ctx context.Context, q string, limit int) (SearchResults
 	return out, c.do(ctx, http.MethodGet, PathSearch+"?"+query.Encode(), nil, &out)
 }
 
+// Usage sums the sessions' answers' usage by day, in the service's time
+// zone, and by model, from day since (proto.UsageDayLayout) through today
+// (ADR-0052).
+func (c *Client) Usage(ctx context.Context, since string) (UsageReport, error) {
+	q := url.Values{}
+	q.Set("since", since)
+	var out UsageReport
+	return out, c.do(ctx, http.MethodGet, PathUsage+"?"+q.Encode(), nil, &out)
+}
+
 // Gathers lists the gathers that run, and those that ended in the last
 // seven days, the newest first (ADR-0033).
 func (c *Client) Gathers(ctx context.Context) ([]Gather, error) {

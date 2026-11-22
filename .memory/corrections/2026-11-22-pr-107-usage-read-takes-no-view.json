@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Engine.UsageEntries reads only the entries after the one asked, with no view of the session: a view reads its newest records, images included, on every report though nothing was written.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P2] Avoid rereading the latest transcript records on cache hits",
+  "promoted_to": "service/pig/usage_test.go"
+}

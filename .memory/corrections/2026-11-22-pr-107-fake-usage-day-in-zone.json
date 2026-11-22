@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The fake pocketd's usage report takes its today from its clock in the report's zone and ends it at the next midnight there, as pocketd does.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 1 (codex-cli 0.169.0) of head e536e40: [P3] Derive the fake report's day end from its date and zone",
+  "promoted_to": "desktop/internal/pocketdtest/usage_test.go"
+}

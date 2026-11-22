@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "The fake pocketd ends a usage report's day at the next day's first instant in its zone, as pocketd's dayStart does when the clocks skip midnight.",
+  "evidence": "frostyard/pocketgo#107, Codex CLI review round 2 (codex-cli 0.169.0) of head 123190d: [P3] Match pocketd's skipped-midnight boundary in the usage fake",
+  "promoted_to": "desktop/internal/pocketdtest/usage_test.go"
+}
