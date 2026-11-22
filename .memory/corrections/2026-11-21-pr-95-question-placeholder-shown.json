@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Every field the service checks, stores and sends for the owner to read is shown by the desktop: a tool argument meant for the owner, such as a question's placeholder, is never validated and then dropped.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 1 (codex-cli 0.169.0) of head d8f2788: [P3] Show the question's supplied free-text hint",
+  "promoted_to": "desktop/internal/state/question_test.go"
+}

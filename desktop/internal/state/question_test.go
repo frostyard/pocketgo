@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 	"github.com/frostyard/pocketgo/proto"
@@ -384,6 +385,170 @@ func TestASettledQuestionStaysGoneOverAStaleList(t *testing.T) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// questionRequests are every request a store sent to answer a question
+// of session 5 or to message it.
+func questionRequests(h *harness) []pocketdtest.Request {
+	var out []pocketdtest.Request
+	for _, r := range h.srv.Requests() {
+		if r.Method == http.MethodPost && (strings.HasPrefix(r.Path, "/v1/sessions/5/question/") || r.Path == proto.Path(proto.PathMessages, 5)) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// The words the owner writes for a question are that question's alone
+// (Codex review of #95, round 1): when it settles while they are written,
+// on another device, by its time running out, or as the session's next
+// question comes, they go nowhere, neither as a message nor to the next
+// question, and are kept, with why, until the owner dismisses them. A
+// send of them that comes late is refused here, with nothing sent.
+func TestAnAnswerDraftStaysWithItsQuestion(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// settle settles q-a on pocketd, and next is the question the
+		// session's event brings in its place, if any.
+		settle func(q proto.Question) proto.Question
+		next   *proto.Question
+	}{
+		{"answered on another device", func(q proto.Question) proto.Question {
+			q.State, q.Answer, q.SettledBy = proto.QuestionAnswered, "Go", "phone"
+			return q
+		}, nil},
+		{"timed out", func(q proto.Question) proto.Question {
+			q.State, q.Reason, q.SettledBy = proto.QuestionSkipped, proto.SkippedTimeout, "pocketd"
+			return q
+		}, nil},
+		{"a new question arrives", func(q proto.Question) proto.Question {
+			q.State, q.Reason, q.SettledBy = proto.QuestionSkipped, proto.SkippedTimeout, "pocketd"
+			return q
+		}, ptrTo(question("q-b", 5, "And the docs?", time.Minute))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			q := question("q-a", 5, "Which goes first?", 0, "Go", "Snow")
+			h.srv.AddSession(waitingOn(5, q))
+			h.connect(t)
+			h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.Question(5); return ok })
+			*h.store.QuestionDraft(q) = "Snow first, it blocks boots."
+			// pocketd settles it, and its session's event comes.
+			h.srv.PutQuestion(tc.settle(q))
+			summary, _ := h.srv.Session(5)
+			s := summary.Session
+			if tc.next != nil {
+				h.srv.PutQuestion(*tc.next)
+				s.Question, s.State = tc.next, proto.SessionWaiting
+			}
+			h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s})
+			h.loop.RunUntil(t, func() bool { cur, ok := h.store.Data.Question(5); return !ok || cur.ID != "q-a" })
+			r, kept := h.store.QuestionRefusal(5)
+			if !kept || r.Answer != "Snow first, it blocks boots." || r.Why != QuestionGone {
+				t.Fatalf("the words written for the settled question: %+v, %v", r, kept)
+			}
+			if _, left := h.store.questionDrafts["q-a"]; left {
+				t.Error("the settled question's draft stays")
+			}
+			c := h.store.Data.ComposerOf(5)
+			switch {
+			case tc.next == nil && c.Answers():
+				t.Errorf("the composer answers %+v", c.Question)
+			case tc.next != nil && (!c.Answers() || c.Question.ID != "q-b" || *h.store.QuestionDraft(*c.Question) != ""):
+				t.Errorf("the next question's composer %+v", c)
+			}
+			// The words sent late, as by a key pressed as the event came:
+			// refused here, and nothing goes.
+			var done []error
+			h.store.AnswerQuestion(q, "Snow first, it blocks boots.", nil, func(err error) { done = append(done, err) })
+			h.settle(t)
+			if len(done) != 1 || done[0] == nil {
+				t.Errorf("a late answer to the settled question: %v", done)
+			}
+			if reqs := questionRequests(h); len(reqs) != 0 {
+				t.Errorf("the words went: %+v", reqs)
+			}
+			if r, _ := h.store.QuestionRefusal(5); r.Answer != "Snow first, it blocks boots." {
+				t.Errorf("the words kept twice or lost: %q", r.Answer)
+			}
+			h.store.DismissQuestionRefusal(5)
+			if _, kept := h.store.QuestionRefusal(5); kept {
+				t.Error("dismissed, the words stay")
+			}
+		})
+	}
+}
+
+// The session's event of an answer's settlement may come before the
+// answer's own reply: the words on their way are neither kept nor lost
+// meanwhile, and once the reply says pocketd took them, nothing is kept
+// (Codex review of #95, round 1).
+func TestASettlementAheadOfTheAnswersReplyKeepsNothing(t *testing.T) {
+	h := newHarness(t)
+	q := question("q-a", 5, "Which goes first?", 0)
+	h.srv.AddSession(waitingOn(5, q))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.Question(5); return ok })
+	*h.store.QuestionDraft(q) = "Snow first."
+	path := proto.QuestionPath(5, "q-a")
+	release := h.srv.HoldAnswerOnce(http.MethodPost, path)
+	h.store.AnswerQuestion(q, "Snow first.", nil, func(error) {})
+	// pocketd took it, and its session's event is here ahead of the reply.
+	h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.Question(5); return !ok && h.srv.Holding(http.MethodPost, path) })
+	if r, kept := h.store.QuestionRefusal(5); kept {
+		t.Fatalf("the words on their way are kept as refused: %+v", r)
+	}
+	if _, left := h.store.questionDrafts["q-a"]; !left {
+		t.Fatal("the words on their way left before the reply")
+	}
+	release()
+	h.loop.RunUntil(t, func() bool { return !h.store.AnsweringQuestion("q-a").Busy && h.store.InFlight() == 0 })
+	if r, kept := h.store.QuestionRefusal(5); kept {
+		t.Errorf("the answer that went is kept as refused: %+v", r)
+	}
+	if _, left := h.store.questionDrafts["q-a"]; left {
+		t.Error("the answer that went stays in its draft")
+	}
+	if got, _ := h.srv.Question("q-a"); got.Answer != "Snow first." {
+		t.Errorf("pocketd's question %+v", got)
+	}
+}
+
+// The agent's hint for a free answer shows beside the cue that the text
+// answers the question, on the composer and the card; the cue alone shows
+// without one (Codex review of #95, round 1).
+func TestTheQuestionsHintShows(t *testing.T) {
+	q := question("q-a", 2, "When can Vera pair with you?", 0)
+	q.Placeholder = "  a day and a time, e.g. Tuesday 10:00.\nAnything else"
+	c := Composer{Question: &q}
+	if got := c.Hint(false); got != "Answer the question: a day and a time, e.g. Tuesday 10:00. Enter sends, Shift+Enter starts a new line." {
+		t.Errorf("a desktop's hint %q", got)
+	}
+	if got := c.Hint(true); got != "Answer: a day and a time, e.g. Tuesday 10:00." {
+		t.Errorf("a compact window's hint %q", got)
+	}
+	if got := QuestionCue(q, pocketdtest.Now); got != "Type your answer in the message box below: a day and a time, e.g. Tuesday 10:00. Skipped today 22:30 if no answer comes." {
+		t.Errorf("the card's cue %q", got)
+	}
+	q.Placeholder = "a day and a time"
+	if got := c.Hint(false); got != "Answer the question: a day and a time. Enter sends, Shift+Enter starts a new line." {
+		t.Errorf("a desktop's hint %q", got)
+	}
+	q.Options = []string{"Today", "Tomorrow"}
+	if got := QuestionCue(q, pocketdtest.Now); got != "Or type another answer in the message box below: a day and a time. Skipped today 22:30 if no answer comes." {
+		t.Errorf("the card's cue with options %q", got)
+	}
+	q.Placeholder = "  "
+	if c.Hint(false) != AnswerHint || c.Hint(true) != AnswerHintCompact {
+		t.Errorf("with no hint: %q, %q", c.Hint(false), c.Hint(true))
+	}
+	if got := QuestionCue(q, pocketdtest.Now); got != "Or type another answer in the message box below. Skipped today 22:30 if no answer comes." {
+		t.Errorf("the card's cue with no hint %q", got)
+	}
+	q.Placeholder = strings.Repeat("x", proto.MaxQuestionPlaceholder+10)
+	if got := QuestionHint(q); utf8.RuneCountInString(got) != proto.MaxQuestionPlaceholder {
+		t.Errorf("a long hint has %d characters", utf8.RuneCountInString(got))
+	}
+}
 
 // An ask and a question have a noun each, everywhere the owner reads them
 // (ADR-0047): the Inbox's kind of a thread's asks says ask, no kind says

@@ -130,8 +130,11 @@ func TestAQuestionInItsSessionSnapshot(t *testing.T) {
 
 	// The composer's words answer the question, with no option; the draft
 	// clears once pocketd took it.
-	x.putQuestion(t, questionOf("q-why", "Why the snow fix first?"))
-	*x.a.composer.draft(1) = "Its users cannot boot."
+	why := questionOf("q-why", "Why the snow fix first?")
+	x.putQuestion(t, why)
+	// The field edits the question's own draft, not the message draft
+	// (Codex review of #95, round 1).
+	*x.a.st.QuestionDraft(why) = "Its users cannot boot."
 	x.settle()
 	x.click(t, "Send Answer")
 	x.until(t, func() bool { _, waits := x.a.st.Data.Question(1); return !waits && x.a.st.InFlight() == 0 })
@@ -141,8 +144,8 @@ func TestAQuestionInItsSessionSnapshot(t *testing.T) {
 	if n := len(x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathMessages, 1))); n != 0 {
 		t.Errorf("the answer went as %d messages too", n)
 	}
-	if got := *x.a.composer.draft(1); got != "" {
-		t.Errorf("the draft is still %q", got)
+	if _, kept := x.a.st.QuestionRefusal(1); kept || *x.a.composer.draft(1) != "" {
+		t.Errorf("the answer that went is kept, or reached the message draft: %q", *x.a.composer.draft(1))
 	}
 
 	// Skip goes on without an answer.
@@ -155,8 +158,8 @@ func TestAQuestionInItsSessionSnapshot(t *testing.T) {
 }
 
 // An answer pocketd refused, as one another device gave first, says why
-// above the composer, keeps the owner's words in the field, and goes with
-// Dismiss.
+// above the composer, with the owner's words, and goes with Dismiss; the
+// words never reach the message draft.
 func TestAQuestionAnsweredOnAnotherDeviceSaysSo(t *testing.T) {
 	x := newTestApp(t)
 	x.seedTeam()
@@ -167,16 +170,16 @@ func TestAQuestionAnsweredOnAnotherDeviceSaysSo(t *testing.T) {
 	elsewhere := q
 	elsewhere.State, elsewhere.Answer, elsewhere.SettledBy = proto.QuestionAnswered, "Go", "phone"
 	x.srv.PutQuestion(elsewhere)
-	*x.a.composer.draft(1) = "Snow, please."
+	*x.a.st.QuestionDraft(q) = "Snow, please."
 	x.settle()
 	x.click(t, "Send Answer")
 	x.until(t, func() bool { _, refused := x.a.st.QuestionRefusal(1); return refused && x.a.st.InFlight() == 0 })
 	text := strings.Join(x.tt.Texts(), " ")
-	if !strings.Contains(text, "Your answer was not taken: the question is already answered (on phone).") {
-		t.Errorf("no refusal in %q", x.tt.Texts())
+	if !strings.Contains(text, "Your answer was not taken: the question is already answered (on phone).") || !x.tt.HasText("Snow, please.") {
+		t.Errorf("no refusal with the owner's words in %q", x.tt.Texts())
 	}
-	if got := *x.a.composer.draft(1); got != "Snow, please." {
-		t.Errorf("the refused answer's draft is %q", got)
+	if got := *x.a.composer.draft(1); got != "" {
+		t.Errorf("the refused answer reached the message draft: %q", got)
 	}
 	x.click(t, "Dismiss")
 	if _, refused := x.a.st.QuestionRefusal(1); refused {
@@ -255,6 +258,53 @@ func TestAnAskIsCalledAnAsk(t *testing.T) {
 		t.Errorf("no group labelled Ask A1 in %q", y.tt.Texts())
 	}
 	y.noQuestion(t)
+}
+
+// An Inbox whose sessions failed to load says so, with Try Again in
+// place: a session's question may wait there unseen, and it says so of a
+// session, never of an ask (Codex review of #95, round 1).
+func TestAnInboxWhoseSessionsFailedToLoadSaysSo(t *testing.T) {
+	x := newTestApp(t)
+	x.srv.AddProfile(proto.Profile{ID: "odrade", Name: "Odrade", Role: "supervisor", Home: "/home/team/agents/odrade"})
+	x.seedQuestion(questionOf("q-week", "Which goes first for Vera this week?", "Go", "Snow"))
+	x.srv.FailOnce(http.MethodGet, proto.PathSessions, http.StatusBadGateway)
+	x.connect(t)
+	const problem = "Loading the sessions failed: internal: made to fail. A session may wait for your answer to its question that this list does not show."
+	if !x.tt.HasText(problem) {
+		t.Fatalf("no sessions' problem in the Inbox: %q", x.tt.Texts())
+	}
+	if strings.Contains(strings.ToLower(problem), "ask") {
+		t.Errorf("the sessions' problem calls a question an ask: %q", problem)
+	}
+	if x.tt.HasText("Nothing waits for you") {
+		t.Error("the Inbox says nothing waits though its sessions did not load")
+	}
+	// Its own Try Again, in the Inbox, under the problem.
+	field, ok := x.tt.Find(problem)
+	if !ok {
+		t.Fatal("the problem is not drawn")
+	}
+	var retry *ui.AccessInfo
+	for _, n := range x.tt.AccessAll() {
+		// The one in the problem's row, right of its words: the sidebar
+		// has a Try Again of its own.
+		if n.Role == ui.RoleButton && n.Name == "Try Again" && n.Bounds.X > field.X && n.Bounds.Y <= field.Y+field.H && n.Bounds.Y+n.Bounds.H >= field.Y {
+			retry = &n
+		}
+	}
+	if retry == nil {
+		t.Fatalf("no Try Again beside the Inbox's sessions problem in %q", x.tt.Texts())
+	}
+	x.tt.ClickAt(retry.Bounds.X+retry.Bounds.W/2, retry.Bounds.Y+retry.Bounds.H/2)
+	x.settle()
+	x.until(t, func() bool {
+		status, _ := x.a.st.Data.SessionsStatus()
+		return status == state.ListLoaded && x.a.st.InFlight() == 0
+	})
+	x.hasAll(t, "Odrade waits for your answer", "1 session waits for you")
+	if x.tt.HasText(problem) {
+		t.Error("the problem stays once the sessions loaded")
+	}
 }
 
 // On an iPhone (ADR-0044) the Sessions tab's row says the question waits,

@@ -154,6 +154,9 @@ type Store struct {
 	// (QuestionRefusal).
 	questionAnswers  map[string]*Pending
 	questionRefusals map[int64]QuestionRefusal
+	// questionDrafts are the owner's answers being written to questions,
+	// by question (QuestionDraft).
+	questionDrafts map[string]*questionDraft
 	// answerRefusals are the owner's answers pocketd refused because their
 	// ask no longer waits, by ask (AnswerRefusals).
 	answerRefusals map[int64]AnswerRefusal
@@ -254,6 +257,7 @@ func (s *Store) resetActions() {
 	s.answers = map[int64]*Pending{}
 	s.questionAnswers = map[string]*Pending{}
 	s.questionRefusals = map[int64]QuestionRefusal{}
+	s.questionDrafts = map[string]*questionDraft{}
 	s.answerRefusals = map[int64]AnswerRefusal{}
 	s.answerTexts = map[int64]string{}
 	s.answerOutcomes = map[int64]proto.AskState{}
@@ -1255,9 +1259,6 @@ func (s *Store) Send(id int64, text string, done func(error)) {
 		done(errors.New(why))
 		return
 	}
-	// A message sent says the owner moved on from an answer pocketd
-	// refused (QuestionRefusal).
-	delete(s.questionRefusals, id)
 	sent := slices.Clone(s.attachments[id])
 	var uploads []int64
 	for _, a := range sent {

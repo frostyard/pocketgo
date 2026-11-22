@@ -33,7 +33,7 @@ func (a *App) inboxPane(c *ui.Context) {
 	// A session's question is no ask: a line that opens its session, never
 	// a card among the asks (ADR-0047).
 	questions := a.st.Data.QuestionsWaiting()
-	sessionsStatus, _ := a.st.Data.SessionsStatus()
+	sessionsStatus, sessionsProblem := a.st.Data.SessionsStatus()
 	ui.Scroll(c).Grow(1).Fill().Background(t.Background).Children(func() {
 		ui.Column(c).AlignItems(ui.Center).Padding(frostui.SpaceL, a.gutter()).Children(func() {
 			ui.Column(c).MaxWidth(860).FillWidth().Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
@@ -51,6 +51,11 @@ func (a *App) inboxPane(c *ui.Context) {
 				}
 				if status == state.ListFailed {
 					a.listProblem(c, "Loading the approvals failed: "+problem+". Calls may wait for you that this list does not show.")
+				}
+				// The sessions bring their questions (Codex review of #95,
+				// round 1).
+				if sessionsStatus == state.ListFailed {
+					a.listProblem(c, "Loading the sessions failed: "+sessionsProblem+". A session may wait for your answer to its question that this list does not show.")
 				}
 				none := len(approvals) == 0 && len(asks) == 0 && len(lessons) == 0 && len(pulls) == 0 && len(plans) == 0 && len(refusals) == 0 &&
 					len(withdrawn) == 0 && len(questions) == 0
