@@ -11,8 +11,9 @@ import (
 )
 
 // TeamGitHub is team_github (ADR-0036): a GET of GitHub's REST API, from a
-// gather's proposal session, a consult's session or a plan's lead in its
-// plan thread alone, which roleTools offers it and this checks again.
+// gather's proposal session, a consult's session, a plan's lead in its
+// plan thread or a cross-review pocketd started (ADR-0057) alone, which
+// roleTools offers it and this checks again.
 // pocketd builds every argument of gh (github.Get) and runs it through
 // Engine.GH, in the sandbox with the service user's sign-in, as it reads
 // pull requests (ADR-0016); the read takes at most team.GitHubReadTime,
@@ -25,7 +26,7 @@ func (s *Server) TeamGitHub(ctx context.Context, call TeamCall, r team.GitHubRea
 	if ok, err := s.readsGitHub(ctx, call.Session); err != nil {
 		return "", err
 	} else if !ok {
-		return "", errors.New("team_github is for a gather's proposal session, a consult or a plan's lead, and this session is none")
+		return "", errors.New("team_github is for a gather's proposal session, a consult, a plan's lead or a cross-review, and this session is none")
 	}
 	// The call's own context bounds the read: an abort stops gh. Tests see
 	// the bound it asks for (Codex review of #61, round 1).
@@ -43,8 +44,10 @@ func (s *Server) TeamGitHub(ctx context.Context, call TeamCall, r team.GitHubRea
 
 // readsGitHub says whether session is one roleTools gives team_github, by
 // its records alone: a gather's ask's session, a consult's, or the
-// specialist session of a plan's own thread. The state of its ask, consult
-// or plan does not matter: a read writes nothing.
+// specialist session of a plan's own thread or of a review thread pocketd
+// started (ADR-0057), never another thread's, the author's of the pull
+// request under review included. The state of its ask, consult, plan or
+// review does not matter: a read writes nothing.
 func (s *Server) readsGitHub(ctx context.Context, session int64) (bool, error) {
 	if _, err := s.store.GatherAskOfSession(ctx, session); err == nil {
 		return true, nil
@@ -63,5 +66,5 @@ func (s *Server) readsGitHub(ctx context.Context, session int64) (bool, error) {
 	case err != nil:
 		return false, err
 	}
-	return thread.IsPlanThread(), nil
+	return thread.IsPlanThread() || thread.ReviewPull != 0, nil
 }

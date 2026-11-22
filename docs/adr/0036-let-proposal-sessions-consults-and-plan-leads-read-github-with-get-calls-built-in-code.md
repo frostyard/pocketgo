@@ -1,6 +1,6 @@
 # 0036 — Let proposal sessions, consults and plan leads read GitHub with GET calls built in code
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 1's callers amended by [ADR-0057](0057-let-a-cross-review-read-github-with-get-calls-for-what-a-pin-bump-brings-in.md), which gives a cross-review `team_github` with the same rules
 - **Date:** 2026-11-21
 
 ## Context
