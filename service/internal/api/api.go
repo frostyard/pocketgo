@@ -611,6 +611,9 @@ type Server struct {
 	// by profile ("" for all); sessionMu guards mcpRetries.
 	mcpTimer   func(d time.Duration, f func()) (cancel func())
 	mcpRetries map[string]mcpRetry
+	// mcpRetryNo numbers the retries set (mcpRetry.id); sessionMu guards
+	// it.
+	mcpRetryNo uint64
 	// mcpPassNo numbers the MCP tools' passes and new sessions' writes, in
 	// the order they take mcpMu, which guards it.
 	mcpPassNo uint64

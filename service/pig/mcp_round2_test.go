@@ -213,6 +213,10 @@ func TestAListingWhoseWriteFailedIsWrittenAgain(t *testing.T) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// listOnce fenced its store as it ended, as a command's does.
+	if store, err = openMCPStore(dir); err != nil {
+		t.Fatal(err)
+	}
 	h := &mcpHub{store: store, log: discardLog(), conns: map[string]*mcpConn{"notes": {server: server}}, servers: map[string][]string{},
 		tools: map[string][]mcpTool{}, unkept: map[string]error{}}
 	h.listed("notes", []mcpTool{{Name: "search"}})

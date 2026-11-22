@@ -76,6 +76,9 @@ type fakeMCP struct {
 	// hold, when set, keeps every initialize waiting until it is closed,
 	// after it says so on arrived.
 	hold, arrived chan struct{}
+	// holdToken, when set, keeps every token request waiting until it is
+	// closed, after it says so on arrived.
+	holdToken chan struct{}
 	// perPage, when set, makes tools/list answer pages of that many tools,
 	// each with a next cursor, and pages counts them.
 	perPage, pages int
@@ -97,7 +100,7 @@ func newFakeMCP(t *testing.T) *fakeMCP {
 
 func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
 	f.mu.Lock()
-	hold, arrived := f.hold, f.arrived
+	hold, arrived, holdToken := f.hold, f.arrived, f.holdToken
 	f.mu.Unlock()
 	if hold != nil && r.Body != nil {
 		body, _ := io.ReadAll(r.Body)
@@ -106,6 +109,10 @@ func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
 			arrived <- struct{}{}
 			<-hold
 		}
+	}
+	if holdToken != nil && r.URL.String() == authURL+"/token" {
+		arrived <- struct{}{}
+		<-holdToken
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

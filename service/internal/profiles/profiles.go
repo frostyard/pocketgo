@@ -204,6 +204,53 @@ func (f Folder) Load() ([]Profile, []Problem, error) {
 	return Load(f.Dir, f.Home)
 }
 
+// LoadPinned reads the folder's profiles as Load does, but each through
+// one handle of the folder, checked against the one pocketd pinned at
+// start (openRoot): a folder put at its name after the check is never
+// read, so what pocketd takes from them (their MCP servers, ADR-0063)
+// comes from the folder it protects, as mcp.json does.
+func (f Folder) LoadPinned() ([]Profile, []Problem, error) {
+	root, err := f.openRoot()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = root.Close() }()
+	dir, err := root.Open(".")
+	if err != nil {
+		return nil, nil, err
+	}
+	entries, err := dir.ReadDir(-1)
+	_ = dir.Close()
+	if err != nil {
+		return nil, nil, err
+	}
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	var profiles []Profile
+	var problems []Problem
+	for _, entry := range entries {
+		id, ok := strings.CutSuffix(entry.Name(), ".md")
+		if !ok || !idPattern.MatchString(id) || entry.IsDir() {
+			continue
+		}
+		file, err := openInRoot(root, entry.Name())
+		var data []byte
+		if err == nil {
+			data, err = readOpened(file)
+		}
+		if err != nil {
+			problems = append(problems, Problem{ID: id, Err: err.Error()})
+			continue
+		}
+		p, err := Parse(id, data, f.Home)
+		if err != nil {
+			problems = append(problems, Problem{ID: id, Err: err.Error()})
+			continue
+		}
+		profiles = append(profiles, p)
+	}
+	return profiles, problems, nil
+}
+
 // Find reads the folder's profile id.
 func (f Folder) Find(id string) (Profile, error) {
 	if err := f.check(); err != nil {

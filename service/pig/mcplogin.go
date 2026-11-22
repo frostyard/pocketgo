@@ -162,15 +162,18 @@ func MCPLogin(ctx context.Context, dataDir string, server profiles.MCPServer, in
 	}
 	fetch := mcpClient(mcpLoginTimeout)
 	challenge := probeChallenge(ctx, fetch, server.URL, headers)
-	scope := loginScope(ctx, fetch, server, challenge)
+	info := discoverServer(ctx, fetch, server, challenge)
+	scope := loginScope(server, challenge, info)
 	// The sign-in runs on a copy: only a sign-in that ends reaches the
 	// store. A client pocketd registered before is kept when it was
-	// registered for this redirect URI and for every scope asked for now:
-	// an authorization server may refuse a client a scope it did not
-	// register.
+	// registered with the authorization server discovery names now, for
+	// this redirect URI and for every scope asked for now: another
+	// server never got it, and a server may refuse a client a scope it
+	// did not register.
 	seed := oauth.McpOAuthState{ServerURL: resource.Href()}
 	if old := store.oauthState(server.Name, server.URL); old != nil && server.OAuth.ClientID == "" && old.ClientInformation != nil &&
-		slices.Contains(old.ClientInformation.RedirectURIs, server.OAuth.CallbackURL) && registeredFor(old.ClientInformation.Scope, scope) {
+		slices.Contains(old.ClientInformation.RedirectURIs, server.OAuth.CallbackURL) && registeredFor(old.ClientInformation.Scope, scope) &&
+		info != nil && old.Discovery != nil && old.Discovery.AuthorizationServerURL == info.AuthorizationServerURL {
 		seed.ClientInformation = old.ClientInformation
 	}
 	memory := &oauth.MemoryOAuthStateStore{}
@@ -271,18 +274,28 @@ func probeChallenge(ctx context.Context, fetch *http.Client, server string, head
 // metadata's, so they are read here: an added scope never drops one the
 // server's tools need, and a kept client is kept only for the scopes the
 // request names (registeredFor).
-func loginScope(ctx context.Context, fetch *http.Client, server profiles.MCPServer, challenge oauth.OAuthChallenge) string {
+func loginScope(server profiles.MCPServer, challenge oauth.OAuthChallenge, info *oauth.OAuthServerInfo) string {
 	wanted := challenge.Scope
-	if wanted == "" {
-		options := oauth.DiscoveryOptions{Fetch: fetch}
-		if challenge.ResourceMetadataURL != nil {
-			options.ResourceMetadataURL = challenge.ResourceMetadataURL.Href()
-		}
-		if metadata, err := oauth.DiscoverProtectedResourceMetadata(ctx, server.URL, options); err == nil && metadata != nil {
-			wanted = strings.Join(metadata.ScopesSupported, " ")
-		}
+	if wanted == "" && info != nil && info.ResourceMetadata != nil {
+		wanted = strings.Join(info.ResourceMetadata.ScopesSupported, " ")
 	}
 	return mergeScopes(wanted, server.OAuth.Scope)
+}
+
+// discoverServer is what discovery finds of server's sign-in now: its
+// resource metadata and its authorization server, nil when it finds
+// nothing. PiG's flow discovers again; this tells which kept client may
+// serve, and which scopes the request names.
+func discoverServer(ctx context.Context, fetch *http.Client, server profiles.MCPServer, challenge oauth.OAuthChallenge) *oauth.OAuthServerInfo {
+	options := oauth.DiscoveryOptions{Fetch: fetch}
+	if challenge.ResourceMetadataURL != nil {
+		options.ResourceMetadataURL = challenge.ResourceMetadataURL.Href()
+	}
+	info, err := oauth.DiscoverOAuthServerInfo(ctx, server.URL, options)
+	if err != nil {
+		return nil
+	}
+	return info
 }
 
 // registeredFor says whether a client registered for the scopes
@@ -417,8 +430,13 @@ func reportListing(ctx context.Context, out io.Writer, store *mcpStore, server p
 // store, then closes the connection. unkept says why the listing is not
 // kept; err is mcpConn.failure's.
 func listOnce(ctx context.Context, store *mcpStore, server profiles.MCPServer) (n int, unkept, err error) {
+	hubCtx, cancel := context.WithCancel(ctx)
 	h := &mcpHub{store: store, log: slog.New(slog.DiscardHandler), conns: map[string]*mcpConn{}, servers: map[string][]string{},
-		tools: map[string][]mcpTool{}, exts: map[string]*durable.Extension{}, ctx: ctx}
+		tools: map[string][]mcpTool{}, exts: map[string]*durable.Extension{}, ctx: hubCtx, cancel: cancel}
+	// Every exchange it began, a refresh's included, ends before the
+	// command lets go of the data folder's lock; the store writes nothing
+	// after.
+	defer h.close(context.Background())
 	c := &mcpConn{hub: h, server: server}
 	h.conns[server.Name] = c
 	if tools, ok := store.listing(server.Name, server.URL); ok {

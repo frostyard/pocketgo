@@ -12,8 +12,10 @@ import (
 	"image"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,7 +107,7 @@ func defaultMCPAfter(d time.Duration, f func()) (stop func() bool) { return time
 // message's, which PiG bounds by message (maxMCPMessage), is bounded too
 // (maxMCPDocument): PiG reads an OAuth document whole.
 func mcpClient(timeout time.Duration) *http.Client {
-	var transport http.RoundTripper = directTransport
+	var transport http.RoundTripper = mcpDirectTransport
 	if mcpTransport != nil {
 		transport = mcpTransport
 	}
@@ -173,6 +175,16 @@ func (b *boundedBody) Read(p []byte) (int, error) {
 }
 
 func (b *boundedBody) Close() error { return b.body.Close() }
+
+// mcpDirectTransport is directTransport with no wait of its own for an
+// answer's headers: an MCP server's timeout, up to MaxMCPTimeout, bounds
+// each exchange whole (mcpClient), longer than a model provider's idle
+// limit.
+var mcpDirectTransport = func() *http.Transport {
+	t := directTransport.Clone()
+	t.ResponseHeaderTimeout = 0
+	return t
+}()
 
 // mcpExtensionName is the durable extension of profile's MCP tools.
 func mcpExtensionName(profile string) string { return "pocketgo-mcp-" + profile }
@@ -281,6 +293,10 @@ type mcpConn struct {
 	client  *mcp.Client
 	attempt *mcpAttempt
 	state   string
+	// authMu guards flight, the OAuth refresh under way (serveAuth), the
+	// server's whatever connection asked for it.
+	authMu sync.Mutex
+	flight *authFlight
 }
 
 // newMCPHub is the hub of servers, as mcp.json has them, for the profiles'
@@ -639,9 +655,12 @@ const emptySchema = `{"type":"object","properties":{}}`
 // schema of another type, or whose properties are no object, would make
 // a provider refuse the whole request.
 func normalSchema(input json.RawMessage) json.RawMessage {
-	if len(input) == 0 || len(input) > maxMCPSchema {
+	// Measured compact: a kept listing's indentation is no part of it.
+	var compact bytes.Buffer
+	if len(input) == 0 || json.Compact(&compact, input) != nil || compact.Len() > maxMCPSchema {
 		return json.RawMessage(emptySchema)
 	}
+	input = compact.Bytes()
 	var object map[string]json.RawMessage
 	if json.Unmarshal(input, &object) != nil || object == nil {
 		return json.RawMessage(emptySchema)
@@ -665,10 +684,73 @@ func normalSchema(input json.RawMessage) json.RawMessage {
 		return json.RawMessage(emptySchema)
 	}
 	var decoded any
-	if json.Unmarshal(data, &decoded) != nil || !validSchema(decoded, 0) {
+	if json.Unmarshal(data, &decoded) != nil || !validSchema(decoded, 0) || !refsResolve(decoded, decoded, 0) {
 		return json.RawMessage(emptySchema)
 	}
 	return data
+}
+
+// refsResolve says whether every $ref under value names a part of root
+// that is there: a JSON pointer into the schema itself (#, #/$defs/x).
+func refsResolve(root, value any, depth int) bool {
+	if depth > maxSchemaDepth {
+		return false
+	}
+	switch v := value.(type) {
+	case map[string]any:
+		for key, item := range v {
+			if key == "$ref" {
+				ref, ok := item.(string)
+				if !ok || !pointerResolves(root, ref) {
+					return false
+				}
+				continue
+			}
+			if !refsResolve(root, item, depth+1) {
+				return false
+			}
+		}
+	case []any:
+		for _, item := range v {
+			if !refsResolve(root, item, depth+1) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// pointerResolves says whether ref, a fragment #/a/b (RFC 6901), names a
+// part of root that is there.
+func pointerResolves(root any, ref string) bool {
+	if ref == "#" {
+		return true
+	}
+	path, ok := strings.CutPrefix(ref, "#/")
+	if !ok {
+		return false
+	}
+	at := root
+	for _, part := range strings.Split(path, "/") {
+		part = strings.ReplaceAll(strings.ReplaceAll(part, "~1", "/"), "~0", "~")
+		switch v := at.(type) {
+		case map[string]any:
+			next, ok := v[part]
+			if !ok {
+				return false
+			}
+			at = next
+		case []any:
+			i, err := strconv.Atoi(part)
+			if err != nil || i < 0 || i >= len(v) {
+				return false
+			}
+			at = v[i]
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // maxSchemaDepth bounds how deep validSchema reads a schema.
@@ -1141,6 +1223,12 @@ func requestLocal(ctx context.Context, err error) bool {
 		return false
 	}
 	var rpc *mcp.McpError
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr) && netErr.Timeout() {
+		// The request's own deadline (the HTTP client's): the connection
+		// may be well.
+		return true
+	}
 	return ctx.Err() != nil || errors.As(err, &abort) || errors.As(err, &timeout) || errors.As(err, &status) ||
 		errors.As(err, &oauthErr) || errors.Is(err, errMCPScope) || errors.Is(err, errMCPRefresh) || errors.Is(err, errMCPSignIn) ||
 		errors.As(err, &rpc) || errors.Is(err, errMCPList)
@@ -1149,7 +1237,7 @@ func requestLocal(ctx context.Context, err error) bool {
 // serverText is what a server said, with no secret in it, then cut to its
 // bound: cut first, a secret could be left in part.
 func (c *mcpConn) serverText(text string) string {
-	return cut(c.redact(text), maxMCPServerText)
+	return cut(redactText(text, c.hub.store.secrets()), maxMCPServerText)
 }
 
 // errorResult is a call's error result for err, which names no secret.
@@ -1230,8 +1318,8 @@ func jsonInString(s string) string {
 // or a string value once decoded: an escape (s) spells one in other
 // bytes, which a model reads as the secret.
 func decodedHoldsSecret(data json.RawMessage, secrets []string) bool {
-	var value any
-	if json.Unmarshal(data, &value) != nil {
+	value, err := decodeJSON(data)
+	if err != nil {
 		return false
 	}
 	found := false
@@ -1240,6 +1328,22 @@ func decodedHoldsSecret(data json.RawMessage, secrets []string) bool {
 		return s
 	})
 	return found
+}
+
+// decodeJSON decodes data whole, its numbers as written (json.Number): a
+// document written again changes its strings alone, never an id past a
+// float's precision.
+func decodeJSON(data []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var value any
+	if err := dec.Decode(&value); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("text follows the JSON")
+	}
+	return value, nil
 }
 
 // walkJSON calls f with each key and string value of a decoded JSON
@@ -1271,8 +1375,8 @@ func redactJSON(data json.RawMessage, secrets []string) json.RawMessage {
 	if len(data) == 0 {
 		return data
 	}
-	var value any
-	if json.Unmarshal(data, &value) != nil {
+	value, err := decodeJSON(data)
+	if err != nil {
 		return nil
 	}
 	var out bytes.Buffer
@@ -1332,8 +1436,13 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 	images, dropped, done := 0, 0, false
 	for _, block := range blocks {
 		if block.Type == mcp.LLMContentTypeImage {
+			// The cheap bounds first: no image past them is decoded.
+			if images >= maxMCPImages || len(block.Data) > maxMCPImageBytes {
+				dropped++
+				continue
+			}
 			image, ok := mcpImage(block.MimeType, block.Data, secrets)
-			if images >= maxMCPImages || len(block.Data) > maxMCPImageBytes || !ok {
+			if !ok {
 				dropped++
 				continue
 			}
@@ -1377,12 +1486,12 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 // once, since the step up needs the owner. A 401 refreshes the tokens with
 // PiG's flow (refreshOnly), once for every request that waits on it, and
 // a request whose token was replaced meanwhile is made again with the new
-// one: a second refresh with a rotated refresh token would fail.
+// one: a second refresh with a rotated refresh token would fail. The
+// refresh under way is the server's (mcpConn.flight), not the
+// connection's: one made again after a drop waits for it too.
 type serveAuth struct {
 	conn     *mcpConn
 	provider refreshOnly
-	mu       sync.Mutex
-	flight   *authFlight
 }
 
 // authFlight is one refresh, which every request refused meanwhile waits
@@ -1405,21 +1514,21 @@ func (a *serveAuth) OnUnauthorized(ctx context.Context, unauthorized mcp.Unautho
 		return errMCPScope
 	}
 	challenge := oauth.ParseWWWAuthenticate(strings.Join(unauthorized.Response.Header.Values("Www-Authenticate"), ", "))
-	a.mu.Lock()
-	flight := a.flight
+	a.conn.authMu.Lock()
+	flight := a.conn.flight
 	if flight == nil && unauthorized.Token != "" {
 		if tokens, err := a.provider.Tokens(ctx); err == nil && tokens != nil && tokens.AccessToken != "" && tokens.AccessToken != unauthorized.Token {
-			a.mu.Unlock()
+			a.conn.authMu.Unlock()
 			return nil
 		}
 	}
 	if flight == nil {
 		if !a.conn.hub.begin() {
-			a.mu.Unlock()
+			a.conn.authMu.Unlock()
 			return errMCPClosed
 		}
 		flight = &authFlight{done: make(chan struct{})}
-		a.flight = flight
+		a.conn.flight = flight
 		server, fetch := unauthorized.ServerURL.String(), unauthorized.Fetch
 		go func() {
 			defer a.conn.hub.work.Done()
@@ -1434,14 +1543,14 @@ func (a *serveAuth) OnUnauthorized(ctx context.Context, unauthorized mcp.Unautho
 			if err == nil && result != oauth.OAuthAuthorized {
 				err = errMCPRefresh
 			}
-			a.mu.Lock()
-			a.flight = nil
-			a.mu.Unlock()
+			a.conn.authMu.Lock()
+			a.conn.flight = nil
+			a.conn.authMu.Unlock()
 			flight.err = err
 			close(flight.done)
 		}()
 	}
-	a.mu.Unlock()
+	a.conn.authMu.Unlock()
 	select {
 	case <-flight.done:
 		return flight.err
@@ -1453,6 +1562,10 @@ func (a *serveAuth) OnUnauthorized(ctx context.Context, unauthorized mcp.Unautho
 // mcpImageTypes are the image types a result's image may have: the ones
 // the model providers take.
 var mcpImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+// prepareImage decodes and fits an image as an owner's attached one is;
+// tests count its calls.
+var prepareImage = uploads.PrepareImage
 
 // mcpImage is an image of a result as the model gets it, and whether it
 // goes: one of mcpImageTypes, its data base64 holding no secret the store
@@ -1478,7 +1591,7 @@ func mcpImage(mimeType, data string, secrets []string) (ai.ImageContent, bool) {
 	if _, format, err := image.DecodeConfig(bytes.NewReader(decoded)); err != nil || "image/"+format != mimeType {
 		return ai.ImageContent{}, false
 	}
-	prepared, _, err := uploads.PrepareImage(decoded)
+	prepared, _, err := prepareImage(decoded)
 	if err != nil {
 		return ai.ImageContent{}, false
 	}

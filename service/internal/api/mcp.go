@@ -107,8 +107,16 @@ func (s *Server) mcpRetryLater(only string, wait time.Duration, pass uint64) {
 	if s.mcpRetries == nil {
 		s.mcpRetries = map[string]mcpRetry{}
 	}
-	s.mcpRetries[only] = mcpRetry{pass: pass, stop: s.mcpTimer(wait, func() {
+	// Each retry knows itself: one that fires after it was stopped, and
+	// another took its place, leaves the other's place and runs nothing.
+	s.mcpRetryNo++
+	id := s.mcpRetryNo
+	s.mcpRetries[only] = mcpRetry{id: id, pass: pass, stop: s.mcpTimer(wait, func() {
 		s.sessionMu.Lock()
+		if r, ok := s.mcpRetries[only]; !ok || r.id != id {
+			s.sessionMu.Unlock()
+			return
+		}
 		delete(s.mcpRetries, only)
 		s.sessionMu.Unlock()
 		s.mcpGo(func(ctx context.Context) { s.mcpUpgrade(ctx, only, min(2*wait, mcpRetryMost)) })
@@ -119,6 +127,7 @@ func (s *Server) mcpRetryLater(only string, wait time.Duration, pass uint64) {
 // failure it covers, by the number of the pass or record it failed in
 // (mcpPassNo), and stop cancels it.
 type mcpRetry struct {
+	id   uint64
 	pass uint64
 	stop func()
 }

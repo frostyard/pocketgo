@@ -162,7 +162,7 @@ func mcpAtStart(folder profiles.Folder, log *slog.Logger) (profiles.MCPServers, 
 		log.Error("the MCP servers are not connected", "err", err)
 		return profiles.MCPServers{}, nil
 	}
-	valid, _, err := folder.Load()
+	valid, _, err := folder.LoadPinned()
 	if err != nil {
 		log.Error("the MCP servers are not connected: the profiles do not read", "err", err)
 		return profiles.MCPServers{}, nil

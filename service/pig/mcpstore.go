@@ -75,6 +75,9 @@ type mcpStore struct {
 	// file from then on, so a writer that takes the data folder's lock
 	// after pocketd's stop is the only one.
 	fenced bool
+	// dirty says the credentials file is behind what the store holds: its
+	// last write failed (saveCredsLocked).
+	dirty bool
 }
 
 // errMCPStoreFenced is a write the store refuses once its engine closed.
@@ -213,7 +216,8 @@ func readStoreFile(path string, v any) error {
 // alone: a file beside it, synced, then renamed into place, so a reader
 // finds the old file or the new one, never a part.
 func writeStoreFile(path string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
+	// Compact: an indentation would grow each kept schema past its bound.
+	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
@@ -246,9 +250,22 @@ func (s *mcpStore) saveCredsLocked() error {
 	if s.fenced {
 		return errMCPStoreFenced
 	}
-	return writeStoreFile(filepath.Join(s.dir, MCPAuthFile), struct {
+	err := writeStoreFile(filepath.Join(s.dir, MCPAuthFile), struct {
 		Servers map[string]*mcpCredential `json:"servers"`
 	}{s.creds})
+	// A write that failed leaves the file behind what the store holds, a
+	// rotated refresh token perhaps: the next read writes it again
+	// (flushLocked), with no second token exchange.
+	s.dirty = err != nil
+	return err
+}
+
+// flushLocked writes the credentials again when a write failed before;
+// mu is held.
+func (s *mcpStore) flushLocked() {
+	if s.dirty && !s.fenced {
+		_ = s.saveCredsLocked()
+	}
 }
 
 // entryLocked is server name's credential for url, made empty when there
@@ -269,6 +286,7 @@ func (s *mcpStore) entryLocked(name, url string) *mcpCredential {
 func (s *mcpStore) headers(name, url string, want []string) (map[string]string, []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.flushLocked()
 	out := map[string]string{}
 	var missing []string
 	c := s.creds[name]
@@ -314,6 +332,7 @@ func (s *mcpStore) forget(name string) (bool, error) {
 func (s *mcpStore) oauthState(name, url string) *oauth.McpOAuthState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.flushLocked()
 	c := s.creds[name]
 	if c == nil || c.URL != url || c.OAuth == nil {
 		return nil

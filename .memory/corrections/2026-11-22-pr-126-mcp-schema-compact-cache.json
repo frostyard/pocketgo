@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Measure an MCP tool's schema compact and keep it compact in mcp-tools.json, so a schema within its bound is within it again once read back.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P2] Keep cached tool schemas compact on disk",
+  "promoted_to": "service/pig/mcp_round6_test.go"
+}

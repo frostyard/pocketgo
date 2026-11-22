@@ -267,6 +267,9 @@ func TestClosingWaitsForADialAndKeepsNothingOfIt(t *testing.T) {
 		e.mcp.close(context.Background())
 		close(closed)
 	}()
+	// The close has begun: the hub's context ends once it is closed
+	// (Codex review of #126, round 6).
+	<-e.mcp.ctx.Done()
 	close(hold)
 	<-closed
 	if err := <-connected; err == nil {

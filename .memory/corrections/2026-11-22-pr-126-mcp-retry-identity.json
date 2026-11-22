@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Let an MCP retry's callback remove only the timer it was armed as (mcpRetry.id), never a successor armed after it was stopped.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P3] Let a retry callback remove only its own timer",
+  "promoted_to": "service/internal/api/mcp_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep an MCP sign-in's refresh under way on the server's connection, not on one transport: a connection made again after a drop waits for it, so a rotated refresh token is spent once.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P1] Share an OAuth refresh across reconnections",
+  "promoted_to": "service/pig/mcp_round6_test.go"
+}

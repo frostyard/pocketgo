@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Keep an MCP tool's schema only when each local reference in it names a part the schema has (refsResolve).",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P2] Validate that local schema references resolve",
+  "promoted_to": "service/pig/mcp_round6_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Decode a JSON document for redaction with its numbers as written (UseNumber), so an id past a float's precision stays the same id.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 6 (codex-cli 0.169.0) of head e9128c2: [P2] Preserve numeric values when redacting JSON results",
+  "promoted_to": "service/pig/mcp_round6_test.go"
+}

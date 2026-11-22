@@ -158,6 +158,44 @@ func TestTheExampleMCPFileIsValid(t *testing.T) {
 	}
 }
 
+// The profiles pocketd takes MCP grants from are read through the handle
+// of the folder it pinned: a folder put at its name after the check is
+// never read, as mcp.json is not (Codex review of #126, round 6).
+func TestLoadPinnedReadsThroughTheHandleItChecked(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "agents")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "chani.md"), []byte("---\nmodel: a/b\nmcp: [notes]\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	folder, err := Pin(dir, parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, problems, err := folder.LoadPinned()
+	if err != nil || len(got) != 1 || len(problems) != 0 || got[0].MCP[0] != "notes" {
+		t.Fatalf("%+v %+v %v", got, problems, err)
+	}
+	afterCheck = func() {
+		afterCheck = nil
+		if err := os.Rename(dir, filepath.Join(parent, "old")); err != nil {
+			t.Error(err)
+		}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "vera.md"), []byte("---\nmodel: a/b\nmcp: [mail]\n---\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { afterCheck = nil })
+	if got, _, err := folder.LoadPinned(); err == nil {
+		t.Fatalf("a folder put in its place after the check was read: %+v", got)
+	}
+}
+
 // A server's name reads in its tools' names with every character but a
 // letter, a digit or _ made _.
 func TestMCPNamespace(t *testing.T) {

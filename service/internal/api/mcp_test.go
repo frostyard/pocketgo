@@ -270,3 +270,34 @@ func TestAPassEndsOnlyTheRetriesOfEarlierFailures(t *testing.T) {
 		t.Fatalf("a later pass left the retry (waits %v, stopped %d)", waits, timers.stopped)
 	}
 }
+
+// A retry that fires after it was stopped, and another took its place,
+// leaves the other's place and runs nothing (Codex review of #126, round
+// 6).
+func TestAStoppedRetryThatFiresLeavesItsSuccessor(t *testing.T) {
+	h := newTeamHarness(t)
+	mcpSessions(t, h)
+	h.engine.mcpProfiles = []string{"duncan"}
+	timers := &fakeMCPTimers{}
+	h.server.mcpTimer = timers.timer
+	h.server.mcpRetryLater("duncan", mcpRetryFirst, 1)
+	// A success ends the first; a later failure sets a second.
+	h.server.sessionMu.Lock()
+	first := h.server.mcpRetries["duncan"]
+	first.stop()
+	delete(h.server.mcpRetries, "duncan")
+	h.server.sessionMu.Unlock()
+	h.server.mcpRetryLater("duncan", mcpRetryFirst, 2)
+	h.server.sessionMu.Lock()
+	second := h.server.mcpRetries["duncan"]
+	h.server.sessionMu.Unlock()
+	// The first fires all the same, as a timer stopped too late does.
+	timers.runs[0]()
+	h.server.passes.Wait()
+	h.server.sessionMu.Lock()
+	now, waits := h.server.mcpRetries["duncan"]
+	h.server.sessionMu.Unlock()
+	if !waits || now.id != second.id || first.id == second.id || len(h.engine.mcpTools) != 0 {
+		t.Fatalf("the stale retry took its successor's place (waits %v, id %d of %d) or ran (%v)", waits, now.id, second.id, h.engine.mcpTools)
+	}
+}
