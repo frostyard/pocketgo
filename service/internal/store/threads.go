@@ -894,6 +894,29 @@ func (s *Store) OpenAsks(ctx context.Context) ([]AskRow, error) {
 	return out, rows.Err()
 }
 
+// SettledAsks are the asks answered at since or later, and those a
+// supervisor's message withdrew at since or later (ADR-0037), the most
+// recently settled first: what team_inbox lists as settled (ADR-0046).
+func (s *Store) SettledAsks(ctx context.Context, since time.Time) ([]AskRow, error) {
+	at := toMillis(since)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+askColumns+` FROM asks
+		WHERE (state = ? AND answered_at >= ?) OR (state = ? AND withdrawn_at >= ?)
+		ORDER BY COALESCE(answered_at, withdrawn_at) DESC, id DESC`, AskAnswered, at, AskWithdrawn, at)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []AskRow
+	for rows.Next() {
+		row, err := scanAsk(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // ErrWithdrawn is an answer to an ask a supervisor's message withdrew
 // first (ADR-0037). It is an ErrConflict.
 var ErrWithdrawn = fmt.Errorf("%w: the ask was withdrawn", ErrConflict)

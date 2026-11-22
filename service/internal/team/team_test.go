@@ -156,7 +156,7 @@ func TestRoster(t *testing.T) {
 	}
 	roster := Roster([]profiles.Profile{vera, *odrade, chani, duncan, clerk}, cannot, 12)
 	for _, want := range []string{"- duncan (Duncan): works in its home\n- vera (Vera): repositories frostyard/example, frostyard/other", "at most 12 threads", PlanRoster(),
-		"a done or blocked thread is open again; a blocked one's asks that wait for the owner are withdrawn"} {
+		"a done or blocked thread is open again; a blocked one's asks that wait for the owner are withdrawn", InboxGuide} {
 		if !strings.Contains(roster, want) {
 			t.Errorf("roster lacks %q:\n%s", want, roster)
 		}
@@ -170,7 +170,9 @@ func TestRoster(t *testing.T) {
 			t.Errorf("roster lists %s:\n%s", not, roster)
 		}
 	}
-	if none := Roster(nil, cannot, 3); !strings.Contains(none, "No agent can take a delegation now.") {
+	// The supervisor checks team_inbox before it reminds the owner, with
+	// or without agents to delegate to (ADR-0046).
+	if none := Roster(nil, cannot, 3); !strings.Contains(none, "No agent can take a delegation now.") || !strings.Contains(none, InboxGuide) {
 		t.Errorf("an empty roster:\n%s", none)
 	}
 }
