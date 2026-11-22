@@ -70,7 +70,7 @@ const (
 	// placeTerminal is the owner's shells on the service host (ADR-0025).
 	placeTerminal
 	// placeSessions and placeMore are a compact window's Sessions and
-	// More tabs (ADR-0043): the sidebar's sessions, and what a desktop's
+	// More tabs (ADR-0044): the sidebar's sessions, and what a desktop's
 	// main menu and status bar hold. A desktop's window shows the Inbox
 	// for them.
 	placeSessions

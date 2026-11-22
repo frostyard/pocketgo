@@ -12,7 +12,7 @@ import (
 // window and on a desktop's alike: one decided on a compact window leaves
 // frostui's dialog too, so a window that widens again, as an iPad's
 // leaving Split View, shows the next one, never the one decided
-// (ADR-0043).
+// (ADR-0044).
 func TestAConfirmationDecidedCompactLeavesTheDesktopsQueue(t *testing.T) {
 	var d confirms
 	var ran []string
