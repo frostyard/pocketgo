@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "GitHub's APPROVED drops only the extra approval for an unattributed change: where the approvals at the head fall short of a rule's own count, pocketd's verdict can still make up one, and BLOCKED then passes only with REVIEW_REQUIRED. ADR-0059 says so, not that the verdict makes up nothing wherever GitHub says APPROVED.",
+  "evidence": "frostyard/pocketgo#119, Codex CLI review round 2 of head 9feff47: [P3] Distinguish the extra approval from a rule's base count",
+  "promoted_to": "desktop/internal/github/crossreview_test.go"
+}

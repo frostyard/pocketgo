@@ -74,6 +74,13 @@ func addOpenPR(f *fake, number int, head string) {
 	}
 }
 
+// ownerApproved gives the PR the owner's approval at its head, as a Check
+// after an approval that did not merge reads it: the bypass answer then
+// shows it too.
+func ownerApproved(f *fake) {
+	f.pr()["viewerLatestReview"] = map[string]any{"state": "APPROVED", "commit": map[string]any{"oid": f.head()}}
+}
+
 // addBypassReview adds an opinionated review to the recorded bypass answer,
 // for the reads after this 1.
 func (f *fake) addBypassReview(state, login, oid string, canPush bool) {
@@ -217,12 +224,40 @@ func TestBypassGates(t *testing.T) {
 			"required_approving_review_count": 1,
 		}))}, change: func(f *fake) { f.addBypassReview("CHANGES_REQUESTED", "someone", newHead, true) },
 			reason: "a review requests changes"},
-		{name: "extra approval for an unattributed change", rules: []any{rule("pull_request", prParams(map[string]any{
+		// The extra approval for an unattributed change counts as GitHub's
+		// review decision shows it (pocketgo ADR-0059): a review still
+		// required with the owner's approval at the head, or a decision
+		// that is null, counts it.
+		{name: "extra approval for an unattributed change, still required with the owner's approval", rules: []any{rule("pull_request", prParams(map[string]any{
 			"required_approving_review_count":                 1,
 			"require_extra_approval_for_unattributed_changes": true,
 		}))}, change: func(f *fake) {
 			obj(f.bypassPR, "data", "repository", "pullRequest", "author")["__typename"] = "Bot"
+			ownerApproved(f)
 		}, reason: "the rules need 2 approvals at the head; PocketGo counts 1"},
+		{name: "extra approval for an unattributed change, review decision null", rules: []any{rule("pull_request", prParams(map[string]any{
+			"required_approving_review_count":                 1,
+			"require_extra_approval_for_unattributed_changes": true,
+		}))}, change: func(f *fake) {
+			obj(f.bypassPR, "data", "repository", "pullRequest", "author")["__typename"] = "Bot"
+			f.pr()["reviewDecision"] = nil
+		}, reason: "the rules need 2 approvals at the head; PocketGo counts 1"},
+		// Before the owner's approval, GitHub's review required cannot count
+		// it: the read after the approval decides the extra.
+		{name: "extra approval for an unattributed change, before the owner's approval", method: "merge", rules: []any{rule("pull_request", prParams(map[string]any{
+			"required_approving_review_count":                 1,
+			"require_extra_approval_for_unattributed_changes": true,
+		}))}, change: func(f *fake) {
+			obj(f.bypassPR, "data", "repository", "pullRequest", "author")["__typename"] = "Bot"
+		}},
+		{name: "extra approval for an unattributed change, GitHub approved", method: "merge", rules: []any{rule("pull_request", prParams(map[string]any{
+			"required_approving_review_count":                 1,
+			"require_extra_approval_for_unattributed_changes": true,
+		}))}, change: func(f *fake) {
+			obj(f.bypassPR, "data", "repository", "pullRequest", "author")["__typename"] = "Bot"
+			f.pr()["reviewDecision"] = "APPROVED"
+			ownerApproved(f)
+		}},
 		{name: "no extra approval for a user", method: "merge", rules: []any{rule("pull_request", prParams(map[string]any{
 			"required_approving_review_count":                 1,
 			"require_extra_approval_for_unattributed_changes": true,
@@ -943,13 +978,16 @@ func TestBypassMissingParameters(t *testing.T) {
 		{name: "extra approval that is no boolean", rules: []any{rule("pull_request", prParams(map[string]any{
 			"require_extra_approval_for_unattributed_changes": "yes",
 		}))}, reason: name("require_extra_approval_for_unattributed_changes")},
-		// An absent extra approval is on, so a Bot author needs 1 more.
+		// An absent extra approval is on, so a Bot author needs 1 more while
+		// GitHub, with the owner's approval in, still requires a review
+		// (pocketgo ADR-0059).
 		{name: "extra approval absent, a Bot author", rules: []any{rule("pull_request", prParams(map[string]any{
 			"required_approving_review_count": 1,
 		}))}, change: func(f *fake) {
 			params := obj(f.rules[0].(map[string]any), "parameters")
 			delete(params, "require_extra_approval_for_unattributed_changes")
 			obj(f.bypassPR, "data", "repository", "pullRequest", "author")["__typename"] = "Bot"
+			ownerApproved(f)
 		}, reason: "the rules need 2 approvals at the head; PocketGo counts 1"},
 		// The same, a User: 1 approval is enough.
 		{name: "extra approval absent, a user", rules: []any{rule("pull_request", prParams(map[string]any{

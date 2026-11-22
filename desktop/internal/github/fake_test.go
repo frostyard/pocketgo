@@ -660,6 +660,13 @@ func (f *fake) bypass(w http.ResponseWriter, vars map[string]any) {
 	pr := obj(repo, "pullRequest")
 	pr["headRefOid"] = f.head()
 	pr["baseRefName"], pr["baseRefOid"] = f.pr()["baseRefName"], f.pr()["baseRefOid"]
+	// GitHub's review decision, as the PR is now: a PR without the field
+	// answers none.
+	if decision, ok := f.pr()["reviewDecision"]; ok {
+		pr["reviewDecision"] = decision
+	} else {
+		delete(pr, "reviewDecision")
+	}
 	// The open PRs of the repository, and this PR itself among them, at the
 	// head: PocketGo must leave its own entry out.
 	open, ok := repo["pullRequests"].(map[string]any)

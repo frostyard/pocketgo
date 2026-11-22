@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "desktop",
+  "correction": "Gate 11 refuses a read whose PR query and bypass read give GitHub's review decision differently, before it counts anything, and verdictFills never holds on such a read: counting the extra approval there let pocketd's verdict make it up and take a BLOCKED that the later read did not put down to a missing review.",
+  "evidence": "frostyard/pocketgo#119, Codex CLI review round 1 of head c94fd90: [P1] Refuse a blocked merge when the review decisions disagree",
+  "promoted_to": "desktop/internal/github/unattributed_test.go"
+}
