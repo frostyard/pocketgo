@@ -80,8 +80,9 @@ const (
 const proposalProperties = `"repository":{"type":"string","description":"owner/name of one of the agent's repositories, or none for work in its home; \"\" clears it in an edit."},` +
 	`"title":{"type":"string","description":"A short title, at most 120 characters."},` +
 	`"task":{"type":"string","description":"The task in full, at most 6000 characters: all the shift's brief will say."},` +
-	`"stop_when":{"type":"string","description":"When the work is done, in words that can be checked, at most 3000 characters."},` +
+	`"stop_when":{"type":"string","description":"When the work is done, in words that can be checked, at most 3000 characters. Name green CI in it only with ci true: without ci nothing waits for CI."},` +
 	`"max_rounds":{"type":"integer","minimum":1,"maximum":100,"description":"At most this many rounds, 1 to 100; 20 when left out of an add."},` +
+	`"ci":{"type":"boolean","description":"true when done also needs CI green on the thread's pull requests: pocketd then reads CI itself after the shift's agent says done. false when left out of an add."},` +
 	`"note":{"type":"string","description":"A note for the owner, at most 500 characters."}`
 
 const gatherParameters = `{"type":"object","properties":{` +
@@ -150,7 +151,7 @@ const delegateParameters = `{"type":"object","properties":{` +
 	`},"additionalProperties":false},` +
 	`"worker":{"type":"string","description":"Only when the owner named a worker model for this work: its provider (as deepseek) or provider/id, an entry of the owner's worker list. Every worker of the thread runs it, over the specialist's profile's worker. Leave it out otherwise: the profile's worker, else the first model pocketd runs of the owner's list, runs."},` +
 	`"shift":{"type":"object","description":"Run the thread as a shift: pocketd sends the specialist round after round toward the task until the stop condition holds, a round reports blocked, or the round limit or deadline is reached, then asks for one report. For long work the owner asks to run as a shift; leave it out otherwise.","properties":{` +
-	`"stop":{"type":"string","description":"When the work is done, in words the specialist can check, at most 3000 characters."},` +
+	`"stop":{"type":"string","description":"When the work is done, in words the specialist can check, at most 3000 characters. Name green CI in it only with ci true: without ci nothing waits for CI."},` +
 	`"max_rounds":{"type":"integer","description":"At most this many rounds, 1 to 100; 20 when left out."},` +
 	`"hours":{"type":"number","description":"Stop after this many hours, above 0 and at most 24; no deadline when left out."},` +
 	`"ci":{"type":"boolean","description":"true when done also needs CI green on the pull requests the specialist reports for the thread."}` +

@@ -833,7 +833,7 @@ func (s *Server) changeProposal(ctx context.Context, key string, id int64, rev i
 		if err != nil {
 			return p, err
 		}
-		p.Repository, p.Title, p.Task, p.StopWhen, p.Note, p.MaxRounds = text.Repository, text.Title, text.Task, text.StopWhen, text.Note, text.MaxRounds
+		p.Repository, p.Title, p.Task, p.StopWhen, p.Note, p.MaxRounds, p.CI = text.Repository, text.Title, text.Task, text.StopWhen, text.Note, text.MaxRounds, text.CI
 		return p, nil
 	}
 	answer := func(p store.ProposalRow) string {
@@ -877,7 +877,11 @@ func proposalLine(p store.ProposalRow, gathered time.Time, zone *time.Location) 
 	if p.Repository != "" {
 		where = p.Repository
 	}
-	line := fmt.Sprintf("#%d rev %d · %s · %s · %s · %d rounds · G%d", p.ID, p.Rev, p.Agent, where, p.Kind, p.MaxRounds, p.GatherID)
+	line := fmt.Sprintf("#%d rev %d · %s · %s · %s · %d rounds", p.ID, p.Rev, p.Agent, where, p.Kind, p.MaxRounds)
+	if p.CI {
+		line += " · needs green CI"
+	}
+	line += fmt.Sprintf(" · G%d", p.GatherID)
 	if !gathered.IsZero() {
 		line += " (" + schedule.When(gathered, zone) + ")"
 	}
@@ -1010,6 +1014,11 @@ func proposalText(p store.ProposalRow, gathered time.Time, zone *time.Location) 
 	var b strings.Builder
 	b.WriteString(proposalLine(p, gathered, zone))
 	fmt.Fprintf(&b, "\n\nTask:\n%s\n\nStop when:\n%s", p.Task, p.StopWhen)
+	if p.CI {
+		b.WriteString("\n\nci: true: done also needs CI green on the thread's pull requests.")
+	} else {
+		b.WriteString("\n\nci: false: nothing waits for CI.")
+	}
 	if p.Note != "" {
 		fmt.Fprintf(&b, "\n\nNote: %s", p.Note)
 	}
@@ -1113,7 +1122,7 @@ func wireGather(f store.GatherFacts) proto.Gather {
 
 func wireProposal(p store.ProposalRow, gathered time.Time) proto.Proposal {
 	return proto.Proposal{ID: p.ID, Gather: p.GatherID, GatheredAt: gathered, Agent: p.Agent, Repository: p.Repository, Title: p.Title, Task: p.Task,
-		StopWhen: p.StopWhen, MaxRounds: p.MaxRounds, Kind: p.Kind, Note: p.Note, Order: p.Order, Rev: p.Rev, State: proto.ProposalState(p.State), By: p.By,
+		StopWhen: p.StopWhen, MaxRounds: p.MaxRounds, CI: p.CI, Kind: p.Kind, Note: p.Note, Order: p.Order, Rev: p.Rev, State: proto.ProposalState(p.State), By: p.By,
 		Launch: p.LaunchID, Thread: p.ThreadID,
 		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
 }

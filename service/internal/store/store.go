@@ -551,6 +551,10 @@ var migrations = []string{
 	ALTER TABLE reports ADD COLUMN unblocked_at INTEGER;
 	ALTER TABLE reports ADD COLUMN unblocks INTEGER NOT NULL DEFAULT 0;
 	CREATE INDEX asks_withdrawn ON asks (withdrawn_by) WHERE withdrawn_by != '';`,
+	// Version 21: a proposal carries its shift's ci: done also needs CI green
+	// on the thread's pull requests (ADR-0047). A proposal filed before
+	// reads false.
+	`ALTER TABLE proposals ADD COLUMN ci INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

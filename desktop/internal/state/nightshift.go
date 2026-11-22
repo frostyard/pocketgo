@@ -119,8 +119,9 @@ func (d *Data) applyProposal(p proto.Proposal) {
 }
 
 // ProposalCaption is what a proposal's row says under its title: its
-// agent, its repository or "home", its kind, its rounds, and when its
-// gather ran, in the zone of now (the desktop's).
+// agent, its repository or "home", its kind, its rounds, "needs green CI"
+// when its shift waits for CI (ADR-0047), and when its gather ran, in the
+// zone of now (the desktop's).
 func (d *Data) ProposalCaption(p proto.Proposal, now time.Time) string {
 	where := p.Repository
 	if where == "" {
@@ -131,6 +132,9 @@ func (d *Data) ProposalCaption(p proto.Proposal, now time.Time) string {
 		parts = append(parts, p.Kind)
 	}
 	parts = append(parts, plural(p.MaxRounds, "round", "rounds"))
+	if p.CI {
+		parts = append(parts, "needs green CI")
+	}
 	if !p.GatheredAt.IsZero() {
 		parts = append(parts, "gathered "+ClockAt(p.GatheredAt, now))
 	}

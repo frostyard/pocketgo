@@ -1,6 +1,6 @@
 # 0034 — Launch the owner's picks from the supervisor's standing session, in code
 
-- **Status:** Accepted
+- **Status:** Accepted; decision 2's thread also takes its proposal's `ci`, by [0047](0047-carry-a-shifts-ci-on-a-proposal-to-its-launch.md)
 - **Date:** 2026-11-21
 
 ## Context

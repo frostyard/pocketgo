@@ -457,3 +457,54 @@ func TestAScheduledGather(t *testing.T) {
 		t.Fatalf("the next day %+v", got)
 	}
 }
+
+// A proposal's ci is kept through an agent's edit of another field, shown
+// by both lists, read and GET /v1/proposals, and cleared by the
+// supervisor's edit (ADR-0047).
+func TestAProposalKeepsItsCI(t *testing.T) {
+	h := newGatherHarness(t, "")
+	ctx := context.Background()
+	h.gather("g1", team.Gather{Skill: "grooming"})
+	ask := h.askOf(1, "duncan")
+	propose := func(id string, c team.ProposeCall) string {
+		t.Helper()
+		text, err := h.server.TeamPropose(ctx, TeamCall{Session: ask.Session, Task: 2, CallID: id}, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return text
+	}
+	board := func(id string, c team.BoardCall) string {
+		t.Helper()
+		text, err := h.server.TeamBoard(ctx, TeamCall{Session: h.odrade, Task: 3, CallID: id}, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return text
+	}
+	yes, no := true, false
+	f := fields("A")
+	f.CI = &yes
+	propose("add", team.ProposeCall{Action: team.ProposeAdd, ProposalFields: f})
+	title := "B"
+	propose("edit", team.ProposeCall{Action: team.ProposeEdit, Row: 1, Rev: 1, ProposalFields: team.ProposalFields{Title: &title}})
+	if text := propose("list", team.ProposeCall{Action: team.ProposeList}); !strings.Contains(text, "needs green CI") {
+		t.Fatal(text)
+	}
+	if text := board("list", team.BoardCall{Action: team.BoardList}); !strings.Contains(text, "needs green CI") {
+		t.Fatal(text)
+	}
+	if text := board("read", team.BoardCall{Action: team.BoardRead, Row: 1}); !strings.Contains(text, "ci: true") {
+		t.Fatal(text)
+	}
+	if rows, err := h.client.Proposals(ctx); err != nil || len(rows) != 1 || !rows[0].CI {
+		t.Fatalf("wire %+v %v", rows, err)
+	}
+	board("edit", team.BoardCall{Action: team.BoardEdit, Row: 1, Rev: 2, ProposalFields: team.ProposalFields{CI: &no}})
+	if text := board("read2", team.BoardCall{Action: team.BoardRead, Row: 1}); !strings.Contains(text, "ci: false") {
+		t.Fatal(text)
+	}
+	if rows, err := h.client.Proposals(ctx); err != nil || len(rows) != 1 || rows[0].CI {
+		t.Fatalf("wire cleared %+v %v", rows, err)
+	}
+}

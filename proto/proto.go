@@ -54,7 +54,9 @@ package proto
 // Version 24 lets a supervisor's message unblock a blocked thread
 // (ADR-0037): an ask's withdrawn state, its ask event, and the conflict of
 // an answer to a withdrawn ask.
-const Version = 24
+// Version 25 adds a proposal's ci (ADR-0047): its shift's done also
+// needs CI green on the thread's pull requests.
+const Version = 25
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"

@@ -2,6 +2,7 @@ package pig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"os"
@@ -959,13 +960,15 @@ func TestTeamScheduleCallsTheTeam(t *testing.T) {
 }
 
 // team_gather, team_board and team_propose reach the team, keyed by the
-// calling session, its task and the call's id (ADR-0033).
+// calling session, its task and the call's id (ADR-0033), a proposal's ci
+// included (ADR-0047).
 func TestGatherToolsCallTheTeam(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels(
 		toolTurn(toolGather, map[string]any{"skill": "grooming", "agents": []any{"duncan"}, "note": "Evening."}, "g1"), answer("ok"),
 		toolTurn(toolBoard, map[string]any{"action": "order", "rows": []any{3, 1}}, "b1"), answer("ok"),
-		toolTurn(toolPropose, map[string]any{"action": "add", "title": "Fix A", "task": "Do it.", "stop_when": "Done.", "max_rounds": 5}, "p1"), answer("ok"),
+		toolTurn(toolBoard, map[string]any{"action": "edit", "row": 3, "rev": 1, "ci": true}, "b2"), answer("ok"),
+		toolTurn(toolPropose, map[string]any{"action": "add", "title": "Fix A", "task": "Do it.", "stop_when": "Done.", "max_rounds": 5, "ci": true}, "p1"), answer("ok"),
 	))
 	defer func() { _ = e.Close(context.Background()) }()
 	fake := &fakeTeam{}
@@ -975,7 +978,7 @@ func TestGatherToolsCallTheTeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{"gather", "order"} {
+	for _, text := range []string{"gather", "order", "edit"} {
 		if _, err := e.Send(ctx, odrade, text, text); err != nil {
 			t.Fatal(err)
 		}
@@ -996,13 +999,14 @@ func TestGatherToolsCallTheTeam(t *testing.T) {
 	if len(fake.gathers) != 1 || fake.gathers[0].Skill != "grooming" || fake.gathers[0].Note != "Evening." || len(fake.gathers[0].Agents) != 1 {
 		t.Fatalf("gathers %+v", fake.gathers)
 	}
-	if len(fake.boards) != 1 || fake.boards[0].Action != team.BoardOrder || !slices.Equal(fake.boards[0].Rows, []int64{3, 1}) {
+	if len(fake.boards) != 2 || fake.boards[0].Action != team.BoardOrder || !slices.Equal(fake.boards[0].Rows, []int64{3, 1}) ||
+		fake.boards[1].Action != team.BoardEdit || fake.boards[1].CI == nil || !*fake.boards[1].CI {
 		t.Fatalf("boards %+v", fake.boards)
 	}
-	if len(fake.proposals) != 1 || fake.proposals[0].Action != team.ProposeAdd || *fake.proposals[0].Title != "Fix A" || *fake.proposals[0].MaxRounds != 5 {
+	if len(fake.proposals) != 1 || fake.proposals[0].Action != team.ProposeAdd || *fake.proposals[0].Title != "Fix A" || *fake.proposals[0].MaxRounds != 5 || fake.proposals[0].CI == nil || !*fake.proposals[0].CI {
 		t.Fatalf("proposals %+v", fake.proposals)
 	}
-	if len(fake.calls) != 3 || fake.calls[0].CallID != "g1" || fake.calls[0].Session != odrade || fake.calls[2].Session != asked || fake.calls[2].CallID != "p1" {
+	if len(fake.calls) != 4 || fake.calls[0].CallID != "g1" || fake.calls[0].Session != odrade || fake.calls[3].Session != asked || fake.calls[3].CallID != "p1" {
 		t.Fatalf("calls %+v", fake.calls)
 	}
 }
@@ -2053,5 +2057,22 @@ func TestAProbeTheCancelKilledSaysTheCancel(t *testing.T) {
 	}
 	if err := run(false); err == nil || errors.Is(err, context.Canceled) {
 		t.Errorf("a probe that died on its own: %v, want its own failure", err)
+	}
+}
+
+// team_propose and team_board take a proposal's ci as a boolean (ADR-0047).
+func TestProposalToolsHaveBooleanCI(t *testing.T) {
+	for name, schema := range map[string]string{"team_propose": proposeParameters, "team_board": boardParameters} {
+		var got struct {
+			Properties map[string]struct {
+				Type string `json:"type"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal([]byte(schema), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Properties["ci"].Type != "boolean" {
+			t.Fatalf("%s has no boolean ci", name)
+		}
 	}
 }
