@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "Gate 11 refuses a read whose two review decisions differ; it compares GitHub's decisions, not the reviews, so a review given or dismissed that leaves the decision as it was refuses nothing and the approvals count as the later read shows them. ADR-0059 states the guarantee that narrowly.",
+  "evidence": "frostyard/pocketgo#119, Codex CLI review round 2 of head 9feff47: [P3] Narrow the guarantee about reviews changing between reads",
+  "promoted_to": "docs/adr/0059-count-the-extra-approval-for-an-unattributed-change-as-githubs-review-decision-shows-it.md"
+}

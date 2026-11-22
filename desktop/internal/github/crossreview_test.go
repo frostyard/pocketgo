@@ -78,10 +78,12 @@ func TestAReadyCrossReviewCountsAsOneApproval(t *testing.T) {
 // 1 approval, the extra one for an unattributed change, the last push's
 // approval, and stale reviews dismissed. Dependabot pushed last.
 //
-// GitHub counts its own reviews only, as it does for frostyard/porter#53:
-// the review is required and the merge blocked before the owner's
-// approval, and still after it, since 1 approval is not the 2 a bot's pull
-// request needs (Codex review of #53, round 1).
+// GitHub counts its own reviews only, and holds this pull request at 2: the
+// review is required and the merge blocked before the owner's approval,
+// and still after it (Codex review of #53, round 1). That is a pull request
+// GitHub asks the extra approval of, which it documents for one Copilot
+// opens under its own identity; for Dependabot's, GitHub asks 1
+// (dependabotPR, pocketgo ADR-0059).
 func botPR(t *testing.T) *fake {
 	f := direct(t)
 	f.rules = []any{rule("pull_request", orgPullRequestRule())}
@@ -107,10 +109,13 @@ func orgPullRequestRule() map[string]any {
 	})
 }
 
-// A Bot's pull request under the org ruleset merges as the owner with
-// pocketd's ready cross-review at its head: the preview counts it, and so
-// does each read of Act. Without it the preview refuses and says what is
-// missing (pocketgo ADR-0031).
+// A Bot's pull request that GitHub holds at 2 approvals under the org
+// ruleset merges as the owner with pocketd's ready cross-review at its
+// head: the preview counts it, and so does each read of Act. Without it
+// the preview passes, since GitHub's review decision cannot count the
+// owner's approval before it is given, and the read after the approval,
+// where GitHub still requires a review, refuses the merge and says what is
+// missing (pocketgo ADR-0031, ADR-0059).
 func TestABotsPullRequestMergesWithTheReadyCrossReview(t *testing.T) {
 	f := botPR(t)
 	c := f.client()
@@ -126,16 +131,26 @@ func TestABotsPullRequestMergesWithTheReadyCrossReview(t *testing.T) {
 	}
 
 	f = botPR(t)
-	p, err = f.client().Preview(context.Background(), f.ref, CrossReview{})
-	if err != nil || p.Eligible || !strings.Contains(p.Reason, "the rules need 2 approvals at the head; PocketGo counts 1: no ready cross-review by pocketd at") {
-		t.Fatalf("without the verdict: %+v, %v", p, err)
+	c = f.client()
+	p, err = c.Preview(context.Background(), f.ref, CrossReview{})
+	if err != nil || !p.Eligible {
+		t.Fatalf("without the verdict, the preview: %+v, %v", p, err)
+	}
+	f.reset()
+	res = c.Act(context.Background(), Intent{Preview: p, Mode: "single"}, "op-bot", nil)
+	if res.Kind != "approved" || res.Step != "read 2" ||
+		!strings.Contains(res.Reason, "the rules need 2 approvals at the head; PocketGo counts 1: no ready cross-review by pocketd at") ||
+		strings.Join(f.mutations, ",") != approve {
+		t.Fatalf("without the verdict: %+v, mutations %v", res, f.mutations)
 	}
 }
 
 // Act counts only the verdict its intent carries, at each read: none, one
 // at another head, or one that is not ready refuses at the first read,
 // before any mutation, though the preview counted a ready one (pocketgo
-// ADR-0031).
+// ADR-0031). The rule asks 2 approvals of any author, so the first read
+// needs the verdict whatever GitHub's review decision says of an extra
+// approval (pocketgo ADR-0059).
 func TestActCountsOnlyTheVerdictOfItsIntent(t *testing.T) {
 	for name, cr := range map[string]CrossReview{
 		"none":         {},
@@ -143,6 +158,11 @@ func TestActCountsOnlyTheVerdictOfItsIntent(t *testing.T) {
 		"not ready":    {Verdict: "not-ready", Base: "main"},
 	} {
 		f := botPR(t)
+		f.rules = []any{rule("pull_request", prParams(map[string]any{
+			"required_approving_review_count": 2,
+			"require_last_push_approval":      true,
+			"dismiss_stale_reviews_on_push":   true,
+		}))}
 		c := f.client()
 		ready := CrossReview{Verdict: VerdictReady, Head: f.head(), Base: "main"}
 		if cr.Verdict == "not-ready" {
@@ -163,15 +183,25 @@ func TestActCountsOnlyTheVerdictOfItsIntent(t *testing.T) {
 // A pull_request rule of a ruleset the owner cannot bypass is GitHub's to
 // enforce at the merge: pocketd's verdict is no approval there, so the
 // gates do not count it, and GitHub's own review decision holds after the
-// approval (Codex review of #53, round 1).
+// approval (Codex review of #53, round 1). The preview passes on the
+// owner's approval to come, which GitHub's decision cannot count yet; the
+// read after it, where GitHub still requires a review, refuses the merge
+// without counting the verdict (pocketgo ADR-0059).
 func TestTheVerdictCountsOnlyTowardRulesTheOwnerCanBypass(t *testing.T) {
 	f := botPR(t)
 	f.rules = append(f.rules, map[string]any{"type": "pull_request", "ruleset_id": 26867289.0, "parameters": orgPullRequestRule()})
 	f.rulesets["26867289"].(map[string]any)["current_user_can_bypass"] = "never"
 	ready := CrossReview{Verdict: VerdictReady, Head: f.head(), Base: "main"}
-	p, err := f.client().Preview(context.Background(), f.ref, ready)
-	if err != nil || p.Eligible || !strings.Contains(p.Reason, "a ruleset you cannot bypass asks for reviews") {
-		t.Fatalf("a review rule the owner cannot bypass: %+v, %v", p, err)
+	c := f.client()
+	p, err := c.Preview(context.Background(), f.ref, ready)
+	if err != nil || !p.Eligible {
+		t.Fatalf("the preview: %+v, %v", p, err)
+	}
+	f.reset()
+	res := c.Act(context.Background(), Intent{Preview: p, Mode: "single", CrossReview: ready}, "op-unbypassed", nil)
+	if res.Kind != "approved" || res.Step != "read 2" || !strings.Contains(res.Reason, "a ruleset you cannot bypass asks for reviews") ||
+		strings.Join(f.mutations, ",") != approve {
+		t.Fatalf("a review rule the owner cannot bypass: %+v, mutations %v", res, f.mutations)
 	}
 }
 
@@ -221,27 +251,47 @@ func queueBotPR(t *testing.T) *fake {
 // On a merge-queue base too, a merge GitHub blocks is let through by the
 // verdict only while GitHub puts it down to the missing review: one it
 // blocks while it calls the review approved is not enqueued (Codex review
-// of #53, round 3).
+// of #53, round 3). Under the org rule, GitHub's APPROVED counts the extra
+// approval met, so the verdict makes up nothing and the pull request is
+// enqueued as a User's is on that base; under a rule of 2 for any author,
+// the verdict still makes up the second (pocketgo ADR-0059).
 func TestAQueueBaseEnqueuesOnTheVerdictOnlyWhileTheReviewIsRequired(t *testing.T) {
+	two := func(f *fake) {
+		for _, r := range f.rules {
+			if m := r.(map[string]any); m["type"] == "pull_request" && m["ruleset_id"] == 24434288.0 {
+				m["parameters"] = prParams(map[string]any{
+					"required_approving_review_count": 2,
+					"dismiss_stale_reviews_on_push":   true,
+				})
+			}
+		}
+	}
 	for _, c := range []struct {
 		decision, kind string
+		rule           func(*fake)
 	}{
-		{"REVIEW_REQUIRED", "queued"},
-		{"APPROVED", "approved"},
-		{"", "approved"},
+		{"REVIEW_REQUIRED", "queued", nil},
+		{"APPROVED", "queued", nil},
+		{"", "approved", nil},
+		{"REVIEW_REQUIRED", "queued", two},
+		{"APPROVED", "approved", two},
+		{"", "approved", two},
 	} {
 		f := queueBotPR(t)
+		if c.rule != nil {
+			c.rule(f)
+		}
 		f.afterApprove = func(pr map[string]any) { pr["reviewDecision"], pr["mergeStateStatus"] = c.decision, "BLOCKED" }
 		cl := f.client()
 		ready := CrossReview{Verdict: VerdictReady, Head: f.head(), Base: "main"}
 		p, err := cl.Preview(context.Background(), f.ref, ready)
 		if err != nil || !p.Eligible || !p.Queue {
-			t.Fatalf("%q: preview %+v, %v", c.decision, p, err)
+			t.Fatalf("%q, a rule of 2 %v: preview %+v, %v", c.decision, c.rule != nil, p, err)
 		}
 		f.reset()
 		res := cl.Act(context.Background(), Intent{Preview: p, Mode: "single", CrossReview: ready}, "op-queue", nil)
 		if res.Kind != c.kind || (c.kind == "approved" && res.Reason != "GitHub still blocks the merge") {
-			t.Errorf("%q: %+v, mutations %v", c.decision, res, f.mutations)
+			t.Errorf("%q, a rule of 2 %v: %+v, mutations %v", c.decision, c.rule != nil, res, f.mutations)
 		}
 	}
 }

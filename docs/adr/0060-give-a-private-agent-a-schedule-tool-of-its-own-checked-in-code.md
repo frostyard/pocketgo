@@ -82,5 +82,5 @@
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#service) (the schedule tool), [specs/protocol.md](../specs/protocol.md) (rules 7b, 25 and 57)
-- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 32, a private agent's own schedules)
+- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 33, a private agent's own schedules)
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0030](0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), [ADR-0046](0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md), [ADR-0048](0048-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)

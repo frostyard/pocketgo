@@ -1,6 +1,6 @@
 # 0031 — Count pocketd's ready cross-review as an approval, and merge all ready pull requests at once
 
-- **Status:** Accepted; decision 4's one waived merge a repository a run amended by [ADR-0038](0038-check-bot-pull-requests-again-in-the-run-once-a-merge-moves-their-base.md), which checks the run's other bot pull requests again at the new base
+- **Status:** Accepted; decision 4's one waived merge a repository a run amended by [ADR-0038](0038-check-bot-pull-requests-again-in-the-run-once-a-merge-moves-their-base.md), which checks the run's other bot pull requests again at the new base; its context's 2 approvals of a bot's pull request corrected by [ADR-0059](0059-count-the-extra-approval-for-an-unattributed-change-as-githubs-review-decision-shows-it.md), which counts the extra approval as GitHub's review decision shows it (GitHub asks Dependabot's for 1)
 - **Date:** 2026-11-20
 
 ## Context
