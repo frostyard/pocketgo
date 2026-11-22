@@ -71,7 +71,9 @@ journalctl --user -u pocketd -n 50       # "pocketd serving", or why not
 ~/.local/bin/pocketd version             # pocketd <commit> protocol <N>
 ```
 
-**Settings** go in `~/.config/pocketd.env`, which the unit reads as systemd's `EnvironmentFile`, not as a shell script: write one `NAME=value` a line, with literal absolute paths, no quotes and no `$`. `deploy.sh` replaces the unit at every run, but never this file. Edit it with pocketd stopped (`systemctl --user stop pocketd`, then `start`): an editor may save by putting a new file in its place, which running agents could change before systemd reads it.
+On a host whose journal is kept only in memory, the user's `journalctl` may show nothing; as root, `journalctl _SYSTEMD_USER_UNIT=pocketd.service _UID=$(id -u <user>) -n 50` reads the same lines.
+
+**Settings** go in `~/.config/pocketd.env`, which the unit reads as systemd's `EnvironmentFile`, not as a shell script: write one `NAME=value` a line, with literal absolute paths, no quotes and no `$`. `deploy.sh` replaces the unit at every run, but never this file. Change it with pocketd stopped (`systemctl --user stop pocketd`, then `start`): a new file put in its place could be changed by running agents before systemd reads it. Write it from a trusted copy on your machine, or with a here-document in the shell of step 2 (`cat > ~/.config/pocketd.env <<'EOF'` … `EOF`), never with an editor started there: an editor loads the user's own configuration, which agents can change, outside the sandbox.
 
 | Variable | Default | What it sets |
 | --- | --- | --- |
@@ -84,7 +86,17 @@ journalctl --user -u pocketd -n 50       # "pocketd serving", or why not
 | `TZ` | the zone `/etc/localtime` names | the zone of a schedule's clock time that names none ([ADR-0030](../adr/0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md)) |
 | `PATH` | the user manager's | the `PATH` of the agents' commands |
 
-`~/.local/bin/pocketd -h` lists the flags behind these settings. One has no variable: `-pr-every`, how often open pull requests are read on GitHub again, 5 minutes by default.
+`~/.local/bin/pocketd -h` lists the flags behind these settings. Two have no variable: `-pr-every`, how often open pull requests are read on GitHub again (5 minutes by default), and `-instructions=` with nothing after it, which turns the global instructions off (an empty `POCKETD_INSTRUCTIONS` counts as unset). The unit runs `pocketd serve` with no flags, so give it flags in a drop-in, which `deploy.sh` leaves alone, from the shell of step 2:
+
+```sh
+mkdir -p ~/.config/systemd/user/pocketd.service.d
+cat > ~/.config/systemd/user/pocketd.service.d/flags.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=%h/.local/bin/pocketd serve -pr-every 10m
+EOF
+systemctl --user daemon-reload && systemctl --user restart pocketd
+```
 
 ### 3. Reach pocketd from your devices
 
@@ -114,9 +126,10 @@ pocketd runs agents on your subscriptions and keys, kept in the data folder's `a
 ```sh
 ~/.local/bin/pocketd login anthropic        # Claude subscription
 ~/.local/bin/pocketd login openai-codex     # ChatGPT subscription
-~/.local/bin/pocketd login github-copilot   # Copilot subscription
 ~/.local/bin/pocketd models                 # the models the sign-ins can run
 ```
+
+The examples and their cross-reviews need those two. `~/.local/bin/pocketd login github-copilot` adds a Copilot subscription, for profiles that name its models.
 
 A subscription signs in by OAuth: the command prints a URL or a device code to open in a browser on any machine, and reads what it asks for, one line at a time. It can run while pocketd serves.
 
@@ -145,7 +158,7 @@ git config --global user.email "<the account's email>"
 
 `gh auth login` asks for `repo`, `read:org` and `gist` by default; `workflow` lets an agent push changes to `.github/workflows`. The token must be in gh's own file, `~/.config/gh/hosts.yml`, not a keyring: the sandbox hides `/run/user`, where a keyring's D-Bus socket is, and passes no `GH_TOKEN`. `--insecure-storage` keeps it in the file; a gh whose `gh auth login --help` does not list that flag is old enough to keep it there anyway, so leave the flag out. Check it with the environment pocketd gives a command, which prints nothing of the token: `env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/local/bin gh auth token --hostname github.com >/dev/null && echo ok`, the `PATH` in the order pocketd looks for gh, with `XDG_CONFIG_HOME=…` added as in the shell.
 
-**The `ready-for-human` label.** pocketd keeps it on a linked pull request that is open and not a draft exactly while a cross-review by another family filed `ready` at its head, base branch and merge base, and CI at the head is green: every check run completed as `success`, `neutral` or `skipped`, every commit status `success`, and at least one of them exists, not counting check runs named `pr-triage` or `pr-triage / pr-triage`, whatever made them (`github.ignored`), all read whole within ten pages of 100 each (`github.CIChecks`; a longer or shifting list counts as pending), so a repository with no CI never gets the label ([ADR-0017](../adr/0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md)). A merged or closed pull request keeps its labels. pocketd writes nothing else on GitHub. Create the label in each repository first, so it has the colour and description you want: `gh label create ready-for-human --repo your-org/your-repo --description "Cross-reviewed, CI green"`.
+**The `ready-for-human` label.** pocketd keeps it on a linked pull request that is open and not a draft exactly while a cross-review by another family filed `ready` at its head, base branch and merge base, and CI at the head is green: every check run completed as `success`, `neutral` or `skipped`, every commit status `success`, and at least one of them exists, not counting check runs named `pr-triage` or `pr-triage / pr-triage`, whatever made them (`github.ignored`), all read whole within ten pages of 100 each (`github.CIChecks`; a longer or shifting list counts as pending), so a repository with no CI never gets the label ([ADR-0017](../adr/0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md)). A merged or closed pull request keeps its labels. pocketd writes nothing else on GitHub. Create the label in each repository first, so it has the colour and description you want: `gh label create ready-for-human --repo your-org/your-repo --color 0E8A16 --description "Cross-reviewed, CI green"`.
 
 ### 7. The profile folder
 
@@ -181,7 +194,7 @@ Only `<id>.md` files whose id starts with a lowercase letter or digit, followed 
 | `tools` | the coding tools it may call; without it, all of them |
 | `mcp` | a list of MCP server names, checked and kept; nothing in pocketd uses it yet |
 
-**Start from the examples** in [`examples/profiles/`](../../examples/profiles/): `supervisor.md`, a standing supervisor on Claude; `builder.md`, a specialist on ChatGPT with one repository; `workers.json`; `schedules.json`; and three prompts. Copy them into the service's profile folder from your machine, then change `builder.md`'s repository to one of yours. For the default folder:
+**Start from the examples** in [`examples/profiles/`](../../examples/profiles/): `supervisor.md`, a standing supervisor on Claude; `builder.md`, a specialist on ChatGPT with one repository; `workers.json`; `schedules.json`; and three prompts. Change `builder.md`'s repository to one of yours in your copy, then copy them into the service's profile folder from your machine. For the default folder:
 
 ```sh
 scp examples/profiles/*.md examples/profiles/workers.json <user>@<host>:.config/pi-pocket-team/agents/
@@ -215,9 +228,9 @@ git clone https://github.com/your-org/your-repo ~/src/your-repo
 
 Restart pocketd after a change, then check `~/.local/bin/pocketd models`, which says why a model was not added.
 
-**Outside the folder,** every session also holds your global instructions, `~/.pi/agent/AGENTS.md`, and lists the skills of `~/.pi/agent/skills/<name>/SKILL.md`; a session in a folder also gets that folder's `AGENTS.md` and its `.pi/skills`, but a cross-review, whose folder is the change under review, gets neither ([ADR-0043](../adr/0043-load-the-global-and-folder-agents-md-and-the-skills-into-every-session.md)). The global file and the skills folder are read-only to agents ([ADR-0035](../adr/0035-make-the-skills-and-uploads-folders-read-only-to-agents.md), [ADR-0045](../adr/0045-make-the-global-instructions-file-read-only-to-agents.md)). Change them in place, as `cp` writes a file: replacing the file by a rename, or removing or replacing the skills folder, stops every command running in the sandbox. pocketd reads these files when it makes a session, and for a standing session again at its Start Over, never at a later message: an edit reaches new sessions, and the supervisor's standing session once you start it over. An edit of a profile itself reaches a standing session at its next refresh.
+**Outside the folder,** every session also holds your global instructions, `~/.pi/agent/AGENTS.md`, and lists the skills of `~/.pi/agent/skills/<name>/SKILL.md`; a session in a folder also gets that folder's `AGENTS.md` and its `.pi/skills`, but a cross-review, whose folder is the change under review, gets neither ([ADR-0043](../adr/0043-load-the-global-and-folder-agents-md-and-the-skills-into-every-session.md)). The global file and the skills folder are read-only to agents ([ADR-0035](../adr/0035-make-the-skills-and-uploads-folders-read-only-to-agents.md), [ADR-0045](../adr/0045-make-the-global-instructions-file-read-only-to-agents.md)). Change the global file with pocketd stopped: replacing it by a rename while pocketd runs stops every command running in the sandbox, and a session made during an in-place write keeps what it read. Change the skills inside their folder; removing or replacing the folder itself stops every command too. pocketd reads these files when it makes a session, and for a standing session again at its Start Over, never at a later message: an edit reaches new sessions, and the supervisor's standing session once you start it over. An edit of a profile itself reaches a standing session at its next refresh.
 
-**Keep it in a private repository.** Keep your profiles, `workers.json`, `providers.json`, `schedules.json`, prompts, global `AGENTS.md` and skills in a private repository, and copy them to the host from a checkout on your own machine, with pocketd stopped, so no session starts from a half-copied file and any way of writing will do. While it runs, copy the profile folder and `skills/` with `rsync -rt`, which writes each file whole under a temporary name and renames it into place, and the global `AGENTS.md` in place, as one file, with `cp` or `rsync --inplace`: `~/.pi/agent` also holds Pi's own files. Neither command removes a file you deleted from your copy, so an old schedule or a renamed agent's profile stays live: remove it on the host by hand, or add `--delete` to `rsync` for a folder your copy holds whole (the profile folder, `skills/`), never `~/.pi/agent`, with a trailing `/` on both folders so it changes what is in the folder and never the folder itself. Copy from a checkout agents cannot write: the rest of the service user's home is theirs to change, so a clone there could hand you their edits at the next sync. Never commit real profiles that name hosts or addresses of your network to a public fork.
+**Keep it in a private repository.** Keep your profiles, `workers.json`, `providers.json`, `schedules.json`, prompts, global `AGENTS.md` and skills in a private repository, and copy them to the host from a checkout on your own machine, with pocketd stopped, so no session starts from a half-copied file and any way of writing will do. While it runs, copy only the profile folder and `skills/`, with `rsync -rt`, which writes each file whole under a temporary name and renames it into place. Copy the global `AGENTS.md` as one file, with pocketd stopped: `~/.pi/agent` also holds Pi's own files. Neither command removes a file you deleted from your copy, so an old schedule or a renamed agent's profile stays live: remove it on the host by hand, or add `--delete` to `rsync` for a folder your copy holds whole (the profile folder, `skills/`), never `~/.pi/agent`, with a trailing `/` on both folders so it changes what is in the folder and never the folder itself. Copy from a checkout agents cannot write: the rest of the service user's home is theirs to change, so a clone there could hand you their edits at the next sync. Never commit real profiles that name hosts or addresses of your network to a public fork.
 
 ### 8. Devices
 
@@ -313,7 +326,7 @@ Before it binds its port, `pocketd serve` makes the sandbox and proves it with t
 | `… is a symbolic link the service user can change: pocketd cannot protect …` | a protected path, such as the profile folder, the skills folder or `~/.config/systemd`, is a link the user owns: make it a real folder, or name the real folder with `-profiles`, `-skills` or their variables |
 | `… leads through something the service user can change` | the same, for a folder on the way to a protected path, or a link in the systemd folders to a file the user can change |
 | `… is not empty in the sandbox` or `… is on a mount that is not read-only in the sandbox` | a mount the masks or the read-only binds miss: look at `/proc/self/mountinfo` for a second mount of the named path |
-| `no regular file` | the global instructions path holds a folder or another kind of file: make it a regular file, or set `-instructions ""` for none |
+| `no regular file` | the global instructions path holds a folder or another kind of file: make it a regular file, or turn the global instructions off with `-instructions=` in the unit's drop-in (step 2) |
 
 **Try a host before the first deploy:** build `pocketd` for it in `service` (`CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/pocketd`, or `GOARCH=arm64` for an arm64 host, as `deploy.sh` picks from `uname -m`), copy it to the host, and run it as the service user with a new, empty data folder: `d=$(mktemp -d) && setpriv --no-new-privs ./pocketd serve -data "$d" -profiles "" -listen 127.0.0.1:0; rm -rf "$d"`, where `setpriv --no-new-privs` matches the unit's `NoNewPrivileges=yes`, so a bwrap that works only as setuid fails here as it would there. `-profiles ""` reads no profile, schedule or provider, so nothing of yours runs. It logs `pocketd serving`, or why the check failed; stop it with Ctrl-C, and the folder goes.
 

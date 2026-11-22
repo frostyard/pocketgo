@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide asks for the anthropic and openai-codex sign-ins the examples and their reviews need, and names github-copilot as optional.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 8 (codex-cli 0.169.0) of head 01008a6: [P2] Mark the Copilot sign-in as optional for the walkthrough",
+  "promoted_to": "docs/design/setup.md"
+}
