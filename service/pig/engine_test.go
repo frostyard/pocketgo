@@ -65,11 +65,15 @@ type fixture struct {
 	mu       sync.Mutex
 	entries  []proto.Entry
 	lives    []proto.Live
+	// livened gets a signal after each live state the watch reports: the
+	// watch reports on its own goroutine, so a test waits for what it
+	// looks for (waitLive) rather than reading once (#110).
+	livened chan struct{}
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{t: t, dataDir: t.TempDir(), work: t.TempDir(), requests: make(chan proto.Approval, 16)}
+	f := &fixture{t: t, dataDir: t.TempDir(), work: t.TempDir(), requests: make(chan proto.Approval, 16), livened: make(chan struct{}, 1)}
 	s, err := store.Open(context.Background(), filepath.Join(f.dataDir, "work.sqlite"), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +103,15 @@ func (f *fixture) openWith(models *ai.Models, needs func(string) bool) *Engine {
 		NeedsApproval: needs,
 		Unsandboxed:   true,
 		OnEntry:       func(entry proto.Entry) { f.mu.Lock(); f.entries = append(f.entries, entry); f.mu.Unlock() },
-		OnLive:        func(live proto.Live) { f.mu.Lock(); f.lives = append(f.lives, live); f.mu.Unlock() },
+		OnLive: func(live proto.Live) {
+			f.mu.Lock()
+			f.lives = append(f.lives, live)
+			f.mu.Unlock()
+			select {
+			case f.livened <- struct{}{}:
+			default:
+			}
+		},
 	}, models)
 	if err != nil {
 		f.t.Fatal(err)
@@ -116,6 +128,27 @@ func (f *fixture) nextApproval() proto.Approval {
 	case <-time.After(10 * time.Second):
 		f.t.Fatal("no approval was requested")
 		return proto.Approval{}
+	}
+}
+
+// waitLive waits, at most 10 seconds, until found finds what it looks for
+// in the live states the watch reported, read under f.mu, and says whether
+// it did.
+func (f *fixture) waitLive(found func(lives []proto.Live) bool) bool {
+	f.t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		f.mu.Lock()
+		ok := found(f.lives)
+		f.mu.Unlock()
+		if ok {
+			return true
+		}
+		select {
+		case <-f.livened:
+		case <-deadline:
+			return false
+		}
 	}
 }
 
@@ -674,16 +707,18 @@ func TestASupervisorsMessageCarriesItsSender(t *testing.T) {
 	if err != nil || len(live.Queued) != 1 || live.Queued[0].SubmissionID != second || live.Queued[0].Sender == nil || *live.Queued[0].Sender != want {
 		t.Fatalf("while it waits: queued %+v, %v", live.Queued, err)
 	}
-	f.mu.Lock()
+	// The watch reports on its own goroutine: wait for its queue (#110).
 	var watchedQueue *proto.QueuedMessage
-	for _, l := range f.lives {
-		for _, q := range l.Queued {
-			if q.SubmissionID == second {
-				watchedQueue = &q
+	f.waitLive(func(lives []proto.Live) bool {
+		for _, l := range lives {
+			for _, q := range l.Queued {
+				if q.SubmissionID == second {
+					watchedQueue = &q
+				}
 			}
 		}
-	}
-	f.mu.Unlock()
+		return watchedQueue != nil
+	})
 	if watchedQueue == nil || watchedQueue.Sender == nil || *watchedQueue.Sender != want {
 		t.Fatalf("the watch's queue %+v", watchedQueue)
 	}
