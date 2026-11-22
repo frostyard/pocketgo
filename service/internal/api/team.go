@@ -533,7 +533,7 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	}
 	// Its profile's MCP tools as they are now, a building specialist's
 	// alone (ADR-0063).
-	s.mcpAfterCreate(db, id, profile, roleOfSpec(spec))
+	s.mcpAfterCreate(db, id, profile, threadRole(attached))
 	s.publishSession(id, true)
 	s.publishThread(attached)
 	if profile != "" {

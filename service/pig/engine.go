@@ -890,7 +890,7 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 			extensions, list = append(extensions, e.scheduleExt), append(list, e.scheduleExt.Tools...)
 		}
 		if mcpExt != nil {
-			extensions, list = append(extensions, mcpExt), append(list, mcpExt.Tools...)
+			extensions, list = append(extensions, mcpExt), append(list, mcpWithin(mcpExt.Tools, len(list))...)
 		}
 		return extensions, list, nil
 	}
@@ -898,7 +898,7 @@ func (e *Engine) toolsOf(spec api.SessionSpec) ([]*durable.Extension, []*durable
 		// Exactly the profile's tools (ADR-0013), and its MCP tools.
 		list, err := e.toolsNamed(spec.Profile.Tools)
 		if err == nil && mcpExt != nil {
-			extensions, list = append(extensions, mcpExt), append(list, mcpExt.Tools...)
+			extensions, list = append(extensions, mcpExt), append(list, mcpWithin(mcpExt.Tools, len(list))...)
 		}
 		return extensions, list, err
 	}

@@ -1,6 +1,7 @@
 package pig
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -69,12 +70,15 @@ type fakeMCP struct {
 	// images is how many images the pictures tool answers, and big how
 	// many bytes of text the big tool does.
 	images, big int
+	// hold, when set, keeps every initialize waiting until it is closed,
+	// after it says so on arrived.
+	hold, arrived chan struct{}
 }
 
 func newFakeMCP(t *testing.T) *fakeMCP {
 	f := &fakeMCP{t: t, access: map[string]bool{}, challenges: map[string]string{}, tools: []map[string]any{
 		{"name": "search", "description": "Search the notes.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}},
-		{"name": "echo-auth", "description": "Say what came.", "inputSchema": map[string]any{"type": "object"}},
+		{"name": "echo_auth", "description": "Say what came.", "inputSchema": map[string]any{"type": "object"}},
 	}}
 	mcpTransport = f
 	t.Cleanup(func() { mcpTransport = nil })
@@ -82,6 +86,17 @@ func newFakeMCP(t *testing.T) *fakeMCP {
 }
 
 func (f *fakeMCP) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.mu.Lock()
+	hold, arrived := f.hold, f.arrived
+	f.mu.Unlock()
+	if hold != nil && r.Body != nil {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if bytes.Contains(body, []byte(`"method":"initialize"`)) {
+			arrived <- struct{}{}
+			<-hold
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seen = append(f.seen, r.Method+" "+r.URL.String())
@@ -211,11 +226,15 @@ func (f *fakeMCP) serveMCP(w http.ResponseWriter, r *http.Request, body []byte) 
 		result = map[string]any{"tools": f.tools}
 	case "tools/call":
 		f.calls = append(f.calls, message.Params.Name)
+		if message.Params.Name == "busy" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
 		text := "found: " + toString(message.Params.Arguments["q"])
 		switch message.Params.Name {
-		case "echo-auth":
+		case "echo_auth":
 			text = "you sent " + r.Header.Get("Authorization")
-		case "echo-token":
+		case "echo_token":
 			_, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 			text = "your token is " + token
 		case "big":
@@ -364,7 +383,7 @@ func TestAProfilesHeaderServerIsCalledWithTheKeptHeader(t *testing.T) {
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if !slices.Equal(fake.calls, []string{"search", "echo-auth"}) {
+	if !slices.Equal(fake.calls, []string{"search", "echo_auth"}) {
 		t.Fatalf("calls %v", fake.calls)
 	}
 }
@@ -714,46 +733,49 @@ func TestSetMCPToolsGivesAnOlderSessionTheTools(t *testing.T) {
 	}
 }
 
-// Tool names are PiG's: mcp__<server>__<tool>, every other character made
-// _, at most 64, shortened with a digest when too long or read alike.
-func TestMCPToolNames(t *testing.T) {
-	names := func(tools ...string) []string {
-		var list []mcpTool
-		for _, name := range tools {
-			list = append(list, mcpTool{Name: name})
-		}
-		return mcpToolNames([]string{"notes-main"}, map[string][]mcpTool{"notes-main": list})["notes-main"]
+// mcpNamesOf are the names server's tools are offered as.
+func mcpNamesOf(server string, tools ...string) []string {
+	var list []mcpTool
+	for _, name := range tools {
+		list = append(list, mcpTool{Name: name})
 	}
-	if got := names("find.note"); !slices.Equal(got, []string{"mcp__notes_main__find_note"}) {
+	return mcpToolNames([]string{server}, map[string][]mcpTool{server: list})[server]
+}
+
+// Tool names are PiG's, mcp__<server>__<tool>, with the server's name
+// made _ where it is no letter or digit; a tool whose name needs the
+// same, or is too long, takes a digest of both names.
+func TestMCPToolNames(t *testing.T) {
+	if got := mcpNamesOf("notes-main", "find_note"); !slices.Equal(got, []string{"mcp__notes_main__find_note"}) {
 		t.Errorf("got %v", got)
 	}
-	long := names(strings.Repeat("x", 80))[0]
+	if got := mcpNamesOf("notes-main", "find.note")[0]; got != mcpDigestName("notes-main", "find.note") {
+		t.Errorf("a tool name that is not plain: %s", got)
+	}
+	long := mcpNamesOf("notes-main", strings.Repeat("x", 80))[0]
 	if len(long) != maxMCPToolName || !strings.HasPrefix(long, "mcp__notes_main__xxx") || long != mcpDigestName("notes-main", strings.Repeat("x", 80)) {
 		t.Errorf("long %s", long)
 	}
 }
 
 // A name stays bound to its tool, whatever the order a server lists its
-// tools in: two that read alike both take their digest names, so neither
-// takes the other's on a listing in another order (Codex review of #126,
-// round 1).
+// tools in (Codex review of #126, round 1), and whatever a later listing
+// holds: a tool replaced by one whose name reads alike never takes its
+// name (round 2).
 func TestAToolsNameDoesNotMoveWhenTheListingIsReordered(t *testing.T) {
-	list := func(tools ...string) map[string][]mcpTool {
-		var out []mcpTool
-		for _, name := range tools {
-			out = append(out, mcpTool{Name: name})
-		}
-		return map[string][]mcpTool{"notes": out}
-	}
-	first := mcpToolNames([]string{"notes"}, list("a-b", "a_b"))["notes"]
-	again := mcpToolNames([]string{"notes"}, list("a_b", "a-b"))["notes"]
+	first := mcpNamesOf("notes", "a-b", "a_b")
+	again := mcpNamesOf("notes", "a_b", "a-b")
 	if first[0] != again[1] || first[1] != again[0] || first[0] == first[1] {
 		t.Fatalf("names %v, then %v", first, again)
 	}
-	for _, name := range first {
-		if name == "mcp__notes__a_b" {
-			t.Fatalf("a tool took the plain name both read as: %v", first)
-		}
+	before := mcpNamesOf("notes", "find.note")
+	after := mcpNamesOf("notes", "find_note")
+	if before[0] == after[0] {
+		t.Fatalf("find.note and then find_note were both %s", before[0])
+	}
+	// Server names whose parts would run together take digests.
+	if a, b := mcpNamesOf("x__", "a")[0], mcpNamesOf("x_", "_a")[0]; a == b {
+		t.Fatalf("both %s", a)
 	}
 }
 

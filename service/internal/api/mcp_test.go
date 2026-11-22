@@ -99,3 +99,50 @@ func TestStartMCPWithNoServerDoesNothing(t *testing.T) {
 		t.Fatalf("connects %d, sessions %v", h.engine.mcpConnects, h.engine.mcpTools)
 	}
 }
+
+// A plan's lead takes no MCP tool, as the work database records its
+// thread, however its session's spec was made again: the record of its
+// session takes any it has, and so does every pass (Codex review of #126,
+// round 2).
+func TestAPlansLeadTakesNoMCPTool(t *testing.T) {
+	h := newTeamHarness(t)
+	h.engine.mcpProfiles = []string{"duncan"}
+	ctx := context.Background()
+	if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 1, CallID: "plan"},
+		team.Delegation{Agent: "duncan", Task: "Plan the signing of the ISO.", Title: "Signing", Plan: &team.PlanRef{Start: true}}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.store.Thread(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !threadRole(thread).Plan {
+		t.Fatalf("thread %+v is no plan's", thread)
+	}
+	h.server.StartMCP()
+	h.server.passes.Wait()
+	if got := h.engine.mcpTools[thread.Session]; !slices.Equal(got, []string{"", ""}) {
+		t.Fatalf("the lead was given the MCP tools of %q", got)
+	}
+}
+
+// A new session's MCP tools are written under mcpMu, as a pass writes
+// them: the two never write one session's tools past one another (Codex
+// review of #126, round 2).
+func TestANewSessionsMCPToolsAreWrittenUnderTheLockOfThePasses(t *testing.T) {
+	h := newTeamHarness(t)
+	h.engine.mcpProfiles = []string{"duncan"}
+	held := true
+	h.engine.onSetMCPTools = func() {
+		if h.server.mcpMu.TryLock() {
+			held = false
+			h.server.mcpMu.Unlock()
+		}
+	}
+	if _, err := h.client.CreateSession(context.Background(), proto.CreateSession{RequestID: "own", Profile: "duncan"}); err != nil {
+		t.Fatal(err)
+	}
+	if !held || len(h.engine.mcpTools) != 1 {
+		t.Fatalf("a new session's MCP tools were written outside mcpMu (held %v, %v)", held, h.engine.mcpTools)
+	}
+}

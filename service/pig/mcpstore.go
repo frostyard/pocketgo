@@ -262,7 +262,8 @@ func (s *mcpStore) setListing(name, url string, tools []mcpTool) error {
 
 // secrets are every secret the store holds, longest first: each header's
 // value, and its credential (headerCredential) on its own, as a server
-// may echo the token alone; and the OAuth tokens and client secrets. No
+// may echo the token alone; and the OAuth tokens (an OpenID one too) and
+// client secrets. No
 // text pocketd shows, a tool's result included, holds one (redact).
 func (s *mcpStore) secrets() []string {
 	s.mu.Lock()
@@ -284,6 +285,7 @@ func (s *mcpStore) secrets() []string {
 		if t := c.OAuth.Tokens; t != nil {
 			add(t.AccessToken)
 			add(t.RefreshToken)
+			add(t.IDToken)
 		}
 		if ci := c.OAuth.ClientInformation; ci != nil {
 			add(ci.ClientSecret)

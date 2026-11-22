@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Track whether an MCP listing was kept apart from the listing offered: the next listing of the same tools writes it again, and pocketd mcp says it was not kept.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P2] Retry a listing write that failed before reporting it as kept",
+  "promoted_to": "service/pig/mcp_round2_test.go"
+}

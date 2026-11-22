@@ -119,6 +119,8 @@ type fakeEngine struct {
 	mcpProfiles []string
 	mcpConnects int
 	mcpTools    map[int64][]string
+	// onSetMCPTools sees each SetMCPTools, before it records it.
+	onSetMCPTools func()
 	// onBusy sees each Busy, before it answers; busy are sessions at work
 	// whatever runFirst says. onTranscriptAfter sees each TranscriptAfter,
 	// before it reads.
@@ -503,6 +505,12 @@ func (f *fakeEngine) ConnectMCP(context.Context) {
 
 // SetMCPTools records the profile each session was given the MCP tools of.
 func (f *fakeEngine) SetMCPTools(_ context.Context, id int64, profile string) (bool, error) {
+	f.mu.Lock()
+	seen := f.onSetMCPTools
+	f.mu.Unlock()
+	if seen != nil {
+		seen()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.mcpTools == nil {

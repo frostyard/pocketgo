@@ -41,8 +41,17 @@ const (
 	// maxMCPToolName is a tool's name at most: a model provider takes 64
 	// characters.
 	maxMCPToolName = 64
-	// maxMCPTools is the tools pocketd offers of one server at most.
-	maxMCPTools = 128
+	// maxMCPTools is the tools pocketd takes of one server at most, and
+	// maxProfileMCPTools of all a profile's servers, in the order of its
+	// mcp list: the rest of a session's tools fit beside them in
+	// maxSessionTools.
+	maxMCPTools        = 128
+	maxProfileMCPTools = 96
+	// maxSessionTools is the tools a session is offered at most: the
+	// fewest a model provider pocketd runs takes (OpenAI's Chat
+	// Completions, 128 functions). A session's MCP tools give way to its
+	// own.
+	maxSessionTools = 128
 	// maxMCPDescription bounds a tool's description, in bytes.
 	maxMCPDescription = 2048
 	// maxMCPSchema bounds a tool's input schema, in bytes: a larger one
@@ -72,7 +81,10 @@ var mcpTransport http.RoundTripper
 // mcpAfter runs f once after d, unless the stop it returns is called
 // first: the retries of a server that failed at start. Tests replace it,
 // so none waits on the clock.
-var mcpAfter = func(d time.Duration, f func()) (stop func() bool) { return time.AfterFunc(d, f).Stop }
+var mcpAfter = defaultMCPAfter
+
+// defaultMCPAfter is mcpAfter on the clock.
+func defaultMCPAfter(d time.Duration, f func()) (stop func() bool) { return time.AfterFunc(d, f).Stop }
 
 // mcpClient is the HTTP client of the MCP servers' requests, their OAuth
 // ones included: on directTransport, no proxy whatever HTTP_PROXY says, a
@@ -118,28 +130,33 @@ func mcpDigestName(server, tool string) string {
 	return name[:min(len(name), maxMCPToolName-len(digest)-1)] + "_" + digest
 }
 
+// delimited says whether a part of a plain tool name leaves the __
+// between the server and the tool the first __ of the name: no __ in it,
+// and no _ at either end.
+func delimited(part string) bool {
+	return part != "" && !strings.Contains(part, "__") && !strings.HasPrefix(part, "_") && !strings.HasSuffix(part, "_")
+}
+
 // mcpToolNames are the names a profile's tools are offered as, in order,
 // by server and tool: a tool's plain name when it is at most 64
-// characters and no other tool of the profile reads alike, else its
-// digest name. A name follows from the tool alone and the names it reads
-// alike with, never the listing's order, so a name never moves to another
-// tool: one whose plain name another tool comes to share loses it, and
-// calls of it fail rather than reach the other. A name still taken, which
-// no listing pocketd keeps makes (toolsOf drops a name listed twice), is
-// "": the tool is not offered.
+// characters, the server's part is delimited, and the tool's name reads
+// in it as itself (letters, digits and _ alone, delimited), else its
+// digest name. Either follows from the server's and the tool's names
+// alone, and no two tools share one, in any listing: mcp.json gives no two
+// servers parts alike (profiles.ParseMCP), a plain name reads back to
+// exactly one server and tool, and a digest name is of the two names as
+// they are. So a name never moves to another tool, whatever a listing's
+// order or what a later listing holds: find.note and find_note never
+// share one. A name still taken, which a digest's collision alone could
+// make, is "": the tool is not offered.
 func mcpToolNames(servers []string, tools map[string][]mcpTool) map[string][]string {
-	alike := map[string]int{}
-	for _, server := range servers {
-		for _, tool := range tools[server] {
-			alike[mcpPlainName(server, tool.Name)]++
-		}
-	}
 	out := map[string][]string{}
 	used := map[string]bool{}
 	for _, server := range servers {
 		for _, tool := range tools[server] {
 			name := mcpPlainName(server, tool.Name)
-			if len(name) > maxMCPToolName || alike[name] > 1 {
+			if !delimited(profiles.MCPNamespace(server)) || profiles.MCPNamespace(tool.Name) != tool.Name || !delimited(tool.Name) ||
+				len(name) > maxMCPToolName {
 				name = mcpDigestName(server, tool.Name)
 			}
 			if used[name] {
@@ -178,6 +195,8 @@ type mcpHub struct {
 	// retries stop each retry that waits, by server.
 	retries map[string]func() bool
 	closed  bool
+	// unkept are why each server's last listing is not kept, by server.
+	unkept map[string]error
 }
 
 // mcpConn is one server's connection: made when needed, and made again
@@ -185,10 +204,12 @@ type mcpHub struct {
 type mcpConn struct {
 	hub    *mcpHub
 	server profiles.MCPServer
-	// mu guards client and state; it is taken before hub.mu, never after.
-	mu     sync.Mutex
-	client *mcp.Client
-	state  string
+	// mu guards client, attempt and state; it is taken before hub.mu,
+	// never after, and held across no exchange with the server.
+	mu      sync.Mutex
+	client  *mcp.Client
+	attempt *mcpAttempt
+	state   string
 }
 
 // newMCPHub is the hub of servers, as mcp.json has them, for the profiles'
@@ -263,8 +284,12 @@ func (h *mcpHub) installLocked(profile string) error {
 	for _, server := range h.servers[profile] {
 		c := h.conns[server]
 		for i, tool := range h.tools[server] {
-			if names[server][i] == "" {
+			switch {
+			case names[server][i] == "":
 				h.log.Warn("an MCP tool is not offered: its name is another's", "server", server)
+				continue
+			case len(ext.Tools) == maxProfileMCPTools:
+				h.log.Warn("an MCP tool is not offered: the profile's servers list more than a session takes", "server", server, "most", maxProfileMCPTools)
 				continue
 			}
 			ext.Tools = append(ext.Tools, c.registration(names[server][i], tool))
@@ -293,7 +318,7 @@ func (h *mcpHub) sanitize(server string, tools []mcpTool) []mcpTool {
 		seen[t.Name] = true
 		t.Description = cut(redact(t.Description, secrets), maxMCPDescription)
 		t.InputSchema = normalSchema(t.InputSchema)
-		if holdsSecret(string(t.InputSchema), secrets) {
+		if holdsSecret(string(t.InputSchema), secrets) || decodedHoldsSecret(t.InputSchema, secrets) {
 			h.log.Warn("an MCP tool's schema holds a secret pocketd keeps: it is offered with none", "server", server)
 			t.InputSchema = json.RawMessage(emptySchema)
 		}
@@ -314,6 +339,10 @@ func (h *mcpHub) listed(name string, tools []mcpTool) {
 		defer h.mu.Unlock()
 		old, had := h.tools[name]
 		if had && mcpToolsEqual(old, tools) {
+			// The same tools: kept, or kept now, if a write failed before.
+			if h.unkept[name] != nil {
+				h.keepLocked(name, tools)
+			}
 			return
 		}
 		h.tools[name] = tools
@@ -337,15 +366,36 @@ func (h *mcpHub) listed(name string, tools []mcpTool) {
 				return
 			}
 		}
-		if err := h.store.setListing(name, h.conns[name].server.URL, tools); err != nil {
-			h.log.Warn("keep an MCP server's tools", "server", name, "err", err)
-		}
+		h.keepLocked(name, tools)
 	}()
 	if h.changed != nil {
 		for _, profile := range profiles {
 			h.changed(profile)
 		}
 	}
+}
+
+// keepLocked writes tools as what server name listed last, and notes a
+// write that failed (unkept), which the next listing tries again; mu is
+// held.
+func (h *mcpHub) keepLocked(name string, tools []mcpTool) {
+	if h.unkept == nil {
+		h.unkept = map[string]error{}
+	}
+	if err := h.store.setListing(name, h.conns[name].server.URL, tools); err != nil {
+		h.unkept[name] = err
+		h.log.Warn("keep an MCP server's tools", "server", name, "err", err)
+		return
+	}
+	delete(h.unkept, name)
+}
+
+// keptErr is why the tools server name listed last are not kept, nil
+// when they are.
+func (h *mcpHub) keptErr(name string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.unkept[name]
 }
 
 func mcpToolsEqual(a, b []mcpTool) bool {
@@ -376,12 +426,13 @@ func (h *mcpHub) connectAll(ctx context.Context) {
 }
 
 // mayPass says whether a connection's failure may pass with no step of
-// the owner's: not a header or a sign-in pocketd lacks, nor a sign-in the
-// server refused.
+// the owner's: not a header or a sign-in pocketd lacks, nor a stored
+// header or a sign-in the server refused (a 401 after any refresh).
 func mayPass(err error) bool {
 	var oauthErr *oauth.OAuthError
+	var auth *mcp.McpAuthRequiredError
 	return !errors.Is(err, errMCPNeedsHeader) && !errors.Is(err, errMCPNotSignedIn) && !errors.Is(err, errMCPSignIn) &&
-		!errors.As(err, &oauthErr)
+		!errors.As(err, &oauthErr) && !errors.As(err, &auth)
 }
 
 // retryLater connects c again after wait, and again after twice the wait,
@@ -459,7 +510,7 @@ func (h *mcpHub) close(ctx context.Context) {
 func (c *mcpConn) registration(name string, tool mcpTool) *durable.ToolRegistration {
 	description := tool.Description
 	if description == "" {
-		description = "MCP tool " + tool.Name + " of the server " + c.server.Name + "."
+		description = cut("MCP tool "+tool.Name+" of the server "+c.server.Name+".", maxMCPDescription)
 	}
 	return &durable.ToolRegistration{
 		ToolSchema: mcpSchema(name, description, tool.InputSchema),
@@ -556,23 +607,82 @@ var (
 	errMCPRefresh = errors.New("could not refresh its sign-in")
 )
 
+// mcpAttempt is one attempt to connect a server, which every caller that
+// needs the connection meanwhile waits for, each until its own context
+// ends: a caller that stops waiting stops none of the others.
+type mcpAttempt struct {
+	done   chan struct{}
+	client *mcp.Client
+	err    error
+}
+
 // connect is the server's connection, made when there is none; list reads
-// its tools again on one there is. It needs every header mcp.json names
-// stored for the server's URL, and its sign-in when it signs in, else it
-// tries nothing.
+// its tools again on one there is. A connection being made is waited for,
+// until ctx ends, not made twice; it is made under the hub's context, so a
+// caller that stops waiting stops it for nobody. It needs every header
+// mcp.json names stored for the server's URL, and its sign-in when it
+// signs in, else it tries nothing.
 func (c *mcpConn) connect(ctx context.Context, list bool) (*mcp.Client, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.client != nil && c.client.ConnectionState() == mcp.ClientStateConnected {
+		client := c.client
+		c.mu.Unlock()
 		if list {
-			if err := c.listLocked(ctx, c.client); err != nil {
-				c.dropLocked(c.client)
+			if err := c.list(ctx, client); err != nil {
+				c.drop(client)
 				return nil, err
 			}
 		}
-		return c.client, nil
+		return client, nil
 	}
-	c.dropLocked(c.client)
+	attempt := c.attempt
+	if attempt == nil {
+		attempt = &mcpAttempt{done: make(chan struct{})}
+		c.attempt = attempt
+		if c.client != nil {
+			_ = c.client.Close()
+			c.client = nil
+		}
+		go c.dial(attempt)
+	}
+	c.mu.Unlock()
+	select {
+	case <-attempt.done:
+		return attempt.client, attempt.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// dial makes attempt: the connection, and the listing of the server's
+// tools, within the server's timeout, under the hub's context.
+func (c *mcpConn) dial(attempt *mcpAttempt) {
+	parent := c.hub.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, c.server.Timeout)
+	defer cancel()
+	client, err := c.open(ctx)
+	if err == nil {
+		if err = c.list(ctx, client); err != nil {
+			_ = client.Close()
+			client = nil
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.attempt = nil
+	attempt.client, attempt.err = client, err
+	if err == nil {
+		c.client = client
+		c.setStateLocked("connected", nil)
+	}
+	close(attempt.done)
+}
+
+// open connects to the server with what the store keeps for it.
+func (c *mcpConn) open(ctx context.Context) (*mcp.Client, error) {
 	store, server := c.hub.store, c.server
 	headers, missing := store.headers(server.Name, server.URL, server.Headers)
 	if len(missing) > 0 {
@@ -599,17 +709,9 @@ func (c *mcpConn) connect(ctx context.Context, list bool) (*mcp.Client, error) {
 	}
 	timeout := int(server.Timeout / time.Millisecond)
 	client := mcp.NewClient(mcp.ClientOptions{Implementation: mcp.Implementation{Name: mcpClientName, Version: "1"}, RequestTimeoutMs: timeout})
-	connectCtx, cancel := context.WithTimeout(ctx, server.Timeout)
-	defer cancel()
-	if _, err := client.Connect(connectCtx, transport); err != nil {
+	if _, err := client.Connect(ctx, transport); err != nil {
 		return nil, err
 	}
-	if err := c.listLocked(connectCtx, client); err != nil {
-		_ = client.Close()
-		return nil, err
-	}
-	c.client = client
-	c.setStateLocked("connected", nil)
 	return client, nil
 }
 
@@ -617,8 +719,8 @@ func (c *mcpConn) connect(ctx context.Context, list bool) (*mcp.Client, error) {
 // registration.
 const mcpClientName = "pocketd"
 
-// listLocked reads the server's tools on client; mu is held.
-func (c *mcpConn) listLocked(ctx context.Context, client *mcp.Client) error {
+// list reads the server's tools on client.
+func (c *mcpConn) list(ctx context.Context, client *mcp.Client) error {
 	listed, err := client.ListTools(ctx, mcp.RequestOptions{})
 	if err != nil {
 		return err
@@ -701,6 +803,7 @@ func (c *mcpConn) call(ctx context.Context, tool string, args any) durable.ToolE
 		var rpc *mcp.McpError
 		var abort *mcp.McpAbortError
 		var timeout *mcp.McpTimeoutError
+		var status *mcp.McpHttpError
 		switch {
 		case errors.As(err, &expired) && attempt == 0:
 			c.drop(client)
@@ -708,8 +811,9 @@ func (c *mcpConn) call(ctx context.Context, tool string, args any) durable.ToolE
 		case errors.As(err, &rpc):
 			// The server's own answer to the call: the connection holds.
 			return toolText("", fmt.Errorf("MCP server %s refused the call: %s", c.server.Name, c.serverText(rpc.Message)))
-		case ctx.Err() != nil, errors.As(err, &abort), errors.As(err, &timeout):
-			// This call alone ended: the connection holds.
+		case ctx.Err() != nil, errors.As(err, &abort), errors.As(err, &timeout), errors.As(err, &status):
+			// This call alone ended, or the server refused it alone (an
+			// HTTP status, a 401 included): the connection holds.
 			return c.errorResult(err)
 		}
 		c.drop(client)
@@ -770,25 +874,89 @@ func (c *mcpConn) failure(err error) string {
 // server may echo what it was sent.
 func (c *mcpConn) redact(text string) string { return redact(text, c.hub.store.secrets()) }
 
-// redact is text with each of secrets, longest first, made [redacted].
+// redact is text with each of secrets, longest first, made [redacted]:
+// as it is, and as JSON writes it in a string, which a text that holds
+// JSON may.
 func redact(text string, secrets []string) string {
 	for _, secret := range secrets {
-		if secret != "" {
-			text = strings.ReplaceAll(text, secret, "[redacted]")
+		if secret == "" {
+			continue
+		}
+		text = strings.ReplaceAll(text, secret, "[redacted]")
+		if quoted := jsonInString(secret); quoted != secret {
+			text = strings.ReplaceAll(text, quoted, "[redacted]")
 		}
 	}
 	return text
+}
+
+// jsonInString is s as JSON writes it inside a string.
+func jsonInString(s string) string {
+	quoted, _ := json.Marshal(s)
+	return string(quoted[1 : len(quoted)-1])
+}
+
+// decodedHoldsSecret says whether JSON data holds one of secrets in a key
+// or a string value once decoded: an escape (s) spells one in other
+// bytes, which a model reads as the secret.
+func decodedHoldsSecret(data json.RawMessage, secrets []string) bool {
+	var value any
+	if json.Unmarshal(data, &value) != nil {
+		return false
+	}
+	found := false
+	walkJSON(value, func(s string) string {
+		found = found || holdsSecret(s, secrets)
+		return s
+	})
+	return found
+}
+
+// walkJSON calls f with each key and string value of a decoded JSON
+// value, and puts what f returns in its place.
+func walkJSON(value any, f func(string) string) any {
+	switch v := value.(type) {
+	case string:
+		return f(v)
+	case []any:
+		for i := range v {
+			v[i] = walkJSON(v[i], f)
+		}
+		return v
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[f(key)] = walkJSON(item, f)
+		}
+		return out
+	}
+	return value
+}
+
+// redactJSON is JSON data with every secret redacted in each key and
+// string value once decoded, encoded again: PiG renders a structured
+// result as text with JSON's escapes, which a secret's own spelling
+// would not match. Data that does not decode is none.
+func redactJSON(data json.RawMessage, secrets []string) json.RawMessage {
+	if len(data) == 0 {
+		return data
+	}
+	var value any
+	if json.Unmarshal(data, &value) != nil {
+		return nil
+	}
+	out, err := json.Marshal(walkJSON(value, func(s string) string { return redact(s, secrets) }))
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // holdsSecret says whether text holds one of secrets, as it is or as JSON
 // writes it in a string.
 func holdsSecret(text string, secrets []string) bool {
 	for _, secret := range secrets {
-		if secret == "" {
-			continue
-		}
-		quoted, _ := json.Marshal(secret)
-		if strings.Contains(text, secret) || strings.Contains(text, string(quoted[1:len(quoted)-1])) {
+		if secret != "" && (strings.Contains(text, secret) || strings.Contains(text, jsonInString(secret))) {
 			return true
 		}
 	}
@@ -798,15 +966,19 @@ func holdsSecret(text string, secrets []string) bool {
 // result is a call's result for the model: its text and images, within
 // their bounds, an error result when the server says the call failed, no
 // secret in it. The notices pocketd adds count in the text's bound: the
-// mark of a cut text, and one notice of the images left out.
+// mark of a cut text, and one notice of the images left out, both kept
+// room for before any text. A structured result is redacted before PiG
+// renders it as JSON, whose escapes a secret's spelling would not match.
 func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult {
 	const imagesNotice = "[pocketd left out %d images: a result takes at most %d, of at most %d bytes each]"
-	reserve := len(fmt.Sprintf(imagesNotice, 9_999_999_999, maxMCPImages, maxMCPImageBytes))
-	budget := maxMCPOutput - reserve
 	cutMark := fmt.Sprintf("\n[pocketd cut the rest: the result is longer than %d bytes]", maxMCPOutput)
+	budget := maxMCPOutput - len(fmt.Sprintf(imagesNotice, 9_999_999_999, maxMCPImages, maxMCPImageBytes)) - len(cutMark)
+	secrets := c.hub.store.secrets()
+	safe := *result
+	safe.StructuredContent = redactJSON(result.StructuredContent, secrets)
 	var out []ai.ToolResultMessageContent
 	images, dropped, done := 0, 0, false
-	for _, block := range mcp.ToLLMContent(*result) {
+	for _, block := range mcp.ToLLMContent(safe) {
 		if block.Type == mcp.LLMContentTypeImage {
 			if images >= maxMCPImages || len(block.Data) > maxMCPImageBytes {
 				dropped++
@@ -819,11 +991,11 @@ func (c *mcpConn) result(result *mcp.CallToolResult) durable.ToolExecutionResult
 		if done {
 			continue
 		}
-		s := c.redact(block.Text)
+		s := redact(block.Text, secrets)
 		if len(s) > budget {
-			s, done = cut(s, max(0, budget-len(cutMark)))+cutMark, true
+			s, done = cut(s, budget)+cutMark, true
 		}
-		budget -= len(s)
+		budget = max(0, budget-len(s))
 		out = append(out, ai.TextContent{Text: s})
 	}
 	if dropped > 0 {
@@ -876,6 +1048,12 @@ func (r refreshOnly) DiscoveryState(ctx context.Context) (*oauth.OAuthDiscoveryS
 	return r.p.DiscoveryState(ctx)
 }
 
+// mcpWithin are the first of tools that fit beside a session's own tools,
+// own of them, within maxSessionTools.
+func mcpWithin(tools []*durable.ToolRegistration, own int) []*durable.ToolRegistration {
+	return tools[:min(len(tools), max(0, maxSessionTools-own))]
+}
+
 // MCPProfiles are the profiles with an MCP server pocketd connects, as it
 // read them at start, sorted (ADR-0063).
 func (e *Engine) MCPProfiles() []string { return e.mcp.profiles() }
@@ -890,12 +1068,16 @@ func (e *Engine) ConnectMCP(ctx context.Context) { e.mcp.connectAll(ctx) }
 // pocketd holds them now, after its other tools, in its profile's
 // extension, and says whether it changed anything (ADR-0063). A session
 // that is offered every tool (no list) gets the extension alone, whose
-// tools it is then offered. Its caller decides which sessions take them
+// tools it is then offered. profile "" takes every MCP tool and extension
+// from the session: one that takes none, which an older run may have
+// given some. Its caller decides which sessions take them
 // (team.MayUseMCP).
 func (e *Engine) SetMCPTools(ctx context.Context, id int64, profile string) (bool, error) {
-	ext := e.mcp.extension(profile)
-	if ext == nil {
-		return false, nil
+	var ext *durable.Extension
+	if profile != "" {
+		if ext = e.mcp.extension(profile); ext == nil {
+			return false, nil
+		}
 	}
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
@@ -910,14 +1092,18 @@ func (e *Engine) SetMCPTools(ctx context.Context, id int64, profile string) (boo
 		return false, err
 	}
 	extensions := slices.DeleteFunc(slices.Clone(agent.Extensions), func(x *durable.Extension) bool { return isMCPExtension(x.Name) })
-	extensions = append(extensions, ext)
+	if ext != nil {
+		extensions = append(extensions, ext)
+	}
 	change, changed := harness.AgentChange{}, false
 	if !slices.Equal(extensionNames(agent.Extensions), extensionNames(extensions)) {
 		change.Extensions, changed = harness.SetTo(harness.ExtensionChange{List: extensions}), true
 	}
 	if stored.Tools != nil && stored.Tools.Exact {
 		tools := slices.DeleteFunc(slices.Clone(agent.Tools), func(t *durable.ToolRegistration) bool { return strings.HasPrefix(t.Name, mcpToolPrefix) })
-		tools = append(tools, ext.Tools...)
+		if ext != nil {
+			tools = append(tools, mcpWithin(ext.Tools, len(tools))...)
+		}
 		if !slices.Equal(stored.Tools.Names, toolNames(tools)) {
 			change.Tools, changed = harness.SetTo(harness.ToolChange{List: tools}), true
 		}

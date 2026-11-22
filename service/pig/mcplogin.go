@@ -369,19 +369,23 @@ func callbackCode(line, callback, state string) (code string, iss *string, err e
 // reportListing connects to server with what the store keeps for it,
 // lists its tools, keeps them, and says on out what came of it.
 func reportListing(ctx context.Context, out io.Writer, store *mcpStore, server profiles.MCPServer) {
-	n, err := listOnce(ctx, store, server)
-	if err != nil {
+	n, unkept, err := listOnce(ctx, store, server)
+	switch {
+	case err != nil:
 		_, _ = fmt.Fprintf(out, "Its tools could not be listed now: it %s. pocketd connects it again when it starts.\n", strings.TrimPrefix(err.Error(), server.Name+" "))
-		return
+	case unkept != nil:
+		_, _ = fmt.Fprintf(out, "%s lists %d tools, but pocketd could not keep them (%v): it lists them again when it starts.\n", server.Name, n, unkept)
+	default:
+		_, _ = fmt.Fprintf(out, "%s lists %d tools; pocketd offers them from its next start.\n", server.Name, n)
 	}
-	_, _ = fmt.Fprintf(out, "%s lists %d tools; pocketd offers them as mcp__%s__<tool> from its next start.\n", server.Name, n, profiles.MCPNamespace(server.Name))
 }
 
 // listOnce connects to server once, lists its tools and keeps them in
-// store, then closes the connection. Its error is mcpConn.failure's.
-func listOnce(ctx context.Context, store *mcpStore, server profiles.MCPServer) (int, error) {
+// store, then closes the connection. unkept says why the listing is not
+// kept; err is mcpConn.failure's.
+func listOnce(ctx context.Context, store *mcpStore, server profiles.MCPServer) (n int, unkept, err error) {
 	h := &mcpHub{store: store, log: slog.New(slog.DiscardHandler), conns: map[string]*mcpConn{}, servers: map[string][]string{},
-		tools: map[string][]mcpTool{}, exts: map[string]*durable.Extension{}}
+		tools: map[string][]mcpTool{}, exts: map[string]*durable.Extension{}, ctx: ctx}
 	c := &mcpConn{hub: h, server: server}
 	h.conns[server.Name] = c
 	if tools, ok := store.listing(server.Name, server.URL); ok {
@@ -389,10 +393,10 @@ func listOnce(ctx context.Context, store *mcpStore, server profiles.MCPServer) (
 	}
 	client, err := c.connect(ctx, false)
 	if err != nil {
-		return 0, errors.New(server.Name + " " + c.failure(err))
+		return 0, nil, errors.New(server.Name + " " + c.failure(err))
 	}
 	c.drop(client)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.tools[server.Name]), nil
+	return len(h.tools[server.Name]), h.unkept[server.Name], nil
 }

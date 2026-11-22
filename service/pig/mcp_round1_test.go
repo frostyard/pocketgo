@@ -42,7 +42,7 @@ func TestTheTokenAloneIsRedactedToo(t *testing.T) {
 	}
 	fake := mcpTransport.(*fakeMCP)
 	fake.set(func() {
-		fake.tools = append(fake.tools, map[string]any{"name": "echo-token", "inputSchema": map[string]any{"type": "object"}})
+		fake.tools = append(fake.tools, map[string]any{"name": "echo_token", "inputSchema": map[string]any{"type": "object"}})
 	})
 	e.ConnectMCP(ctx)
 	if _, err := e.SetMCPTools(ctx, id, "chani"); err != nil {
@@ -233,7 +233,7 @@ func TestAServerDownAtStartIsTriedAgain(t *testing.T) {
 	fake := newFakeMCP(t)
 	timers := &fakeAfter{}
 	mcpAfter = timers.after
-	t.Cleanup(func() { mcpAfter = func(d time.Duration, f func()) func() bool { return time.AfterFunc(d, f).Stop } })
+	t.Cleanup(func() { mcpAfter = defaultMCPAfter })
 	f := newFixture(t)
 	f.keepHeader(notesKey)
 	fake.set(func() { fake.down = true })

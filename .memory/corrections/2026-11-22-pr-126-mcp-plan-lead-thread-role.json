@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "Decide a specialist session's MCP tools by its thread as the work database records it, and take MCP tools from a session that takes none, at its record and at every pass.",
+  "evidence": "frostyard/pocketgo#126, Codex CLI review round 2 (codex-cli 0.169.0) of head c6d9bbb: [P1] Check the recorded thread role before granting MCP tools",
+  "promoted_to": "service/internal/api/mcp_test.go"
+}
