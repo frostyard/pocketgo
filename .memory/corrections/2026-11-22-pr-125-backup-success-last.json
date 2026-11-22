@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide puts the copy of working folders and uploads inside the backup's chain, after the successful stop and before the success line, so backup done means the whole requested backup.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 18 (codex-cli 0.169.0) of head 7bfc254: [P1] Report backup success only after every requested copy succeeds",
+  "promoted_to": "docs/design/setup.md"
+}

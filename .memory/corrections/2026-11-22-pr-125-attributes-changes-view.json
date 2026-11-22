@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says no info/attributes and no system attributes file are needed for a session's changes in the desktop as well as for cross-reviews (worktree.AttributesIsolated).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 18 (codex-cli 0.169.0) of head 7bfc254: [P2] Apply the Git attributes prerequisite to the Changes view too",
+  "promoted_to": "docs/design/setup.md"
+}
