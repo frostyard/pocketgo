@@ -45,7 +45,7 @@ func (s *Server) usageRoutes(mux *http.ServeMux) {
 		if report.TodayEnds.IsZero() {
 			report.TodayEnds = dayStart(today.AddDate(0, 0, 1), zone).UTC()
 		}
-		// The since pocketd takes (protocol rule 63): a day, at most
+		// The since pocketd takes (protocol rule 64): a day, at most
 		// proto.MaxUsageDays-1 days before today.
 		since := r.URL.Query().Get("since")
 		day, err := time.Parse(proto.UsageDayLayout, since)

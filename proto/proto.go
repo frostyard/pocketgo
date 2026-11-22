@@ -59,15 +59,17 @@ package proto
 // Version 26 adds the question tool (ADR-0048): a session's question, POST
 // /v1/sessions/{id}/question/{qid}, and a session that waits for its
 // question's answer.
-// Version 27 adds usage at a glance (ADR-0052): GET /v1/usage, the
+// Version 27 adds search (ADR-0050): GET /v1/search, which finds sessions
+// by their titles and by what their transcripts say.
+// Version 28 adds usage at a glance (ADR-0052): GET /v1/usage, the
 // sessions' answers' usage summed by day in the service's time zone and
 // by model.
-const Version = 27
+const Version = 28
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 27. A path with {id} takes a session,
+// The request paths of protocol version 28. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan or terminal id in that segment;
 // PathQuestion takes its session's id there, and the question's in {qid}.
 // PathUploads takes a file the owner attaches to a message to the session
@@ -106,7 +108,10 @@ const (
 	// PathLaunches the launches: GET lists them, POST starts one.
 	PathDropProposal = "/v1/proposals/{id}/drop"
 	PathLaunches     = "/v1/launches"
-	PathEvents       = "/v1/events"
+	// PathSearch finds sessions by their titles and by what their
+	// transcripts say (ADR-0050): q holds the words, limit the most hits.
+	PathSearch = "/v1/search"
+	PathEvents = "/v1/events"
 	// PathUsage sums the sessions' answers' usage by day and model
 	// (ADR-0052): its since, a day (UsageDayLayout), is in the query
 	// string.
@@ -136,7 +141,7 @@ const (
 	MaxAnswer = 2000
 	// MaxLesson is the most characters a lesson's text has.
 	MaxLesson = 300
-	// MaxUsageDays is the most days GET /v1/usage sums (rule 63): its
+	// MaxUsageDays is the most days GET /v1/usage sums (rule 64): its
 	// since is at most MaxUsageDays-1 days before the service's today.
 	MaxUsageDays = 92
 	// MaxTerminals is the most shells that run at once (rule 56): a start

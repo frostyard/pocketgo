@@ -10,7 +10,7 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 )
 
-// The fake answers GET /v1/usage as pocketd does (protocol rule 63): it
+// The fake answers GET /v1/usage as pocketd does (protocol rule 64): it
 // refuses a since more than 91 days before its today, and its today and
 // the day's end are of its clock in the report's zone (Codex review of
 // #107, round 1).

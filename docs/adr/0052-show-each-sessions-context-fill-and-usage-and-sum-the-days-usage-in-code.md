@@ -23,7 +23,7 @@
 
 ## Decision
 
-1. **The service sums the days' usage: `GET /v1/usage?since=<day>`** ([protocol rule 63](../specs/protocol.md)).
+1. **The service sums the days' usage: `GET /v1/usage?since=<day>`** ([protocol rule 64](../specs/protocol.md)).
    - It sums the `usage` of the sessions' answers, the `assistant` entries with a usage, by day in the service's time zone and by model. That zone is the one schedules read their clock times in ([ADR-0030](0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md)). An answer that names no model counts under its session's model as it is when the report is made.
    - A day begins at its first instant in that zone, after midnight on a day whose clocks skip it.
    - A usage's tokens are its total, or its parts when they are more (`proto.Usage.Tokens`): PiG's ledger sums a model's answers, so its total misses an answer whose provider reported none. A sum counts as its total each usage's tokens (`proto.Usage.Add`).
@@ -34,7 +34,7 @@
    - A request whose client went away reads no further session.
    - A compaction's summary counts in its session's `usage` but in no day: it is no entry.
 2. **A cost is spend only from a metered provider** (`pig.meteredBy`). A provider signed in with an API key, or one of the owner's own, is charged per token. A subscription, signed in by OAuth, is not: the service sends its models' usage with a `cost` of 0 everywhere, a session's, an entry's, a live reply's and a day's. A provider with no sign-in kept now is a subscription when PiG signs in to it by OAuth, as `pocketd login` does. The days' sums keep each answer's cost as PiG priced it, and a report prices it by the provider of the model it counts under, as that provider's sign-in is then.
-3. **Protocol version 27.** `GET /v1/usage` and its types are new. The service's change touches no other endpoint, but a version 26 client cannot reach a version 27 service, so the desktop must be rebuilt.
+3. **Protocol version 28.** `GET /v1/usage` and its types are new. The service's change touches no other endpoint, but a version 27 client cannot reach a version 28 service, so the desktop must be rebuilt.
 4. **The context fill is code** (`state.Fill`, `state.ContextTokens`).
    - It is the context the newest answer measured: the reply being written first, then the entries newest first. An answer measures it when its usage has tokens.
    - The measure is PiG's: the answer's total, or its input, output, cache read and cache write summed when they are more. It departs from the issue's input plus cache read, for the reasons above. The meter then reads what the compaction decision reads, but for PiG's estimate of the messages after the answer.
@@ -69,7 +69,7 @@
 - A clock that moves back can put an answer before an older one. The newest-first read then stops early, and a few answers count nowhere.
 - A report the client keeps across a midnight moves its week on by 24-hour days, so on a daylight-saving day it can be an hour off until the next fetch. A client clock ahead of the service's shows today empty for the minutes between the two midnights.
 - The week is the last 7 days, not the calendar week: on a Monday, a calendar week would read nearly as today does.
-- Every client must be rebuilt for protocol version 27.
+- Every client must be rebuilt for protocol version 28.
 
 ## Alternatives considered
 
@@ -81,6 +81,6 @@
 
 ## References
 
-- Shapes: [design/architecture.md](../design/architecture.md#desktop-client), [specs/protocol.md](../specs/protocol.md) (rules 1 and 63)
-- Built by: [plans/roadmap.md](../plans/roadmap.md#phase-5--events-metrics-and-follow-ups) (Usage at a glance)
+- Shapes: [design/architecture.md](../design/architecture.md#desktop-client), [specs/protocol.md](../specs/protocol.md) (rules 1 and 64)
+- Built by: [plans/roadmap.md](../plans/roadmap.md#phase-2--team-work-board-and-inbox) (item 25, Usage at a glance)
 - Builds on: [ADR-0006](0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0010](0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md) (`compactAt` and the window), [ADR-0030](0030-send-scheduled-messages-from-the-owners-file-and-the-supervisors-tool-in-code.md) (the service's time zone), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md) (More)

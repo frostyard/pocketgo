@@ -59,6 +59,8 @@ type Data struct {
 	// the totals count an answer that names no model under its session's
 	// model now (takeUsageMoved).
 	usageMoved bool
+	// search is the owner's newest search of every session (ADR-0050).
+	search searchState
 
 	open *OpenSession
 	// terminals are the owner's shells, oldest first, replaced whole by

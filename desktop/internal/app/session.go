@@ -27,6 +27,13 @@ type transcriptView struct {
 	// picks are the options checked on a question's card that takes
 	// several, by question.
 	picks map[string]map[int]bool
+	// seek is the search hit that opened the session (ADR-0050): it
+	// scrolls to its entry once the transcript loaded. flash is the key of
+	// the row it scrolled to, which shows highlighted for a moment, and
+	// flashed says its highlight started.
+	seek    state.Seek
+	flash   string
+	flashed bool
 }
 
 // composer is the message field's state: a draft for each session.
@@ -200,9 +207,22 @@ func (a *App) sessionPane(c *ui.Context) {
 			rows := tr.rows
 			tr.list.Key = func(i int) any { return rows[i].Key }
 			tr.list.FollowEnd = true
+			// A search's hit scrolls to its entry once the transcript
+			// loaded, and highlights its row (state.Seek).
+			if tr.seek.Session != 0 {
+				if row, found, done := tr.seek.Target(o, rows); done {
+					if found {
+						tr.list.ScrollTo(row, ui.Center)
+						tr.flash, tr.flashed = rows[row].Key, false
+					}
+					tr.seek = state.Seek{}
+				}
+			}
 			ui.List(c, &tr.list, len(rows), func(i int) {
 				ui.Column(c).AlignItems(ui.Center).Children(func() {
-					ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch).Children(func() {
+					e := ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch)
+					a.flashRow(c, e, rows[i].Key)
+					e.Children(func() {
 						a.rowView(c, &rows[i])
 					})
 				})

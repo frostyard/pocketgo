@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "The search index splits words as proto.SearchWords does: unicode61 keeps a non-spacing mark in a word only with the categories L* N* Co Mn, else a Thai word with its marks finds an entry with its consonant alone.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P2] Align the FTS tokenizer with the protocol's word boundaries",
+  "promoted_to": "service/internal/store/search_test.go"
+}

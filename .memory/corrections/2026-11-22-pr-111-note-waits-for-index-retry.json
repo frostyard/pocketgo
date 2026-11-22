@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "service",
+  "correction": "A session on its index retry's timer is not read again for an entry's note, nor for a note queued while its read failed: the retry reads everything after its cursor.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P2] Honor index retry backoff when new entries arrive",
+  "promoted_to": "service/internal/search/indexer_test.go"
+}

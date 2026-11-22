@@ -37,7 +37,7 @@ func answerAt(id int64, at time.Time, m *proto.ModelRef, u proto.Usage) proto.En
 
 // GET /v1/usage sums the sessions' answers by day in the service's zone,
 // and by model, the session's for an answer that names none; a question,
-// a tool's result and an answer before since count nowhere (rule 63).
+// a tool's result and an answer before since count nowhere (rule 64).
 func TestUsageSumsAnswersByDayAndModelInTheServicesZone(t *testing.T) {
 	h := newHarness(t)
 	ny, err := time.LoadLocation("America/New_York")
@@ -81,7 +81,7 @@ func TestUsageSumsAnswersByDayAndModelInTheServicesZone(t *testing.T) {
 
 // A since is a day, YYYY-MM-DD, at most 91 days before the service's
 // today; any other is bad_request, and a day after today has no usage yet
-// (rule 63).
+// (rule 64).
 func TestUsageTakesOnlyADayItCanSum(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

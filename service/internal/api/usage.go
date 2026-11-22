@@ -14,7 +14,7 @@ import (
 
 // Usage at a glance (ADR-0052): GET /v1/usage sums the usage of the
 // sessions' answers, their assistant entries, by day in the service's time
-// zone and by model (protocol rule 63). It reads PiG's transcripts alone,
+// zone and by model (protocol rule 64). It reads PiG's transcripts alone,
 // keeps nothing in the work database, and keeps in memory the sums of what
 // it read, so each answer is read once while pocketd runs.
 
@@ -31,7 +31,7 @@ type UsageEntry struct {
 // answers through entry through, by day and model, of the days from from,
 // the start of a day in the service's zone, on. An answer that names no
 // model is kept under the zero model, which a report reads as the
-// session's model then (rule 63), so no sum depends on when it was read.
+// session's model then (rule 64), so no sum depends on when it was read.
 type sessionUsage struct {
 	from    time.Time
 	through int64
@@ -105,7 +105,7 @@ func boundsOf(now time.Time, zone *time.Location) usageBounds {
 // errUsageSince is a since GET /v1/usage cannot take.
 var errUsageSince = errors.New("since must be a day, YYYY-MM-DD")
 
-// usageSince is day raw as GET /v1/usage takes its since (rule 63): a day
+// usageSince is day raw as GET /v1/usage takes its since (rule 64): a day
 // written as proto.UsageDayLayout writes it, at most proto.MaxUsageDays-1
 // days before today; and its first instant in zone. A day after today is
 // taken: it has no usage yet.
@@ -122,7 +122,7 @@ func usageSince(raw string, b usageBounds, zone *time.Location) (day, start time
 }
 
 // usageReport is the report of days from since (a date) through today,
-// from the sums of days, in zone (rule 63): the days with usage, oldest
+// from the sums of days, in zone (rule 64): the days with usage, oldest
 // first, each with its models' usage by provider, then by model id.
 func usageReport(days usageDays, since time.Time, b usageBounds, zone *time.Location) proto.UsageReport {
 	r := proto.UsageReport{Zone: zone.String(), Today: b.today.Format(proto.UsageDayLayout), TodayEnds: b.todayEnds.UTC(),
@@ -148,7 +148,7 @@ func usageReport(days usageDays, since time.Time, b usageBounds, zone *time.Loca
 	return r
 }
 
-// usage answers GET /v1/usage (rule 63). It reads only, so a request its
+// usage answers GET /v1/usage (rule 64). It reads only, so a request its
 // client gave up on stops (Codex review of #107, round 1).
 func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
 	now := s.now()

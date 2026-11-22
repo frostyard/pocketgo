@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "tests",
+  "correction": "The desktop's fake pocketd orders and chooses search hits with pocketd's tie-breakers: the later entry first at one time, a title's before an entry's, the later session.",
+  "evidence": "frostyard/pocketgo#111, Codex CLI review round 1 (codex-cli 0.169.0) of head ccb9bb8: [P3] Use pocketd's tie-breakers in fake search results",
+  "promoted_to": "desktop/internal/pocketdtest/search_test.go"
+}

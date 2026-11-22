@@ -485,7 +485,7 @@ func (d *Data) usageChanged(s proto.Session) bool {
 // takeUsageMoved says, once, that a session's model changed since it was
 // last asked, whatever brought the change: an event, a list, a detail or
 // an action's answer. The totals count an answer that names no model under
-// its session's model now (protocol rule 63), so they are fetched again
+// its session's model now (protocol rule 64), so they are fetched again
 // (Codex review of #107, round 2).
 func (d *Data) takeUsageMoved() bool {
 	moved := d.usageMoved

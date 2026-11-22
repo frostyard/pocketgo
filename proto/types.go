@@ -82,7 +82,7 @@ func (u Usage) Add(v Usage) Usage {
 // the service's time zone (ADR-0052).
 const UsageDayLayout = "2006-01-02"
 
-// UsageReport is the answer to GET /v1/usage (ADR-0052, rule 63): the usage
+// UsageReport is the answer to GET /v1/usage (ADR-0052, rule 64): the usage
 // of the sessions' answers from a day on, summed by day in the service's
 // time zone and by model.
 type UsageReport struct {
