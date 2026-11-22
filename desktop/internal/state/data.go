@@ -31,10 +31,14 @@ type Data struct {
 	// Session and the composer's chip offer.
 	models     []proto.Model
 	modelsList list
-	sessions   []proto.Session  // most recently updated first
-	approvals  []proto.Approval // pending only, oldest first
-	asks       []proto.Ask      // open only, oldest first
-	lessons    lessons          // waiting only
+	// prompts are the owner's saved prompts (GET /v1/prompts), which the
+	// composer's / picker offers (prompts.go, ADR-0051).
+	prompts     proto.Prompts
+	promptsList list
+	sessions    []proto.Session  // most recently updated first
+	approvals   []proto.Approval // pending only, oldest first
+	asks        []proto.Ask      // open only, oldest first
+	lessons     lessons          // waiting only
 	// threads are every thread, most recently changed first, and pulls
 	// the linked pull requests, oldest first (board.go).
 	threads keyed[proto.Thread]

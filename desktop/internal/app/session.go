@@ -38,6 +38,15 @@ type composer struct {
 	focus bool
 	// picking says the file chooser is open (pickAttachments).
 	picking bool
+	// pickers are the fields' / pickers, by session (ADR-0051); caret
+	// puts a field's caret after the prompt that went in, on the next
+	// frame; refocus gives the field shown the keyboard focus then, which
+	// focus asks of a new field only; shownHighlight is the prompt the
+	// picker last brought into view.
+	pickers        map[int64]*state.PromptPicker
+	caret          *fieldCaret
+	refocus        bool
+	shownHighlight string
 }
 
 func (cp *composer) draft(id int64) *string {
@@ -493,7 +502,25 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			if changing := a.st.ChangingModel(id); changing.Err != "" {
 				frostui.Problem(c, "Changing the model failed: "+changing.Err).Wrap()
 			}
-			ui.Column(c).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
+			// The owner's saved prompts (ADR-0051): / at the start of a
+			// message opens the picker over the field, which asks pocketd
+			// for them again as it opens.
+			picker := cp.picker(id)
+			if composing.TakesPrompts() {
+				status, err := a.st.Data.PromptsStatus()
+				menu := picker.View(*draft, a.st.Data.Prompts(), status, err)
+				if menu.Opened {
+					a.st.LoadPrompts()
+				}
+				if menu.Open {
+					a.promptMenu(c, id, draft, picker, menu)
+				} else {
+					cp.shownHighlight = ""
+				}
+			}
+			// Keyed, so the field keeps its focus and caret as the picker
+			// or a problem shows above it.
+			ui.Column(c.Key("composer-box")).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
 				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS).Children(func() {
 				a.attachmentChips(c, id)
 				hints := a.composerHints()
@@ -514,6 +541,18 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				input := ui.TextAreaBase(c.Key(fieldKey), draft).Lines(1, 10).Placeholder(placeholder).Label(label).
 					Bind(&cp.field).Disabled(sending.Busy || answering.Busy).
 					OnTextKey(func(k ui.TextKey) bool {
+						// While the picker shows, it takes the keys it uses: a
+						// prompt goes in, and is never sent.
+						if key, ok := pickerKey(k); ok && composing.TakesPrompts() {
+							r := picker.Key(key, k.Text(), a.st.Data.Prompts())
+							if r.Insert {
+								k.SetText(r.Text)
+								cp.caret = &fieldCaret{key: fieldKey, at: r.Caret}
+							}
+							if r.Took {
+								return true
+							}
+						}
 						if k.Key == ui.KeyEnter && k.Mods == 0 {
 							a.submit(id, composing, k.Text())
 							return true
@@ -541,6 +580,18 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 					}
 					cp.focus = false
 				}
+				// After a prompt went in, the caret follows it, and the palette's
+				// Insert Prompt gives the field the focus.
+				if cp.caret != nil && cp.caret.key == fieldKey {
+					input.SetTextSelection(cp.caret.at, cp.caret.at)
+					cp.caret = nil
+				}
+				if cp.refocus {
+					if !a.compact {
+						input.Focus()
+					}
+					cp.refocus = false
+				}
 				// A phone's width holds the model's chip or the buttons, not
 				// both: the chip takes a row of its own there, and Attach
 				// files its icon alone (Codex review of #85, round 2).
@@ -557,6 +608,12 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						}
 						if attach.Disabled(cp.picking || !composing.Attaches()).Clicked() {
 							a.pickAttachments(id)
+						}
+					}
+					// A phone's saved prompts, beside Attach, as a sheet (ADR-0051).
+					if a.compact {
+						if frostui.IconButton(c, "pocket-prompt", "Insert a saved prompt").Disabled(!composing.TakesPrompts()).Clicked() {
+							a.openPromptSheet(id)
 						}
 					}
 					if !a.compact {

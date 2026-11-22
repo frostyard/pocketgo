@@ -597,6 +597,14 @@ func (a *App) setUpCommands() {
 					a.st.Abort(id)
 				}
 			}},
+		// The owner's saved prompts (ADR-0051): the picker over the shown
+		// session's composer.
+		frostui.Command{ID: "insert-prompt", Title: "Insert Prompt…", Group: "Sessions", Icon: "pocket-prompt",
+			Enabled: func() (bool, string) {
+				_, ok := a.promptsComposer()
+				return ok, "No message is being written in a session shown"
+			},
+			Run: a.summonPrompts},
 		frostui.Command{ID: "sidebar", Title: "Show or Hide the Sessions", Group: "View", Icon: "sidebar-show",
 			Run: func() { a.shell.Panes.Toggle("sidebar") }},
 		frostui.Command{ID: "about", Title: "About PocketGo", Group: "App", Icon: "help-about", Run: a.showAbout},

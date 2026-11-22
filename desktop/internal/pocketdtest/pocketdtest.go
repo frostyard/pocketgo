@@ -54,6 +54,8 @@ type Server struct {
 	token    string
 	models   []proto.Model
 	profiles []proto.Profile
+	// prompts are what GET /v1/prompts answers (ADR-0051).
+	prompts  proto.Prompts
 	sessions map[int64]*session
 	// questions are the sessions' questions (ADR-0048), waiting and
 	// settled, by id (question.go).
@@ -179,6 +181,14 @@ func (s *Server) AddProfile(p proto.Profile) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.profiles = append(s.profiles, p)
+}
+
+// SetPrompts replaces what GET /v1/prompts answers, as an edit of the
+// owner's prompts folder does (ADR-0051).
+func (s *Server) SetPrompts(prompts proto.Prompts) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prompts = proto.Prompts{Problem: prompts.Problem, Prompts: slices.Clone(prompts.Prompts)}
 }
 
 // SetModels replaces the models GET /v1/models lists, as a provider's
@@ -638,6 +648,15 @@ func (s *Server) routes() http.Handler {
 			profiles = []proto.Profile{}
 		}
 		writeJSON(w, http.StatusOK, profiles)
+	})
+	mux.HandleFunc("GET "+proto.PathPrompts, func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		list := proto.Prompts{Problem: s.prompts.Problem, Prompts: slices.Clone(s.prompts.Prompts)}
+		s.mu.Unlock()
+		if list.Prompts == nil {
+			list.Prompts = []proto.Prompt{}
+		}
+		writeJSON(w, http.StatusOK, list)
 	})
 	mux.HandleFunc("GET "+proto.PathSessions, func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()

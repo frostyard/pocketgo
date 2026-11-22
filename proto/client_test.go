@@ -32,7 +32,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "26" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "27" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -335,6 +335,20 @@ func TestClientListsPulls(t *testing.T) {
 	}))
 	if pulls, err := client.Pulls(context.Background()); err != nil || len(pulls) != 1 || pulls[0].Number != 3 {
 		t.Fatalf("Pulls = %+v, %v", pulls, err)
+	}
+}
+
+func TestClientListsPrompts(t *testing.T) {
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path != "GET /v1/prompts" {
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"prompts":[{"name":"review-pr","description":"Review a pull request","argumentHint":"<number>","text":"Review $ARGUMENTS."},{"name":"Bad","problem":"no name"}]}`)
+	}))
+	got, err := client.Prompts(context.Background())
+	if err != nil || len(got.Prompts) != 2 || got.Prompts[0] != (Prompt{Name: "review-pr", Description: "Review a pull request", ArgumentHint: "<number>", Text: "Review $ARGUMENTS."}) ||
+		got.Prompts[1] != (Prompt{Name: "Bad", Problem: "no name"}) {
+		t.Fatalf("Prompts = %+v, %v", got, err)
 	}
 }
 

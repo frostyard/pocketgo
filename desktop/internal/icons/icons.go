@@ -21,5 +21,7 @@ func Embedded() map[string][]byte {
 		"pocket-terminal": svg(`<path d="M4 17l6-6-6-6M12 19h8"/>`),
 		// A plus in a bubble: a new session.
 		"pocket-new": svg(`<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M12 8v8M8 12h8"/>`),
+		// A slash in a square: the owner's saved prompts (ADR-0051).
+		"pocket-prompt": svg(`<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M15 7l-6 10"/>`),
 	}
 }

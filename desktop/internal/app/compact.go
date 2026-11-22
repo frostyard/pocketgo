@@ -33,6 +33,10 @@ type phoneNav struct {
 	// mobile.Sheet keeps its state on the window's root by the flag's
 	// address, and the form is new at each opening.
 	newSession bool
+	// prompts is the saved prompts' sheet's flag, and promptsFor the
+	// session whose composer a prompt chosen there goes into (ADR-0051).
+	prompts    bool
+	promptsFor int64
 }
 
 // tabIcons are the tabs' icons, of the window's set.
@@ -215,6 +219,12 @@ func (a *App) compactOverlays(c *ui.Context) {
 	a.githubSignInView(c)
 	a.mergeAllConfirmView(c)
 	mobile.Sheet(c, &a.shell.Console.Open, mobile.SheetOptions{Detents: []float32{activityDetent}, Label: "Activity"}, func() { a.phoneActivity(c) })
+	// The saved prompts' sheet belongs to the session it was opened for:
+	// it closes when another shows (ADR-0051).
+	if o := a.shownSession(); a.phone.prompts && (o == nil || o.ID != a.phone.promptsFor) {
+		a.phone.prompts = false
+	}
+	mobile.Sheet(c, &a.phone.prompts, mobile.SheetOptions{Detents: []float32{promptsDetent}, Label: "Saved Prompts"}, func() { a.phonePrompts(c) })
 	mobile.Sheet(c, &a.shell.Info.Open, mobile.SheetOptions{Detents: []float32{0.5}, Label: "About PocketGo"}, func() {
 		ui.Column(c).Padding(frostui.SpaceS, frostui.SpaceL).Gap(frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
 			frostui.AboutBody(a.about())(c)
@@ -227,6 +237,10 @@ func (a *App) compactOverlays(c *ui.Context) {
 // would put it below the screen at a lower one (Codex review of #85,
 // round 3).
 const activityDetent = 0.75
+
+// promptsDetent is the saved prompts' sheet's one height, for the same
+// reason: its list scrolls within it.
+const promptsDetent = 0.6
 
 // phoneActivity is the Activity sheet: the console's lines, newest last,
 // under a header with Copy and Close. frostui's console pane lays its

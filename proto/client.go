@@ -302,6 +302,12 @@ func (c *Client) Schedules(ctx context.Context) (Schedules, error) {
 	return out, c.do(ctx, http.MethodGet, PathSchedules, nil, &out)
 }
 
+// Prompts lists the owner's saved prompts (ADR-0051).
+func (c *Client) Prompts(ctx context.Context) (Prompts, error) {
+	var out Prompts
+	return out, c.do(ctx, http.MethodGet, PathPrompts, nil, &out)
+}
+
 // Gathers lists the gathers that run, and those that ended in the last
 // seven days, the newest first (ADR-0033).
 func (c *Client) Gathers(ctx context.Context) ([]Gather, error) {
