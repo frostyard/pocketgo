@@ -144,7 +144,7 @@ func TestAQuestionInItsSessionSnapshot(t *testing.T) {
 	if n := len(x.srv.RequestsTo(http.MethodPost, proto.Path(proto.PathMessages, 1))); n != 0 {
 		t.Errorf("the answer went as %d messages too", n)
 	}
-	if _, kept := x.a.st.QuestionRefusal(1); kept || *x.a.composer.draft(1) != "" {
+	if kept := len(x.a.st.QuestionRefusals(1)) > 0; kept || *x.a.composer.draft(1) != "" {
 		t.Errorf("the answer that went is kept, or reached the message draft: %q", *x.a.composer.draft(1))
 	}
 
@@ -173,16 +173,16 @@ func TestAQuestionAnsweredOnAnotherDeviceSaysSo(t *testing.T) {
 	*x.a.st.QuestionDraft(q) = "Snow, please."
 	x.settle()
 	x.click(t, "Send Answer")
-	x.until(t, func() bool { _, refused := x.a.st.QuestionRefusal(1); return refused && x.a.st.InFlight() == 0 })
+	x.until(t, func() bool { return len(x.a.st.QuestionRefusals(1)) == 1 && x.a.st.InFlight() == 0 })
 	text := strings.Join(x.tt.Texts(), " ")
-	if !strings.Contains(text, "Your answer was not taken: the question is already answered (on phone).") || !x.tt.HasText("Snow, please.") {
+	if !strings.Contains(text, "Your answer was not taken: the question was answered already, on phone: the first answer stands.") || !x.tt.HasText("Snow, please.") {
 		t.Errorf("no refusal with the owner's words in %q", x.tt.Texts())
 	}
 	if got := *x.a.composer.draft(1); got != "" {
 		t.Errorf("the refused answer reached the message draft: %q", got)
 	}
 	x.click(t, "Dismiss")
-	if _, refused := x.a.st.QuestionRefusal(1); refused {
+	if len(x.a.st.QuestionRefusals(1)) != 0 {
 		t.Error("Dismiss kept the refusal")
 	}
 }

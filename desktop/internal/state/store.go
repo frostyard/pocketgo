@@ -150,10 +150,14 @@ type Store struct {
 	answers   map[int64]*Pending
 	// questionAnswers are the owner's answers to sessions' questions, by
 	// question (ADR-0047), and questionRefusals the answers pocketd
-	// refused because their question no longer waited, by session
-	// (QuestionRefusal).
+	// refused because their question no longer waited, by question
+	// (QuestionRefusals), refusalOrder numbering them as they are kept.
 	questionAnswers  map[string]*Pending
-	questionRefusals map[int64]QuestionRefusal
+	questionRefusals map[string]QuestionRefusal
+	refusalOrder     uint64
+	// questionUnsure are the answers whose request failed with no word of
+	// what pocketd did, by question, kept for a replay (unsureAnswer).
+	questionUnsure map[string]*unsureAnswer
 	// questionDrafts are the owner's answers being written to questions,
 	// by question (QuestionDraft).
 	questionDrafts map[string]*questionDraft
@@ -256,7 +260,8 @@ func (s *Store) resetActions() {
 	s.sends, s.aborts, s.decisions = map[int64]*Pending{}, map[int64]*Pending{}, map[string]*Pending{}
 	s.answers = map[int64]*Pending{}
 	s.questionAnswers = map[string]*Pending{}
-	s.questionRefusals = map[int64]QuestionRefusal{}
+	s.questionRefusals = map[string]QuestionRefusal{}
+	s.questionUnsure = map[string]*unsureAnswer{}
 	s.questionDrafts = map[string]*questionDraft{}
 	s.answerRefusals = map[int64]AnswerRefusal{}
 	s.answerTexts = map[int64]string{}

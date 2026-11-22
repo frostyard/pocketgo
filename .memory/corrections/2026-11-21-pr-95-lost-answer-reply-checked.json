@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "A request whose reply was lost keeps its request id and body until a replay of the same id says what the service did: the target's disappearance alone never tells the owner their words were refused.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 2 (codex-cli 0.169.0) of head e060399: [P2] Reconcile a lost answer reply before reporting refusal",
+  "promoted_to": "desktop/internal/state/question_test.go"
+}

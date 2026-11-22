@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Words kept for the owner after a refusal are kept per target and only the owner's dismissal removes them: a later refusal, even of a skip with no words, adds to what is kept and never replaces it.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 2 (codex-cli 0.169.0) of head e060399: [P2] Preserve earlier refused drafts when another answer conflicts",
+  "promoted_to": "desktop/internal/state/question_test.go"
+}

@@ -468,12 +468,20 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			if composing.Answers() {
 				draft, fieldKey = a.st.QuestionDraft(*composing.Question), "answer:"+composing.Question.ID
 			}
-			if refused, ok := a.st.QuestionRefusal(id); ok {
-				ui.Column(c.Key("question-refusal")).Gap(frostui.SpaceXS).AlignItems(ui.Stretch).Children(func() {
+			if a.st.CheckingAnswer(id) {
+				// A lost reply is checked before its words count as refused
+				// (Codex review of #95, round 2).
+				frostui.Loading(c, "Checking whether pocketd took your answer…")
+			}
+			// Each question's refused words, until the owner dismisses them
+			// (Codex review of #95, round 2).
+			for _, refused := range a.st.QuestionRefusals(id) {
+				key := "question-refusal:" + refused.Question
+				ui.Column(c.Key(key)).Gap(frostui.SpaceXS).AlignItems(ui.Stretch).Children(func() {
 					ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 						frostui.Problem(c, "Your answer was not taken: "+strings.TrimSuffix(refused.Why, ".")+".").Wrap().Grow(1)
-						if ui.Button(c.Key("question-refusal:dismiss"), "Dismiss").Clicked() {
-							a.st.DismissQuestionRefusal(id)
+						if ui.Button(c.Key(key+":dismiss"), "Dismiss").Clicked() {
+							a.st.DismissQuestionRefusal(refused.Question)
 						}
 					})
 					if strings.TrimSpace(refused.Answer) != "" {

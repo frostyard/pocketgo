@@ -220,8 +220,11 @@ func TestValidateQuestionAnswer(t *testing.T) {
 		{"two of one", one, proto.AnswerQuestion{Option: []int{0, 1}}, "one option"},
 		{"no such option", one, proto.AnswerQuestion{Option: []int{3}}, "no option 4"},
 		{"an option of none", free, proto.AnswerQuestion{Option: []int{0}}, "no option 1"},
-		{"out of order", several, proto.AnswerQuestion{Option: []int{2, 0}}, "in order"},
-		{"twice", several, proto.AnswerQuestion{Option: []int{1, 1}}, "in order"},
+		// As pocketd takes them: any order, none twice, and a skip with
+		// no answer at all (Codex review of #95, round 2).
+		{"out of order", several, proto.AnswerQuestion{Option: []int{2, 0}}, ""},
+		{"twice", several, proto.AnswerQuestion{Option: []int{1, 1}}, "picked twice"},
+		{"a skip with white space", one, proto.AnswerQuestion{Skipped: true, Answer: "  "}, "no answer"},
 	} {
 		err := ValidateQuestionAnswer(tc.q, tc.a)
 		switch {
@@ -319,8 +322,8 @@ func TestAnAnswerToASettledQuestionShowsWhy(t *testing.T) {
 	if done[0] == nil {
 		t.Fatal("the answer to a settled question succeeded")
 	}
-	r, ok := h.store.QuestionRefusal(5)
-	if !ok || r.Answer != " SQLite\n" || !strings.Contains(r.Why, "already answered") || !strings.Contains(r.Why, "phone") {
+	r, ok := onlyRefusal(h.store, 5)
+	if !ok || r.Answer != " SQLite\n" || !strings.Contains(r.Why, "answered already, on phone: the first answer stands") || !strings.Contains(r.Why, "phone") {
 		t.Fatalf("the refusal %+v, %v", r, ok)
 	}
 	h.settle(t)
@@ -330,8 +333,8 @@ func TestAnAnswerToASettledQuestionShowsWhy(t *testing.T) {
 	if h.store.AnsweringQuestion("q-a") != (Pending{}) {
 		t.Errorf("the refused answer keeps state %+v", h.store.AnsweringQuestion("q-a"))
 	}
-	h.store.DismissQuestionRefusal(5)
-	if _, ok := h.store.QuestionRefusal(5); ok {
+	h.store.DismissQuestionRefusal("q-a")
+	if _, ok := onlyRefusal(h.store, 5); ok {
 		t.Error("dismissed, it stays")
 	}
 }
@@ -385,6 +388,119 @@ func TestASettledQuestionStaysGoneOverAStaleList(t *testing.T) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// onlyRefusal is session id's one kept refusal, and whether exactly one is
+// kept.
+func onlyRefusal(s *Store, id int64) (QuestionRefusal, bool) {
+	all := s.QuestionRefusals(id)
+	if len(all) != 1 {
+		return QuestionRefusal{}, false
+	}
+	return all[0], true
+}
+
+// An answer pocketd took whose reply was lost is checked again, with the
+// same request id, once its question leaves the session: its words are
+// not refused (Codex review of #95, round 2). One that never reached
+// pocketd, whose question another device answered, is refused with
+// pocketd's words.
+func TestALostAnswerReplyIsCheckedBeforeItsWordsAreRefused(t *testing.T) {
+	t.Run("taken", func(t *testing.T) {
+		h := newHarness(t)
+		q := question("q-a", 5, "Which goes first?", 0)
+		h.srv.AddSession(waitingOn(5, q))
+		h.connect(t)
+		h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.Question(5); return ok })
+		*h.store.QuestionDraft(q) = "Snow first."
+		path := proto.QuestionPath(5, "q-a")
+		// pocketd takes it, its session's event comes, and the reply is
+		// lost.
+		h.srv.LoseAnswerOnce(http.MethodPost, path)
+		h.store.AnswerQuestion(q, "Snow first.", nil, func(error) {})
+		h.loop.RunUntil(t, func() bool { return len(h.srv.RequestsTo(http.MethodPost, path)) == 2 && h.store.InFlight() == 0 })
+		h.settle(t)
+		if got := sentIDs(t, h, path); len(got) != 2 || got[0] != got[1] {
+			t.Errorf("request ids %q, want the check to send the same one", got)
+		}
+		if all := h.store.QuestionRefusals(5); len(all) != 0 {
+			t.Errorf("an answer pocketd took is kept as refused: %+v", all)
+		}
+		if _, left := h.store.questionDrafts["q-a"]; left {
+			t.Error("the answer that went stays in its draft")
+		}
+		if h.store.CheckingAnswer(5) || len(h.store.questionUnsure) != 0 || h.store.AnsweringQuestion("q-a") != (Pending{}) {
+			t.Error("the answer's check left state behind")
+		}
+	})
+	t.Run("answered on another device", func(t *testing.T) {
+		h := newHarness(t)
+		q := question("q-a", 5, "Which goes first?", 0)
+		h.srv.AddSession(waitingOn(5, q))
+		h.connect(t)
+		h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.Question(5); return ok })
+		*h.store.QuestionDraft(q) = "Snow first."
+		path := proto.QuestionPath(5, "q-a")
+		h.srv.FailOnce(http.MethodPost, path, http.StatusBadGateway)
+		h.store.AnswerQuestion(q, "Snow first.", nil, func(error) {})
+		h.loop.RunUntil(t, func() bool { return h.store.AnsweringQuestion("q-a").Err != "" })
+		if all := h.store.QuestionRefusals(5); len(all) != 0 {
+			t.Fatalf("a failed answer whose question waits is refused: %+v", all)
+		}
+		// Another device answers, and the session's event comes: the check
+		// learns of it, and the words are refused with pocketd's words.
+		elsewhere := q
+		elsewhere.State, elsewhere.Answer, elsewhere.SettledBy = proto.QuestionAnswered, "Go", "phone"
+		h.srv.PutQuestion(elsewhere)
+		summary, _ := h.srv.Session(5)
+		s := summary.Session
+		h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s})
+		h.loop.RunUntil(t, func() bool { return len(h.store.QuestionRefusals(5)) == 1 && h.store.InFlight() == 0 })
+		r, _ := onlyRefusal(h.store, 5)
+		if r.Answer != "Snow first." || !strings.Contains(r.Why, "answered already, on phone") {
+			t.Errorf("the refusal %+v", r)
+		}
+		if got := sentIDs(t, h, path); len(got) != 2 || got[0] != got[1] {
+			t.Errorf("request ids %q, want the check to send the same one", got)
+		}
+	})
+}
+
+// Each question's refused words are kept apart, and only the owner's
+// dismissal takes them away: a later question's refusal, a refused skip's
+// included, keeps the earlier words (Codex review of #95, round 2).
+func TestRefusalsOfTwoQuestionsAreKeptApart(t *testing.T) {
+	h := newHarness(t)
+	first := question("q-a", 5, "Which goes first?", 0)
+	h.srv.AddSession(waitingOn(5, first))
+	h.connect(t)
+	h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.Question(5); return ok })
+	*h.store.QuestionDraft(first) = "Snow first."
+	// It times out, and the next question comes.
+	timedOut := first
+	timedOut.State, timedOut.Reason, timedOut.SettledBy = proto.QuestionSkipped, proto.SkippedTimeout, "pocketd"
+	h.srv.PutQuestion(timedOut)
+	second := question("q-b", 5, "And the docs?", time.Minute)
+	h.srv.PutQuestion(second)
+	summary, _ := h.srv.Session(5)
+	s := summary.Session
+	h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s})
+	h.loop.RunUntil(t, func() bool { got, ok := h.store.Data.Question(5); return ok && got.ID == "q-b" })
+	// The owner skips the second on this device as another device
+	// answers it: conflict.
+	answered := second
+	answered.State, answered.Answer, answered.SettledBy = proto.QuestionAnswered, "Later", "phone"
+	h.srv.PutQuestion(answered)
+	h.store.SkipQuestion(second)
+	h.loop.RunUntil(t, func() bool { return len(h.store.QuestionRefusals(5)) == 2 && h.store.InFlight() == 0 })
+	all := h.store.QuestionRefusals(5)
+	if all[0].Question != "q-a" || all[0].Answer != "Snow first." || all[1].Question != "q-b" || !strings.Contains(all[1].Why, "answered already, on phone") {
+		t.Fatalf("the refusals %+v", all)
+	}
+	h.store.DismissQuestionRefusal("q-b")
+	if r, ok := onlyRefusal(h.store, 5); !ok || r.Question != "q-a" || r.Answer != "Snow first." {
+		t.Errorf("dismissing the second took the first: %+v", h.store.QuestionRefusals(5))
+	}
+}
 
 // questionRequests are every request a store sent to answer a question
 // of session 5 or to message it.
@@ -442,7 +558,7 @@ func TestAnAnswerDraftStaysWithItsQuestion(t *testing.T) {
 			}
 			h.srv.Emit(proto.Event{Type: proto.EventSession, Session: &s})
 			h.loop.RunUntil(t, func() bool { cur, ok := h.store.Data.Question(5); return !ok || cur.ID != "q-a" })
-			r, kept := h.store.QuestionRefusal(5)
+			r, kept := onlyRefusal(h.store, 5)
 			if !kept || r.Answer != "Snow first, it blocks boots." || r.Why != QuestionGone {
 				t.Fatalf("the words written for the settled question: %+v, %v", r, kept)
 			}
@@ -467,11 +583,11 @@ func TestAnAnswerDraftStaysWithItsQuestion(t *testing.T) {
 			if reqs := questionRequests(h); len(reqs) != 0 {
 				t.Errorf("the words went: %+v", reqs)
 			}
-			if r, _ := h.store.QuestionRefusal(5); r.Answer != "Snow first, it blocks boots." {
+			if r, _ := onlyRefusal(h.store, 5); r.Answer != "Snow first, it blocks boots." {
 				t.Errorf("the words kept twice or lost: %q", r.Answer)
 			}
-			h.store.DismissQuestionRefusal(5)
-			if _, kept := h.store.QuestionRefusal(5); kept {
+			h.store.DismissQuestionRefusal("q-a")
+			if _, kept := onlyRefusal(h.store, 5); kept {
 				t.Error("dismissed, the words stay")
 			}
 		})
@@ -494,7 +610,7 @@ func TestASettlementAheadOfTheAnswersReplyKeepsNothing(t *testing.T) {
 	h.store.AnswerQuestion(q, "Snow first.", nil, func(error) {})
 	// pocketd took it, and its session's event is here ahead of the reply.
 	h.loop.RunUntil(t, func() bool { _, ok := h.store.Data.Question(5); return !ok && h.srv.Holding(http.MethodPost, path) })
-	if r, kept := h.store.QuestionRefusal(5); kept {
+	if r, kept := onlyRefusal(h.store, 5); kept {
 		t.Fatalf("the words on their way are kept as refused: %+v", r)
 	}
 	if _, left := h.store.questionDrafts["q-a"]; !left {
@@ -502,7 +618,7 @@ func TestASettlementAheadOfTheAnswersReplyKeepsNothing(t *testing.T) {
 	}
 	release()
 	h.loop.RunUntil(t, func() bool { return !h.store.AnsweringQuestion("q-a").Busy && h.store.InFlight() == 0 })
-	if r, kept := h.store.QuestionRefusal(5); kept {
+	if r, kept := onlyRefusal(h.store, 5); kept {
 		t.Errorf("the answer that went is kept as refused: %+v", r)
 	}
 	if _, left := h.store.questionDrafts["q-a"]; left {

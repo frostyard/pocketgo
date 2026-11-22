@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-21",
+  "scope": "desktop",
+  "correction": "Every service rule a desktop test can hit is in the fake pocketd too, with the fake clock: a question past its deadline is skipped for timeout and its answer refused there as pocketd refuses it, so a late click cannot pass on the opposite outcome.",
+  "evidence": "frostyard/pocketgo#95, Codex CLI review round 2 (codex-cli 0.169.0) of head e060399: [P2] Make the desktop fake refuse answers past the deadline",
+  "promoted_to": "desktop/internal/pocketdtest/question_test.go"
+}

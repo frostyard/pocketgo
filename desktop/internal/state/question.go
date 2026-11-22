@@ -1,6 +1,7 @@
 package state
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -207,11 +208,12 @@ func (c Composer) Attaches() bool { return !c.Answers() }
 // (protocol rule 62): a skip alone; or an answer of at most
 // proto.MaxAnswer characters once trimmed, the options picked, or both,
 // one of them at least. The options picked are q's, by index from 0, each
-// once, in ascending order, and only one unless q takes several.
+// once, in any order, and only one unless q takes several. A skip carries
+// no answer at all, white space included (Codex review of #95, round 2).
 func ValidateQuestionAnswer(q proto.Question, a proto.AnswerQuestion) error {
 	text := strings.TrimSpace(a.Answer)
 	if a.Skipped {
-		if text != "" || len(a.Option) > 0 {
+		if a.Answer != "" || len(a.Option) > 0 {
 			return errors.New("a skip carries no answer")
 		}
 		return nil
@@ -229,8 +231,8 @@ func ValidateQuestionAnswer(q proto.Question, a proto.AnswerQuestion) error {
 		if o < 0 || o >= len(q.Options) {
 			return fmt.Errorf("the question has no option %d", o+1)
 		}
-		if i > 0 && o <= a.Option[i-1] {
-			return errors.New("the options picked are not each once, in order")
+		if slices.Contains(a.Option[:i], o) {
+			return fmt.Errorf("option %d is picked twice", o+1)
 		}
 	}
 	return nil
@@ -257,11 +259,16 @@ func questionAction(a proto.AnswerQuestion) string {
 // because the question no longer waits, as one answered on another device
 // first, or words written for a question that settled before they went:
 // Why says why, the service's reason when it gave one, and Answer is what
-// the owner wrote, so it is not lost with the question's card.
+// the owner wrote, so it is not lost with the question's card. Each
+// question keeps its own until the owner dismisses it.
 type QuestionRefusal struct {
-	Session int64
-	Answer  string
-	Why     string
+	// Question is the question's id, and Session its session's.
+	Question string
+	Session  int64
+	Answer   string
+	Why      string
+	// order is when it was first kept, for the composer's order.
+	order uint64
 }
 
 // QuestionGone is why words written for a question that settled before
@@ -275,13 +282,22 @@ type questionDraft struct {
 	text    string
 }
 
+// unsureAnswer is an answer whose request failed with no word of what
+// pocketd did, as one whose reply was lost: the request, its id and its
+// body as sent, which a replay sends again to learn what came of it.
+type unsureAnswer struct {
+	question proto.Question
+	request  proto.AnswerQuestion
+	typed    string
+}
+
 // QuestionDraft is the owner's answer to q being written in its session's
 // composer, which the field edits in place while q waits. It is q's alone,
 // apart from the session's message draft and from any other question's,
 // so a settlement or a new question never sends its words elsewhere: once
-// q settles, words that did not go with its answer are kept as the
-// session's QuestionRefusal, until the owner dismisses them (Codex review
-// of #95, round 1).
+// q settles, words that did not go with its answer are kept as q's
+// QuestionRefusal, until the owner dismisses them (Codex review of #95,
+// round 1).
 func (s *Store) QuestionDraft(q proto.Question) *string {
 	d := s.questionDrafts[q.ID]
 	if d == nil {
@@ -291,33 +307,62 @@ func (s *Store) QuestionDraft(q proto.Question) *string {
 	return &d.text
 }
 
-// keepRefused keeps text, the owner's words for a question of session that
-// did not go, with why, beside words kept already.
-func (s *Store) keepRefused(session int64, text, why string) {
-	r, kept := s.questionRefusals[session]
+// keepRefused keeps text, the owner's words for question id of session that
+// did not go, with why, beside the words kept for it already: a refusal
+// adds to them, and never takes words away, a skip's or another
+// question's included; only the owner's dismissal does (Codex review of
+// #95, round 2). The service's reason takes the place of QuestionGone.
+func (s *Store) keepRefused(id string, session int64, text, why string) {
+	r, kept := s.questionRefusals[id]
+	if !kept {
+		s.refusalOrder++
+		s.questionRefusals[id] = QuestionRefusal{Question: id, Session: session, Answer: text, Why: why, order: s.refusalOrder}
+		return
+	}
 	switch {
-	case !kept:
-		r = QuestionRefusal{Session: session, Answer: text, Why: why}
-	case r.Answer == "" || r.Answer == text:
+	case strings.TrimSpace(text) == "" || r.Answer == text:
+	case strings.TrimSpace(r.Answer) == "":
 		r.Answer = text
-	case text != "":
+	default:
 		r.Answer += "\n\n" + text
 	}
-	s.questionRefusals[session] = r
+	if r.Why == QuestionGone || r.Why == "" {
+		r.Why = why
+	}
+	s.questionRefusals[id] = r
 }
 
 // AnsweringQuestion is where the owner's answer to question id stands.
 func (s *Store) AnsweringQuestion(id string) Pending { return valueOf(s.questionAnswers[id]) }
 
-// QuestionRefusal is the refused answer of session id's composer, if one
-// is kept: until the owner dismisses it.
-func (s *Store) QuestionRefusal(id int64) (QuestionRefusal, bool) {
-	r, ok := s.questionRefusals[id]
-	return r, ok
+// QuestionRefusals are the refused answers of session id's questions that
+// are kept, one a question, in the order they were kept: until the owner
+// dismisses each.
+func (s *Store) QuestionRefusals(id int64) []QuestionRefusal {
+	var out []QuestionRefusal
+	for _, r := range s.questionRefusals {
+		if r.Session == id {
+			out = append(out, r)
+		}
+	}
+	slices.SortFunc(out, func(a, b QuestionRefusal) int { return cmp.Compare(a.order, b.order) })
+	return out
 }
 
-// DismissQuestionRefusal drops session id's refused answer.
-func (s *Store) DismissQuestionRefusal(id int64) { delete(s.questionRefusals, id) }
+// DismissQuestionRefusal drops the refused answer of question id.
+func (s *Store) DismissQuestionRefusal(id string) { delete(s.questionRefusals, id) }
+
+// CheckingAnswer says whether session id has an answer whose fate pocketd
+// has not told yet, though its question no longer waits: the answer's
+// request is sent again to learn it (unsureAnswer).
+func (s *Store) CheckingAnswer(id int64) bool {
+	for qid, u := range s.questionUnsure {
+		if _, waits := s.Data.questionByID(qid); u.question.SessionID == id && !waits {
+			return true
+		}
+	}
+	return false
+}
 
 // AnswerQuestion answers q with text, the owner's words, and the options
 // picked (by index, from 0), either of which may be empty; done runs on
@@ -327,7 +372,10 @@ func (s *Store) DismissQuestionRefusal(id int64) { delete(s.questionRefusals, id
 // An answer to a question settled elsewhere, as on another device (409),
 // or gone (404), is refused: the sessions are fetched again, and the
 // refusal, with the service's reason and the owner's words, stays in
-// QuestionRefusal after the question's card is gone.
+// QuestionRefusals after the question's card is gone. An answer whose
+// request failed with no word of what pocketd did is sent again, with the
+// same id, once its question no longer waits, before its words count as
+// refused (settleQuestions).
 //
 // The options picked go in ascending order, each once, as pocketd takes
 // them, whatever order they were picked in.
@@ -354,7 +402,7 @@ func (s *Store) settleQuestion(q proto.Question, request proto.AnswerQuestion, t
 	// (Codex review of #95, round 1).
 	if _, waits := s.Data.questionByID(q.ID); !waits {
 		if strings.TrimSpace(typed) != "" {
-			s.keepRefused(q.SessionID, typed, QuestionGone)
+			s.keepRefused(q.ID, q.SessionID, typed, QuestionGone)
 		}
 		s.dropDraft(q.ID, typed)
 		s.settleQuestions()
@@ -367,14 +415,28 @@ func (s *Store) settleQuestion(q proto.Question, request proto.AnswerQuestion, t
 		done(err)
 		return
 	}
-	key := questionKey(q.ID)
-	request.RequestID = s.ids.For(key, questionAction(request))
-	p.Busy, p.Err = true, ""
+	request.RequestID = s.ids.For(questionKey(q.ID), questionAction(request))
 	what := "Answer"
 	if request.Skipped {
 		what = "Skip"
 	}
 	s.log(LevelCommand, "%s the question of session %d", what, q.SessionID)
+	s.postAnswer(&unsureAnswer{question: q, request: request, typed: typed}, what, func(err error) {
+		s.settleQuestions()
+		done(err)
+	})
+}
+
+// postAnswer sends answer u's request, with its id, and settles what its
+// reply says: taken, its words leave their draft and its question its
+// session; refused (4xx), its words are kept with pocketd's reason; with
+// no word of what pocketd did, it is kept unsure, for a replay
+// (settleQuestions). then runs after.
+func (s *Store) postAnswer(u *unsureAnswer, what string, then func(error)) {
+	q, request := u.question, u.request
+	key := questionKey(q.ID)
+	p := pending(s.questionAnswers, q.ID)
+	p.Busy, p.Err = true, ""
 	var settled proto.Question
 	s.do(fmt.Sprintf("%s the question of session %d", what, q.SessionID), func(ctx context.Context, c *proto.Client) (err error) {
 		settled, err = c.AnswerQuestion(ctx, q.SessionID, q.ID, request)
@@ -382,33 +444,45 @@ func (s *Store) settleQuestion(q proto.Question, request proto.AnswerQuestion, t
 	}, func(err error) {
 		p.Busy = false
 		var pe *proto.Error
+		refused := errors.As(err, &pe) && pe.Status >= 400 && pe.Status < 500
 		switch {
 		case err == nil:
 			s.ids.Done(key)
 			delete(s.questionAnswers, q.ID)
+			delete(s.questionUnsure, q.ID)
 			// The words that went leave the draft; any others stay, and
 			// are kept once the question settled (settleQuestions).
-			s.dropDraft(q.ID, typed)
+			s.dropDraft(q.ID, u.typed)
 			s.Data.QuestionSettled(settled)
-		case errors.As(err, &pe) && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
+		case refused && (pe.Code == proto.ErrorCodeConflict || pe.Code == proto.ErrorCodeNotFound):
 			// The service says why: settled on another device first, by
 			// its time running out, or by an abort. The card goes with the
 			// reload, or went with the session's event; the refusal stays,
-			// with the owner's words.
+			// with the owner's words, beside any kept before (Codex review
+			// of #95, round 2).
 			s.ids.Done(key)
 			delete(s.questionAnswers, q.ID)
+			delete(s.questionUnsure, q.ID)
 			why := pe.Message
 			if pe.Code == proto.ErrorCodeNotFound || why == "" {
 				why = "pocketd no longer has this question."
 			}
-			s.questionRefusals[q.SessionID] = QuestionRefusal{Session: q.SessionID, Answer: typed, Why: why}
-			s.dropDraft(q.ID, typed)
+			s.keepRefused(q.ID, q.SessionID, u.typed, why)
+			s.dropDraft(q.ID, u.typed)
 			s.loadSessions()
-		default:
+		case refused:
+			// pocketd took none of it, as a body it refused: the card says
+			// why while the question waits.
+			delete(s.questionUnsure, q.ID)
 			p.Err = err.Error()
+		default:
+			// No word of what pocketd did: the request and its id stay,
+			// and are sent again once the question no longer waits, before
+			// the words count as refused (Codex review of #95, round 2).
+			p.Err = err.Error()
+			s.questionUnsure[q.ID] = u
 		}
-		s.settleQuestions()
-		done(err)
+		then(err)
 	})
 }
 
@@ -420,15 +494,39 @@ func (s *Store) dropDraft(id, typed string) {
 	}
 }
 
-// settleQuestions drops the retry state of each answer whose question no
-// longer waits: no card offers its retry. One on its way keeps its state.
+// settleQuestions settles what the store keeps of the questions that no
+// longer wait. An answer whose request failed with no word of what pocketd
+// did is sent again, the same request with the same id, which pocketd
+// answers with the question as it settled when it took it, and refuses
+// when another settled it: the question's leaving alone does not tell who
+// answered it (Codex review of #95, round 2). Until that replay says, its
+// draft and its retry state stay; a replay that fails again is sent again
+// at the next event or fetch, never from its own failure.
+//
 // The draft of a question that settled with no answer of its words on its
 // way, as one answered on another device, skipped when its time ran out,
 // or followed by the session's next question, leaves the composer, and its
-// words are kept as the session's QuestionRefusal (Codex review of #95,
+// words are kept as the question's QuestionRefusal (Codex review of #95,
 // round 1); an answer on its way decides its draft when its reply comes,
-// so a settlement event ahead of the reply keeps nothing twice.
+// so a settlement event ahead of the reply keeps nothing twice. Then the
+// retry state of each answer whose question no longer waits goes: no card
+// offers its retry.
 func (s *Store) settleQuestions() {
+	for id, u := range s.questionUnsure {
+		if _, waits := s.Data.questionByID(id); waits {
+			continue
+		}
+		if p := s.questionAnswers[id]; p != nil && p.Busy {
+			continue
+		}
+		// Once the replay told, the draft is settled as it says; one that
+		// fails again settles nothing, so it is not sent again from here.
+		s.postAnswer(u, "Check the answer to", func(error) {
+			if _, still := s.questionUnsure[id]; !still {
+				s.settleQuestions()
+			}
+		})
+	}
 	for id, d := range s.questionDrafts {
 		if _, waits := s.Data.questionByID(id); waits {
 			continue
@@ -436,8 +534,11 @@ func (s *Store) settleQuestions() {
 		if p := s.questionAnswers[id]; p != nil && p.Busy {
 			continue
 		}
+		if _, unsure := s.questionUnsure[id]; unsure {
+			continue
+		}
 		if strings.TrimSpace(d.text) != "" {
-			s.keepRefused(d.session, d.text, QuestionGone)
+			s.keepRefused(id, d.session, d.text, QuestionGone)
 		}
 		delete(s.questionDrafts, id)
 	}
@@ -446,6 +547,9 @@ func (s *Store) settleQuestions() {
 			continue
 		}
 		if _, waits := s.Data.questionByID(id); waits {
+			continue
+		}
+		if _, unsure := s.questionUnsure[id]; unsure {
 			continue
 		}
 		delete(s.questionAnswers, id)
