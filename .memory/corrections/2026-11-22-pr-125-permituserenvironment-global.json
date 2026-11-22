@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide keeps PermitUserEnvironment at its default, no, outside any Match block, where sshd refuses it, and keeps only AuthorizedKeysFile and PermitUserRC in the service user's Match block.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 21 (codex-cli 0.169.0) of head b29b5d2: [P1] Keep PermitUserEnvironment outside the SSH Match block",
+  "promoted_to": "docs/design/setup.md"
+}

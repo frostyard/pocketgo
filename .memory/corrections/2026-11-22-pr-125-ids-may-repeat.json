@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says new databases may give sessions and asks ids the old ones had, not that they start at 1.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 12 (codex-cli 0.169.0) of head 73b8269: [P3] Describe ID reuse without promising session number one",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide installs gh's hosts.yml under ${XDG_CONFIG_HOME:-$HOME/.config}/gh, where the service's gh reads it.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 11 (codex-cli 0.169.0) of head 5d7bab5: [P1] Install the gh sign-in where the service will read it",
+  "promoted_to": "docs/design/setup.md"
+}

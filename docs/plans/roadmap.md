@@ -214,6 +214,9 @@ Built in this order, one pull request each:
 35. [ ] **A closed thread reopened by a message** ([ADR-0061](../adr/0061-reopen-a-closed-thread-when-a-message-reaches-its-specialist.md), [architecture: a closed thread reopened by a message](../design/architecture.md#service), [specs: protocol rules 10, 24, 26, 27, 28a, 30a and 39](../specs/protocol.md#rules)). Asked for in frostyard/pocketgo#55, decided by the owner on 2026-11-22 (reopen on delivery): on 2026-11-21 the T77 session did the owner's request on frostyard/core#283 after its thread closed, and could not report it.
     - Built: the owner's message and a supervisor's `team_send` reopen a closed thread once `Engine.Placed` finds them in its specialist's transcript, noted before any report or close; a closed thread whose plan settled it, that never had its brief, or whose worktree is gone, takes no message, and the refusal says where to send it; its worktree stays while such a message is on its way; `team_delegate`'s `follows` names a successor, which every refusal on a closed thread names; a reopened thread is not closed again by merges that came before; the board marks it `reopened` and names the threads it is linked to. Protocol 33, migration 25.
     - Still to see, through the desktop, on the team VM: the owner's message to a closed thread's session reopening it on the board, the specialist's report reaching the supervisor, and a message to a closed thread whose worktree pocketd removed refused with its successor named.
+36. [ ] **The setup guide** ([design: setup guide](../design/setup.md), [architecture: operational notes](../design/architecture.md#operational-notes)). Asked for in frostyard/pocketgo#45: someone other than the owner runs pocketgo from this repository alone.
+    - Written: the service host and its sandbox, `make deploy`, `tailscale serve` or `POCKETD_LISTEN`, the data folder, model sign-ins, devices, the profile folder with every file in it and two example profiles, `workers.json` and `schedules.json` in `examples/profiles/`, GitHub for the agents and the desktop's own App, the desktop and the phone, a first delegated thread, backups, starting over and the sandbox's start check. No code change.
+    - Still to see: someone other than the owner goes from a clone of this repository to a delegated thread on a host of their own by following the guide.
 
 - **Policies enforced in code:** see the [architecture](../design/architecture.md#policies-enforced-in-code).
 - [x] **Tools run without approval** in a bubblewrap sandbox that hides pocketd's data folder and keeps its start files read-only ([ADR-0012](../adr/0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md), [architecture: operational notes](../design/architecture.md#operational-notes)). Done 2026-11-19.
@@ -274,5 +277,5 @@ The owner's shifts from pi-pocket-team, started by the supervisor first, with no
 
 ## References
 
-- Implements: [design: system architecture](../design/architecture.md)
+- Implements: [design: system architecture](../design/architecture.md), [design: setup guide](../design/setup.md)
 - Decisions: [ADR-0004](../adr/0004-build-the-service-on-pigs-durable-harness.md) to [ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)

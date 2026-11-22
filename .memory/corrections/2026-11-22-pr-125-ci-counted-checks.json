@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide states which CI counts as green: check runs completed as success, neutral or skipped, commit statuses success, at least one, and core's pr-triage left out (github.ciState).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Describe which CI results count toward ready-for-human",
+  "promoted_to": "docs/design/setup.md"
+}

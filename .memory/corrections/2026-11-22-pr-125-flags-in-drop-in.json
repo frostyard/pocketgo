@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide passes flag-only settings (-pr-every, -instructions=) through a user-unit drop-in that replaces ExecStart and survives deploy.sh, since the unit runs pocketd serve with no flags and an empty POCKETD_INSTRUCTIONS counts as unset.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 8 (codex-cli 0.169.0) of head 01008a6: [P2] Explain how to pass flag-only settings to the installed unit",
+  "promoted_to": "docs/design/setup.md"
+}

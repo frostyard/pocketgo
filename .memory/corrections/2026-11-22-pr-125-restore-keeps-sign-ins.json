@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's restore keeps the current auth.json, or signs in to the models again, since a subscription may have replaced its refresh token since the backup.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 4 (codex-cli 0.169.0) of head fa6ee29: [P2] Mention model reauthentication after restoring an old backup",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's incus copy makes the prompts folder as the service user and pushes each file without -r, with --uid and --gid, since incus applies them to no file of a recursive push.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 9 (codex-cli 0.169.0) of head 0519584: [P1] Give an Incus copy command that works for the prompts directory",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The round 20 pull request record scopes the branch rule to a thread on a repository.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 22 (codex-cli 0.169.0) of head 2db1c44: [P3] Scope the recorded pull-request rule to repository threads",
+  "promoted_to": "docs/design/setup.md"
+}

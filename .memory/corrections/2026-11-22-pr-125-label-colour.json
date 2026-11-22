@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's gh label create names a --color, since gh picks a random one otherwise.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 8 (codex-cli 0.169.0) of head 01008a6: [P3] Specify the color in the label-creation example",
+  "promoted_to": "docs/design/setup.md"
+}

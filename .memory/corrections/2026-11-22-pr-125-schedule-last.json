@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide copies schedules.json last, once the profiles' folders exist and pocketd profiles shows a model under RUNS for both, so no scheduled time is missed during setup.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 20 (codex-cli 0.169.0) of head bceed2b: [P2] Validate the installed profiles before enabling the schedule",
+  "promoted_to": "docs/design/setup.md"
+}

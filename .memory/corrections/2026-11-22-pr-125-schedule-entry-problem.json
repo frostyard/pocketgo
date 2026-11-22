@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says an unknown field makes a profile, workers.json or providers.json invalid, but only its own entry of schedules.json, and a bad prompt is listed with its problem.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Distinguish invalid schedule entries from an invalid file",
+  "promoted_to": "docs/design/setup.md"
+}

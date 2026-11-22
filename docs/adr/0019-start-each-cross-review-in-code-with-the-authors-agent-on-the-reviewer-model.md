@@ -76,5 +76,6 @@ The owner decided on 2026-11-19: pocketd starts the review, with the same agent 
 ## References
 
 - Shapes: [design: system architecture](../design/architecture.md#service), [specs: protocol rules 25, 41, 42 and 46](../specs/protocol.md), [plans: roadmap](../plans/roadmap.md)
+- Set up by: [design: setup guide](../design/setup.md)
 - Supersedes in part: decision 1 of [ADR-0017](0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md), which had the supervisor delegate reviews
 - Builds on: [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0013](0013-load-agent-profiles-from-the-owners-folder-and-route-models-in-code.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0017](0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md)

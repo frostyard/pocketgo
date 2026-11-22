@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The setup guide links ADR-0053 where it asks for git 2.45, and ADR-0053 links the guide back.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 14 (codex-cli 0.169.0) of head 4434b73: [P3] Link the Git version prerequisite to ADR-0053 in both directions",
+  "promoted_to": "docs/design/setup.md"
+}

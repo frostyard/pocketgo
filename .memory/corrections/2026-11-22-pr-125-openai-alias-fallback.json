@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says an openai/ model runs on openai-codex when no sign-in serves openai itself, not that it is rewritten.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 4 (codex-cli 0.169.0) of head fa6ee29: [P2] Describe openai-codex as a fallback rather than a rewrite",
+  "promoted_to": "docs/design/setup.md"
+}

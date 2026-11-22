@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's gh check runs under bwrap with /run/user on a tmpfs, as the sandbox hides it, so a keyring found by the user's id cannot answer.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 16 (codex-cli 0.169.0) of head c6f5a00: [P2] Check that gh can read the token without the session keyring",
+  "promoted_to": "docs/design/setup.md"
+}

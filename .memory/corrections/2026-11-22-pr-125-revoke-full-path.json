@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide runs every pocketd command in the admin shell by its full path, ~/.local/bin/pocketd, device revoke included, since that folder is not on the shell's PATH.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 5 (codex-cli 0.169.0) of head 2212e96: [P1] Use the installed pocketd path when revoking a device",
+  "promoted_to": "docs/design/setup.md"
+}

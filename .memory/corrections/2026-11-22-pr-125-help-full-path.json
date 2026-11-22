@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide runs pocketd -h by its full path, ~/.local/bin/pocketd, as every pocketd command in the admin shell.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 6 (codex-cli 0.169.0) of head aa1dac0: [P2] Use the installed path for the help command",
+  "promoted_to": "docs/design/setup.md"
+}

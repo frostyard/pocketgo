@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says agents' shell commands can read the profile folder while the file tools, read included, refuse it (Sandbox.Guarded).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 12 (codex-cli 0.169.0) of head 73b8269: [P2] Qualify which tools can read the profile folder",
+  "promoted_to": "docs/design/setup.md"
+}

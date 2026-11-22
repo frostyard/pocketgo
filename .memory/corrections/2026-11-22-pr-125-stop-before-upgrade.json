@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide stops pocketd before an upgrade's make deploy: deploy.sh stages the new program in the agent-writable home before it installs it, and the stop ends every agent command.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 5 (codex-cli 0.169.0) of head 2212e96: [P1] Stop pocketd before staging an upgrade",
+  "promoted_to": "docs/design/setup.md"
+}

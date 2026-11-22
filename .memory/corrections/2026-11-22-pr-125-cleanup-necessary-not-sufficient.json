@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide states a clean tree and commits in the pull request as necessary for removing a closed thread's worktree, not sufficient, and points to the thread's report for why one stayed.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 7 (codex-cli 0.169.0) of head d74ed21: [P2] Qualify when a clean worktree is removed",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's backup copies the data folder only after the stop succeeded, chained with &&, and says the backup counts only when it printed so.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P1] Make a successful service stop a prerequisite for copying",
+  "promoted_to": "docs/design/setup.md"
+}

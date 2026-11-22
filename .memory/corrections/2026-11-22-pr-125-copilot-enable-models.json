@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says the desktop's Copilot sign-in may list a model whose first call is refused until the owner enables it on GitHub, while pocketd login github-copilot turns such models on where it can (ADR-0062).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 14 (codex-cli 0.169.0) of head 4434b73: [P2] Distinguish desktop and CLI Copilot model enablement",
+  "promoted_to": "docs/design/setup.md"
+}

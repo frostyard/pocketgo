@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says pocketd removes a closed thread's worktree only when it is clean and its commits are in the pull request, and otherwise says why in the thread's report.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Describe worktree cleanup as conditional",
+  "promoted_to": "docs/design/setup.md"
+}

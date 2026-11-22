@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide puts the ssh deploy's key in a root-owned AuthorizedKeysFile (/etc/ssh/authorized_keys/%u under Match User), never ~/.ssh/authorized_keys, which agents running as the service user could change.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P1] Keep SSH authorization outside the agent-writable home",
+  "promoted_to": "docs/design/setup.md"
+}

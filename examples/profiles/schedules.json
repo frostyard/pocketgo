@@ -1,0 +1,4 @@
+{"schedules": [
+  {"id": "morning", "when": "every weekday 8:30", "profile": "supervisor",
+   "message": "Good morning. Tell me where each open thread stands and what waits for me."}
+]}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The guarded backup snippet (copy only after the stop succeeded) lives in the setup guide; a docs fix is its own guard, as the owner set for this pull request, and no test drives the snippet.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Add a regression guard for the documented backup command",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says a cross-review needs no info/attributes in the checkout's repository and no system attributes file, even empty; a tracked .gitattributes is fine.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] State the attributes-file prerequisite for the first cross-review",
+  "promoted_to": "docs/design/setup.md"
+}

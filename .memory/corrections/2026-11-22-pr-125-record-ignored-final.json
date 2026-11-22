@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The round 12 worktree record states the final rule: only untracked files .gitignore matches go with a removed worktree.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 16 (codex-cli 0.169.0) of head c6f5a00: [P3] Limit the cleanup correction to ignored untracked files",
+  "promoted_to": "docs/design/setup.md"
+}

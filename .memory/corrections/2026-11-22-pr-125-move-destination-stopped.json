@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide copies a moved state onto the new host before its first make deploy, or with the unit make deploy started stopped until both databases and the working folders are in place.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 18 (codex-cli 0.169.0) of head 7bfc254: [P1] Stop the destination service before copying a host migration",
+  "promoted_to": "docs/design/setup.md"
+}

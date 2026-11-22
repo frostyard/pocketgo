@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide has a fork's GitHub App installable on any account unless every repository is the App owner's: CheckApp reads the installation on the pull request's owner.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P2] Choose an App installation scope that includes the target owner",
+  "promoted_to": "docs/design/setup.md"
+}

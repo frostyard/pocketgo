@@ -33,6 +33,8 @@ build/pocketd serve -listen 127.0.0.1:8788
 
 Start the desktop client with `build/pocket` (or `make run`), and sign in with the service URL and the device's token. `make app` packages it for this machine, in `desktop/build/mygo`. It needs GTK 3 on Linux.
 
+To run pocketgo on a host of your own, follow the [setup guide](docs/design/setup.md): the service host and its sandbox, deploying, the tailnet, model sign-ins, devices, the profile folder, GitHub, the desktop, and a first delegated thread.
+
 ## How it works
 
 The service, `pocketd`, runs agents on PiG's durable harness, a Go port of Pi Durable. The service and the desktop share one module of wire types: REST for commands, SSE for live updates. The desktop client is built on MyGo and frostui. The full design is in [docs/design/architecture.md](docs/design/architecture.md).
@@ -48,6 +50,7 @@ make ci        # what CI runs
 
 ## Where to go next
 
+- [docs/design/setup.md](docs/design/setup.md): set pocketgo up on your own host.
 - [AGENTS.md](AGENTS.md): the rules for agents and contributors.
 - [docs/README.md](docs/README.md): the decisions, designs, specs and plans.
 - [SECURITY.md](SECURITY.md): report a vulnerability privately.

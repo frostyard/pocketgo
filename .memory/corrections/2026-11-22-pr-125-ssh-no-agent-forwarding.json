@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's sshd Match block for the service user sets AllowAgentForwarding no, and the effective check shows it, since a forwarded agent's socket in /tmp would sign for the user's processes while the deploy's session lasts.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 22 (codex-cli 0.169.0) of head 2db1c44: [P1] Disable SSH agent forwarding for the service user",
+  "promoted_to": "docs/design/setup.md"
+}

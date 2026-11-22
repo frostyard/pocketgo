@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide sets the new host up whole (pocketd.env and drop-ins, the GitHub sign-in, the profile folder with schedules.json, the global AGENTS.md and skills) before pocketd first starts with the moved state, and stops the unit make deploy starts until the copy is done, since a missing schedules.json drops the schedules' records.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 19 (codex-cli 0.169.0) of head 5b6f3e6: [P1] Provision the destination before starting migrated state",
+  "promoted_to": "docs/design/setup.md"
+}

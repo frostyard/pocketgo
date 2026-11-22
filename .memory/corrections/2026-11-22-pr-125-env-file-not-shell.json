@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide treats pocketd.env as systemd's EnvironmentFile (literal absolute paths, no quotes, no $) and has the owner's commands pass -data, -profiles and -skills, never source the file.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Do not assume a systemd EnvironmentFile is a shell script",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's gh login sets GH_BROWSER=true and has the owner open the device address on their own machine, so no browser reading the user's configuration starts on the host.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 14 (codex-cli 0.169.0) of head 4434b73: [P1] Disable host browser launch during GitHub device login",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide scopes the pull request branch rule to a thread on a repository; a thread in a home or workspace needs only the profile to name the repository (team.CheckPull).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 21 (codex-cli 0.169.0) of head b29b5d2: [P2] Scope the pull-request branch rule to repository threads",
+  "promoted_to": "docs/design/setup.md"
+}

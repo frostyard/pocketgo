@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide names links and where they lead among what a backup of work in flight must copy, since a session names its working folder by the link (Server.threadFolder).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 22 (codex-cli 0.169.0) of head 2db1c44: [P1] Preserve working-folder symlinks as well as their targets",
+  "promoted_to": "docs/design/setup.md"
+}

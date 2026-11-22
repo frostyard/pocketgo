@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide moves the current data folder under the root-only backup folder or off the host before a restore, never beside the data folder, which the sandbox does not hide.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 12 (codex-cli 0.169.0) of head 73b8269: [P1] Protect the displaced data folder during a restore",
+  "promoted_to": "docs/design/setup.md"
+}

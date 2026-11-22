@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide checks the unit path with systemctl --user show -p UnitPath --value, which asks the running manager, not systemd-analyze, which computes the shell's own.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 16 (codex-cli 0.169.0) of head c6f5a00: [P1] Check the running user manager's unit search path",
+  "promoted_to": "docs/design/setup.md"
+}

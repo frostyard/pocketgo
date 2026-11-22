@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide checks sshd's effective settings for the service user with sshd -T -C and the deploying machine's name and address as the host sees them, on both deploy paths, since a refused login proves nothing for an account with no key.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 18 (codex-cli 0.169.0) of head 7bfc254: [P1] Verify the effective SSH policy for the service user",
+  "promoted_to": "docs/design/setup.md"
+}

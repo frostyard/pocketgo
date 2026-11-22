@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide names assume-unchanged and skip-worktree as the tracked-file flags that keep a closed thread's worktree, and says only untracked files .gitignore matches go with it; a tracked file with changes keeps it whatever .gitignore says.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 12 (codex-cli 0.169.0) of head 73b8269: [P1] Distinguish ignored files from protected index entries",
+  "promoted_to": "docs/design/setup.md"
+}

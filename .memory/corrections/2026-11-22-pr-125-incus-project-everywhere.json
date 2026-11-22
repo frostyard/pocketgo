@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide adds --project <project> to the incus shell and file push when the deploy used DEPLOY_INCUS_PROJECT.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P1] Carry the Incus project into post-deploy commands",
+  "promoted_to": "docs/design/setup.md"
+}

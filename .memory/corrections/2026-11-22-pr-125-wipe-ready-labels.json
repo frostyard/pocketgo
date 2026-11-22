@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide notes the open pull requests carrying ready-for-human before a wipe, and has the owner remove those labels on GitHub, since the new databases link none of them.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 11 (codex-cli 0.169.0) of head 5d7bab5: [P2] Account for outstanding readiness labels before a reset",
+  "promoted_to": "docs/design/setup.md"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide runs pocketd profiles with the service's TZ when pocketd.env sets one, since the command reports schedules in its own zone.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 4 (codex-cli 0.169.0) of head fa6ee29: [P2] Use the service's time zone when checking schedules from the CLI",
+  "promoted_to": "docs/design/setup.md"
+}

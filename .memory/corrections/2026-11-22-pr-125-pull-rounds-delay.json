@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says pocketd reads pull requests in rounds, the next -pr-every after a round ends, so a merge shows at the next read, not within the interval.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 2 (codex-cli 0.169.0) of head e6e626b: [P3] Describe the pull polling interval as a delay, not a deadline",
+  "promoted_to": "docs/design/setup.md"
+}

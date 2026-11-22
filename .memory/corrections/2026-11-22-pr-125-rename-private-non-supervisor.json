@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says only a private profile that is no supervisor has its own sessions renamable from the desktop (team.CheckRename).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 13 (codex-cli 0.169.0) of head b90cbe8: [P2] Qualify which private sessions the desktop can rename",
+  "promoted_to": "docs/design/setup.md"
+}

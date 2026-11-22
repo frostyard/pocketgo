@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's host move copies every working folder at the same paths: the checkouts with their worktrees and the agents' homes and workspaces, where a thread on no repository works.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 12 (codex-cli 0.169.0) of head 73b8269: [P1] Include non-repository working folders in host moves",
+  "promoted_to": "docs/design/setup.md"
+}

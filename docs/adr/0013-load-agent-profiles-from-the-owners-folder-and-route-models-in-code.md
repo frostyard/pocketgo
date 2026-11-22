@@ -60,4 +60,5 @@ A profile decides what an agent is told and what it may do. pocketd's agents run
 ## References
 
 - Shapes: [design: system architecture](../design/architecture.md#service), [specs: protocol](../specs/protocol.md), [plans: roadmap](../plans/roadmap.md)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0005](0005-keep-the-agent-loop-and-model-credentials-in-the-service.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)

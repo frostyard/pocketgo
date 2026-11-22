@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's host move runs systemctl --user disable --now pocketd on the old host before the copy, since lingering would start it again at a reboot.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 13 (codex-cli 0.169.0) of head b90cbe8: [P2] Disable the old host's unit during a permanent move",
+  "promoted_to": "docs/design/setup.md"
+}

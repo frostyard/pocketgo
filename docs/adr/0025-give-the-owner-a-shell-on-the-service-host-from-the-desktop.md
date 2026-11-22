@@ -54,4 +54,5 @@
 ## References
 
 - Shapes: [design: system architecture](../design/architecture.md), [specs: protocol](../specs/protocol.md)
+- Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0006](0006-share-the-wire-protocol-as-go-types-in-one-module.md), [ADR-0010](0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0012](0012-run-tools-without-approval-in-a-sandbox-that-hides-pocketds-files.md)

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide says a thread's branch starts from the checkout's HEAD when the fetch of origin fails, with the brief saying so (team.StaleBase).",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Document the local-HEAD fallback when origin cannot be fetched",
+  "promoted_to": "docs/design/setup.md"
+}

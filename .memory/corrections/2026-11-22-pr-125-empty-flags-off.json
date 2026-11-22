@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide lists the empty flags -profiles=, -skills= and -instructions= that turn a folder off, since an empty POCKETD_PROFILES, POCKETD_SKILLS or POCKETD_INSTRUCTIONS keeps the default.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 18 (codex-cli 0.169.0) of head 7bfc254: [P2] Include the flag-only ways to disable profiles and global skills",
+  "promoted_to": "docs/design/setup.md"
+}

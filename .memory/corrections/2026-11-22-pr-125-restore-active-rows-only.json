@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's restore revokes only active restored devices, since revoking a revoked one fails.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 5 (codex-cli 0.169.0) of head 2212e96: [P2] Skip already-revoked rows during restore",
+  "promoted_to": "docs/design/setup.md"
+}

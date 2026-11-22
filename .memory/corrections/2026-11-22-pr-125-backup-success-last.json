@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's backup block copies only after the successful stop and prints its success line last, and the guide takes it with no thread open, so backup done means what a restore needs.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 18 (codex-cli 0.169.0) of head 7bfc254: [P1] Report backup success only after every requested copy succeeds",
+  "promoted_to": "docs/design/setup.md"
+}

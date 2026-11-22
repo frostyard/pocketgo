@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's fresh start moves the desktop's settings.json aside too, since it keeps pins, seen marks and notified asks by the service URL and new databases number asks from 1 again.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 10 (codex-cli 0.169.0) of head 55d8571: [P2] Account for desktop state when resetting the databases",
+  "promoted_to": "docs/design/setup.md"
+}

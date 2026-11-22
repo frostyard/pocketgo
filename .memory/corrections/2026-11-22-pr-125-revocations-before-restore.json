@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide lists the current devices before a restore, and before pocketd starts revokes every active restored device that is not active with the same ID in that list; without the current folder it revokes every active restored device.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 3 (codex-cli 0.169.0) of head cce3c98: [P2] Preserve the device revocation list before replacing the database",
+  "promoted_to": "docs/design/setup.md"
+}

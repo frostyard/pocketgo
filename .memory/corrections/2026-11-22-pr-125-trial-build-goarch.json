@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide's trial build of pocketd names GOARCH for the host, as deploy.sh picks it from uname -m.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 1 (codex-cli 0.169.0) of head eadad36: [P2] Set the target architecture for the manual host check",
+  "promoted_to": "docs/design/setup.md"
+}

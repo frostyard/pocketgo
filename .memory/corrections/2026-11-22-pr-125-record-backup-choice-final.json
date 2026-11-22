@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "docs",
+  "correction": "The round 16 backup record states the final rule: the block copies the whole data folder, sign-ins included, and work in flight is copied inside the chain before the restart.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 18 (codex-cli 0.169.0) of head 7bfc254: [P2] Correct the permanent record of what the backup contains",
+  "promoted_to": "docs/design/setup.md"
+}

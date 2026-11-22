@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-22",
+  "scope": "setup",
+  "correction": "The setup guide clones a checkout with GIT_CONFIG_GLOBAL=/dev/null and gh as the one credential helper, so no helper, filter or hook from the agent-writable git configuration runs outside the sandbox.",
+  "evidence": "frostyard/pocketgo#125, Codex CLI review round 9 (codex-cli 0.169.0) of head 0519584: [P1] Isolate the checkout command from the agent's Git configuration",
+  "promoted_to": "docs/design/setup.md"
+}
