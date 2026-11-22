@@ -85,7 +85,7 @@ func bypassGate(f PRFacts, r RepoRules, stage Stage, cr CrossReview) string {
 	}
 	// GitHub's review decision in the PR query and in the bypass read, which
 	// reads the approvals counted below, must be the same: two that differ,
-	// as when a review came or went between the reads, prove nothing. The
+	// as when a review between the reads changed it, prove nothing. The
 	// count, the extra approval and pocketd's verdict standing in for a
 	// missing review all rest on them (pocketgo ADR-0059, Codex review of
 	// #119, round 1).
