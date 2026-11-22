@@ -61,7 +61,7 @@ Docs are split by the question they answer:
 - [0046 — Let the supervisor read the owner's Inbox from pocketd's records, in code](adr/0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md)
 - [0047 — Carry a shift's ci on a proposal to its launch](adr/0047-carry-a-shifts-ci-on-a-proposal-to-its-launch.md)
 - [0048 — Put the supervisor's and a private agent's questions to the owner inline, in code](adr/0048-put-the-supervisors-and-a-private-agents-questions-to-the-owner-inline-in-code.md)
-- [0049 — File a repeated ask as the thread's open one](adr/0049-file-a-repeated-ask-as-the-threads-open-one.md)
+- [0050 — File a repeated ask as the thread's open one](adr/0050-file-a-repeated-ask-as-the-threads-open-one.md)
 
 ### Org-wide decisions
 
