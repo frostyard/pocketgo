@@ -465,7 +465,7 @@ func TestTokenSourceRefresh(t *testing.T) {
 	}
 }
 
-// TestRefreshAnotherClientID: a pair of another build ends the sign-in.
+// TestTokenSourceRefreshAnotherBuild: a pair of another build ends the sign-in.
 func TestTokenSourceRefreshAnotherBuild(t *testing.T) {
 	s := newSource(t)
 	pair := s.pair(oldAccess, time.Minute)
@@ -603,8 +603,8 @@ func TestTokenSourceRefreshNoAnswer(t *testing.T) {
 	}
 }
 
-// TestRefreshUnsaved: a failed save gives no lease, Unsaved, and Save again
-// restores it.
+// TestTokenSourceRefreshUnsaved: a failed save gives no lease, Unsaved, and
+// Save again restores it.
 func TestTokenSourceRefreshUnsaved(t *testing.T) {
 	s := newSource(t)
 	s.load(s.pair(oldAccess, time.Minute))

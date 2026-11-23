@@ -106,3 +106,82 @@ func TestACleanupWaitsForTheWorkerAStopIsOwed(t *testing.T) {
 		t.Fatalf("the thread %+v", got)
 	}
 }
+
+// The owner's stop notes placed messages before answering, even when the
+// shift has ended already or the request ran before: each answer includes
+// the reopen its message brought (Codex review of #121, round 6).
+func TestAShiftStopRunAgainNotesPlacedMessagesFirst(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+	for i, name := range []string{"no-op", "run again"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := h.client.CloseThread(ctx, thread.ID, proto.CloseThread{RequestID: "c" + itoa(int64(i+1))}); err != nil {
+				t.Fatal(err)
+			}
+			message := "m" + itoa(int64(i+1))
+			h.queueOwner(thread.Session)
+			if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: message, Text: "One more thing."}); err != nil {
+				t.Fatal(err)
+			}
+			h.placeQueued(requestKeyOf(h.harness, message), thread.Session)
+			h.engine.onSend = nil
+			answer, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"})
+			if err != nil || answer.State != proto.ThreadOpen || answer.Reopens != i+1 {
+				t.Errorf("the stop answered state=%s reopens=%d, %v; want open and %d", answer.State, answer.Reopens, err, i+1)
+			}
+		})
+	}
+}
+
+// The owner's resume notes placed messages before answering, both on its
+// first call and when its request ran before: the answer includes the
+// message's change of state (Codex review of #121, round 6).
+func TestAShiftResumeNotesPlacedMessagesFirst(t *testing.T) {
+	t.Run("run again", func(t *testing.T) {
+		h := newTeamHarness(t)
+		ctx := context.Background()
+		thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+		if _, err := h.client.StopShift(ctx, thread.ID, proto.StopShift{RequestID: "x1"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.client.CloseThread(ctx, thread.ID, proto.CloseThread{RequestID: "c1"}); err != nil {
+			t.Fatal(err)
+		}
+		h.queueOwner(thread.Session)
+		if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "m1", Text: "One more thing."}); err != nil {
+			t.Fatal(err)
+		}
+		h.placeQueued(requestKeyOf(h.harness, "m1"), thread.Session)
+		h.engine.onSend = nil
+		answer, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"})
+		if err != nil || answer.State != proto.ThreadOpen || answer.Reopens != 1 {
+			t.Fatalf("the resume run again answered state=%s reopens=%d, %v; want open and 1", answer.State, answer.Reopens, err)
+		}
+	})
+	t.Run("first call", func(t *testing.T) {
+		h := newTeamHarness(t)
+		ctx := context.Background()
+		thread := shiftThread(t, h, "s1", team.Shift{Stop: "the tests pass", MaxRounds: rounds(5)})
+		h.answerRound(thread, thread.BriefSubmission, "STATUS: BLOCKED: needs the key")
+		h.runShiftPasses()
+		h.summaryReached(thread)
+		if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, CallID: "report"}, team.Report{Status: team.StatusBlocked, Message: "Needs the key."}); err != nil {
+			t.Fatal(err)
+		}
+		h.queueSends(thread.Session)
+		call := TeamCall{Session: h.super.ID, CallID: "send"}
+		if _, err := h.server.TeamSend(ctx, call, team.Send{Thread: thread.ID, Text: "The key is available."}); err != nil {
+			t.Fatal(err)
+		}
+		h.placeQueued(h.sendKey(call), thread.Session)
+		h.engine.onSend = nil
+		answer, err := h.client.ResumeShift(ctx, thread.ID, proto.ResumeShift{RequestID: "r1"})
+		if err != nil || answer.State != proto.ThreadOpen {
+			t.Fatalf("the first resume answered state=%s, %v; want open", answer.State, err)
+		}
+	})
+}
