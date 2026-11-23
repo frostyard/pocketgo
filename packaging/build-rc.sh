@@ -47,7 +47,7 @@ else
     builder=(flatpak run "--filesystem=$stage" org.flatpak.Builder)
 fi
 "${builder[@]}" --disable-download --repo=repo app "$id.json"
-flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo repo "result/$name-x86_64.flatpak" "$id" rc
+flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo repo "result/$name-x86_64.flatpak" "$id" stable
 
 (cd result && sha256sum -- *.flatpak *.zip revision.txt > SHA256SUMS)
 # Publish a complete local set. Keep concurrently built candidates separate.

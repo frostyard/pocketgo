@@ -9,7 +9,7 @@ The Linux desktop and browser can run the same PocketGo views. The existing desk
 
 ## Decision
 
-The Linux build, run and packaging targets select NSGo under the existing application ID `org.frostyard.PocketGo`. MyGo remains an explicit Linux fallback and keeps its other platforms. Cut an x86-64 Flatpak on the `rc` branch and a static web archive from one committed source tree. Record the full revision inside each artifact. Publishing the Flatpak to the Frostyard remote requires an attested OCI image and registration in flatpak-index.
+The Linux build, run and packaging targets select NSGo under the existing application ID `org.frostyard.PocketGo`. MyGo remains an explicit Linux fallback and keeps its other platforms. Cut an x86-64 Flatpak on the `stable` Flatpak ref, distributed first as a versioned candidate, and a static web archive from one committed source tree. Record the full revision inside each artifact. Publishing the Flatpak to the Frostyard remote requires an attested OCI image and registration in flatpak-index.
 
 ## Consequences
 

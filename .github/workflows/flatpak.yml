@@ -2,11 +2,8 @@ name: PocketGo release candidate
 
 on:
   workflow_dispatch:
-    inputs:
-      publish_rc:
-        description: Publish the attested Flatpak to the rc OCI tag
-        type: boolean
-        default: false
+  push:
+    tags: ['v[0-9]*-rc.[0-9]*']
 
 permissions: {}
 
@@ -37,7 +34,7 @@ jobs:
           if-no-files-found: error
   publish:
     needs: build
-    if: inputs.publish_rc && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     concurrency: pocketgo-flatpak-rc
     permissions:
@@ -58,21 +55,18 @@ jobs:
           sudo apt-get install -y flatpak ostree skopeo
           ostree init --mode=archive-z2 --repo=repo
           flatpak build-import-bundle repo ./*.flatpak
-          flatpak build-bundle --oci repo image org.frostyard.PocketGo rc
-      - name: Push the commit tag
+          flatpak build-bundle --oci repo image org.frostyard.PocketGo stable
+      - name: Push the release candidate
         id: push
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          test -f "pocketgo-${GITHUB_REF_NAME#v}-${GITHUB_SHA::12}-x86_64.flatpak"
           echo "$GH_TOKEN" | skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
-          skopeo copy --format oci --digestfile digest oci:image docker://ghcr.io/frostyard/pocketgo:sha-"$GITHUB_SHA"
+          skopeo copy --format oci --digestfile digest oci:image "docker://ghcr.io/frostyard/pocketgo:$GITHUB_REF_NAME"
           echo "digest=$(cat digest)" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/frostyard/pocketgo
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
-      - name: Promote the attested candidate to rc
-        env:
-          DIGEST: ${{ steps.push.outputs.digest }}
-        run: skopeo copy --preserve-digests "docker://ghcr.io/frostyard/pocketgo@$DIGEST" docker://ghcr.io/frostyard/pocketgo:rc
