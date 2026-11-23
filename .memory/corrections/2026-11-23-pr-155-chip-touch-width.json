@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-23",
+  "scope": "desktop",
+  "correction": "On iOS every slim composer control, the model chip included, takes at least state.MinTouchTarget on each side (state.MinTarget), so a crowded phone row squeezes the chip's label, never its target below 44 DIPs.",
+  "evidence": "frostyard/pocketgo#155, cross-review of head ea1a944: the model chip's iOS minimum set its height alone, so a crowded phone row could make it narrower than 44 DIPs",
+  "promoted_to": "desktop/internal/app/composer_test.go"
+}

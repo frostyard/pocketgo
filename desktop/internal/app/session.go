@@ -930,7 +930,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 						// The words are the answer: files make none.
 						send := frostui.LabeledButton(c, "document-send", "Send Answer", true).Padding(4, frostui.SpaceS).Shrink(0)
 						if m > 0 {
-							send.MinHeight(m)
+							send.MinWidth(m).MinHeight(m)
 						}
 						if send.Disabled(strings.TrimSpace(*draft) == "" || answering.Busy).Clicked() {
 							a.submit(id, composing, *draft)
@@ -941,7 +941,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 					empty := strings.TrimSpace(*draft) == "" && len(a.st.Attachments(id)) == 0
 					send := frostui.LabeledButton(c, "document-send", "Send", true).Padding(4, frostui.SpaceS).Shrink(0)
 					if m > 0 {
-						send.MinHeight(m)
+						send.MinWidth(m).MinHeight(m)
 					}
 					if send.Disabled(empty || !a.st.MaySend(id)).Clicked() {
 						a.submit(id, composing, *draft)
@@ -1088,7 +1088,7 @@ func (a *App) modelChip(c *ui.Context, id int64) {
 		button.MaxWidth(160)
 	}
 	if m := state.MinTarget(a.opts.Platform); m > 0 {
-		button.MinHeight(m)
+		button.MinWidth(m).MinHeight(m)
 	}
 	if button.Hovered() {
 		button.Background(t.SurfaceHover)

@@ -3,10 +3,12 @@ package app
 import (
 	"context"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
 )
 
@@ -34,7 +36,7 @@ func (x *testApp) assertComposerRow(t *testing.T, touch bool, labels ...string) 
 		} else if math.Abs(float64(cy-center)) > 2 {
 			t.Errorf("%s center %v is not on composer row %v", label, cy, center)
 		}
-		if touch && (n.Bounds.H < 44 || (label != "Model" && n.Bounds.W < 44)) {
+		if touch && (n.Bounds.H < 44 || n.Bounds.W < 44) {
 			t.Errorf("%s bounds %+v are not touch sized", label, n.Bounds)
 		}
 		if !touch && label == "Send" && (n.Bounds.H <= 0 || n.Bounds.H >= 40) {
@@ -205,4 +207,83 @@ func TestTheSlimComposerSnapshot(t *testing.T) {
 	x.assertComposerRow(t, true, "Attach files", "Model", "Send")
 	x.assertContextBelowComposer(t)
 	x.snapshot(t, "phone-composer-slim")
+}
+
+// crowdedComposer is a phone on a session whose model has a long name,
+// while a run works, or while its question waits for an answer.
+func crowdedComposer(t *testing.T, answering bool) *testApp {
+	t.Helper()
+	x := newTestApp(t)
+	x.phoneApp(t, false, nil)
+	x.a.opts.PickFiles = composerPickFiles
+	model := proto.Model{ModelRef: opusRef, Name: "A deliberately long model name for the crowded composer"}
+	x.srv.SetModels([]proto.Model{model})
+	x.a.st.LoadModels()
+	x.until(t, func() bool { models, _ := x.a.st.Models(); return len(models) == 1 && models[0].Name == model.Name })
+	if answering {
+		summary := x.seedQuestion(questionOf("crowded", "Which task goes first?", "The tests"))
+		x.srv.Emit(proto.Event{Type: proto.EventSession, Session: &summary})
+		x.until(t, func() bool { _, ok := x.a.st.Data.Question(1); return ok })
+		x.openQuestionSession(t)
+	} else {
+		x.srv.SetLive(proto.Live{SessionID: 11, Busy: true})
+		x.openComposerSession(t, 11)
+	}
+	return x
+}
+
+// assertPhoneComposerTargets checks that every control of the phone's
+// composer row is at least 44×44 and on screen, the model chip included,
+// whose label yields its room but never its target (ADR-0066; cross-review
+// of #155 at ea1a944).
+func (x *testApp) assertPhoneComposerTargets(t *testing.T, send string) {
+	t.Helper()
+	labels := []string{"Attach files", "Insert a saved prompt", "Model", "Abort", send}
+	x.assertComposerRow(t, true, labels...)
+	for _, label := range labels {
+		role := ui.RoleButton
+		if label == "Model" {
+			role = ui.RoleMenuButton
+		}
+		x.within(t, role, label)
+	}
+	// The normal row can leave more than 44 DIPs for the chip. Exercise
+	// its actual view in a host just below the floor too: it must keep its
+	// target, not shrink with its label, even when less space is offered.
+	probe := ui.NewTester(func(c *ui.Context) {
+		ui.Row(c).Width(state.MinTouchTarget - 1).Children(func() {
+			x.a.modelChip(c, x.a.st.Data.Open().ID)
+		})
+	}, phoneW, phoneH)
+	chip, ok := probe.Access("Model")
+	if !ok || chip.Bounds.W < state.MinTouchTarget || chip.Bounds.H < state.MinTouchTarget ||
+		chip.Bounds.X < 0 || chip.Bounds.X+chip.Bounds.W > phoneW {
+		t.Errorf("model target in a narrow host: %+v, found %v", chip.Bounds, ok)
+	}
+}
+
+// A crowded phone row keeps every target touch sized (ADR-0066).
+func TestAPhonesCrowdedComposerKeepsEveryTargetTouchSized(t *testing.T) {
+	x := crowdedComposer(t, false)
+	x.assertPhoneComposerTargets(t, "Send")
+}
+
+// So does the row while a message is sending, with Sending… in it.
+func TestAPhonesSendingComposerKeepsEveryTargetTouchSized(t *testing.T) {
+	x := crowdedComposer(t, false)
+	path := proto.Path(proto.PathMessages, 11)
+	release := x.srv.HoldAnswerOnce(http.MethodPost, path)
+	defer release()
+	*x.a.composer.draft(11) = "Keep going."
+	x.settle()
+	x.tap(t, "Send")
+	x.until(t, func() bool { return x.srv.Holding(http.MethodPost, path) })
+	x.hasAll(t, "Sending…")
+	x.assertPhoneComposerTargets(t, "Send")
+}
+
+// So does the row that answers a question, with Send Answer.
+func TestAPhonesAnswerComposerKeepsEveryTargetTouchSized(t *testing.T) {
+	x := crowdedComposer(t, true)
+	x.assertPhoneComposerTargets(t, "Send Answer")
 }
