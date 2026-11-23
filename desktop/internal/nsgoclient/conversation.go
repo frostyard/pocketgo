@@ -230,6 +230,27 @@ func (c *client) messageComposer(cx *core.Scope, id int64, view *chat.Conversati
 		c.revision.Get()
 		return strings.Join(nonempty(c.store.Sending(id).Err, c.store.Aborting(id).Err, c.store.ChangingModel(id).Err), "\n")
 	})
+	// Keep mounted controls through store updates that do not change their
+	// contents. Pointer events on both hosts target the mounted control.
+	type promptList struct {
+		open          bool
+		items, broken []proto.Prompt
+		note          string
+	}
+	displayPrompts := core.NewMemoFunc(cx, func() promptList {
+		m := menu.Get()
+		return promptList{m.Open, m.Items, m.Broken, state.PromptNote(m)}
+	}, func(a, b promptList) bool {
+		return a.open == b.open && a.note == b.note && slices.Equal(a.items, b.items) && slices.Equal(a.broken, b.broken)
+	})
+	refusals := core.NewMemoFunc(cx, func() []state.QuestionRefusal {
+		c.revision.Get()
+		return c.store.QuestionRefusals(id)
+	}, slices.Equal[[]state.QuestionRefusal])
+	attachments := core.NewMemoFunc(cx, func() []state.Attachment {
+		c.revision.Get()
+		return c.store.Attachments(id)
+	}, slices.Equal[[]state.Attachment])
 	return chat.Composer{State: view, Glass: true, Draft: draft.Get, OnDraftChange: draft.Set, Label: "Message", Placeholder: "Message this session…", SendLabel: "Send message", StopLabel: "Stop run", OnSend: send, OnStop: func() { c.store.Abort(id); c.changed() }, Running: func() bool { c.revision.Get(); o := c.store.Data.Open(); return o != nil && o.ID == id && o.Live.Busy }, SendDisabled: func() bool { c.revision.Get(); return !c.store.MaySend(id) }, StopDisabled: func() bool { c.revision.Get(); return c.store.Aborting(id).Busy },
 		OnDropFiles: drop, OnPaste: func(p core.PasteEvent) {
 			if !valid() {
@@ -259,17 +280,15 @@ func (c *client) messageComposer(cx *core.Scope, id int64, view *chat.Conversati
 			}}, chat.IconAction{Label: "Saved prompts", Icon: lucide.Slash, OnPress: func() { txt, _ := picker.Summon(draft.Get()); draft.Set(txt); c.changed() }}, c.modelControls(cx, id)}}
 		},
 		HasAttachments: func() bool {
-			c.revision.Get()
-			return problem.Get() != "" || menu.Get().Open || len(c.store.QuestionRefusals(id)) > 0 || len(c.store.Attachments(id)) > 0
+			return problem.Get() != "" || displayPrompts.Get().open || len(refusals.Get()) > 0 || len(attachments.Get()) > 0
 		}, Attachments: func(*core.Scope) core.Node {
 			return core.Dynamic(func(cx *core.Scope) core.Node {
-				c.revision.Get()
 				var nodes []core.Node
 				if msg := problem.Get(); msg != "" {
 					nodes = append(nodes, core.Text{Content: msg, Selectable: core.SelectableOn, StyleFunc: ui.Colored(ui.ColorsOf(cx).Danger)})
 				}
-				if m := menu.Get(); m.Open {
-					for _, q := range m.Items {
+				if m := displayPrompts.Get(); m.open {
+					for _, q := range m.items {
 						nodes = append(nodes, c.button("/"+q.Name, func() {
 							if txt, _, ok := picker.Choose(q.Name, draft.Get(), c.store.Data.Prompts()); ok {
 								draft.Set(txt)
@@ -277,10 +296,10 @@ func (c *client) messageComposer(cx *core.Scope, id int64, view *chat.Conversati
 							c.changed()
 						}))
 					}
-					for _, q := range m.Broken {
+					for _, q := range m.broken {
 						nodes = append(nodes, body("/"+q.Name+" · "+q.Problem))
 					}
-					nodes = append(nodes, body(state.PromptNote(m)), c.button("Close prompts", func() { pick(state.PickerEscape) }))
+					nodes = append(nodes, body(m.note), c.button("Close prompts", func() { pick(state.PickerEscape) }))
 					for _, k := range []struct {
 						name string
 						key  state.PickerKey
@@ -288,10 +307,10 @@ func (c *client) messageComposer(cx *core.Scope, id int64, view *chat.Conversati
 						cx.OnKeyWith(k.name, core.KeyOptions{When: core.KeyAlways}, func() { pick(k.key) })
 					}
 				}
-				for _, r := range c.store.QuestionRefusals(id) {
+				for _, r := range refusals.Get() {
 					nodes = append(nodes, body(r.Why), body(r.Answer), c.button("Dismiss answer", func() { c.store.DismissQuestionRefusal(r.Question) }))
 				}
-				for _, f := range c.store.Attachments(id) {
+				for _, f := range attachments.Get() {
 					label := f.Name
 					if f.Uploading {
 						label += " · uploading"
@@ -302,8 +321,8 @@ func (c *client) messageComposer(cx *core.Scope, id int64, view *chat.Conversati
 					}
 					nodes = append(nodes, c.button("Remove "+f.Name, func() { c.store.RemoveAttachment(id, f.Key) }))
 				}
-				if len(c.store.Attachments(id)) > 0 {
-					nodes = append(nodes, ui.Button{Text: "Send attachments", Disabled: func() bool { return !c.store.MaySend(id) }, OnPress: send})
+				if len(attachments.Get()) > 0 {
+					nodes = append(nodes, ui.Button{Text: "Send attachments", Disabled: func() bool { c.revision.Get(); return !c.store.MaySend(id) }, OnPress: send})
 				}
 				return workspaceui.Row(nodes...)
 			})

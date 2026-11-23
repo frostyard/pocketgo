@@ -95,7 +95,12 @@ func TestCompactWorkspace(t *testing.T) {
 	app.Press("text:Review layout")
 	app.WaitFor("label:Message", 5*time.Second)
 	app.Press("label:Saved prompts")
-	app.WaitFor("text:/review", 5*time.Second)
+	promptID := app.WaitFor("text:/review", 5*time.Second).ID
+	// A store refresh can land between pointer down and pointer up (#159).
+	app.Press("label:Refresh")
+	if app.Find("text:/review").ID != promptID {
+		t.Fatal("refresh replaced the saved prompt under the pointer")
+	}
 	app.Press("text:/review")
 	if got := app.Find("label:Message").Text; got != "Review the layout." {
 		t.Fatalf("draft = %q", got)
