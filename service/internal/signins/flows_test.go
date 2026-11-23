@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -306,5 +309,125 @@ func TestStopEndsTheFlows(t *testing.T) {
 	}
 	if _, _, err := f.Start(Copilot, "k16"); !errors.Is(err, ErrStopped) {
 		t.Fatalf("a start after Stop: %v", err)
+	}
+}
+
+// blockingStart is a GitHub whose device code request waits for its
+// context to end, says so on canceled, and then waits for release; any
+// later request fails the test.
+type blockingStart struct {
+	t                          *testing.T
+	calls                      atomic.Int32
+	entered, canceled, release chan struct{}
+}
+
+func (b *blockingStart) RoundTrip(r *http.Request) (*http.Response, error) {
+	if b.calls.Add(1) != 1 || r.URL.String() != "https://github.com/login/device/code" {
+		b.t.Errorf("a request to GitHub after the first start: %s %s", r.Method, r.URL)
+		return nil, errors.New("unexpected")
+	}
+	close(b.entered)
+	<-r.Context().Done()
+	close(b.canceled)
+	<-b.release
+	return nil, r.Context().Err()
+}
+
+// stopWaits says whether a goroutine is parked in Flows.Stop itself:
+// blocked (not running, runnable or in a system call), with Stop as its
+// first frame outside the runtime and sync packages. A Stop that does not
+// wait for a start in progress never parks there, since nothing holds what
+// else it takes; so the test tells "Stop waits" from "Stop is slow" with
+// no timer.
+func stopWaits() bool {
+	buf := make([]byte, 1<<16)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		head, frames, _ := strings.Cut(g, "\n")
+		_, state, _ := strings.Cut(head, "[")
+		state, _, _ = strings.Cut(state, "]")
+		state, _, _ = strings.Cut(state, ",")
+		if state == "running" || state == "runnable" || strings.HasPrefix(state, "syscall") {
+			continue
+		}
+		for _, line := range strings.Split(frames, "\n") {
+			if line == "" || strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "runtime.") ||
+				strings.HasPrefix(line, "sync.") || strings.HasPrefix(line, "internal/") {
+				continue
+			}
+			if strings.Contains(line, "signins.(*Flows).Stop(") {
+				return true
+			}
+			break
+		}
+	}
+	return false
+}
+
+// Stop waits for a start in progress: its cancel ends the start's request
+// to GitHub, and Stop returns only once that start returned, with
+// ErrStopped and no flow kept. A start after Stop asks GitHub nothing
+// (#130).
+func TestStopWaitsForAStartInProgress(t *testing.T) {
+	b := &blockingStart{t: t, entered: make(chan struct{}), canceled: make(chan struct{}), release: make(chan struct{})}
+	clock, ch := newFakeClock(), newChanges()
+	f := New(Options{GitHub: &GitHub{HTTP: &http.Client{Transport: b}}, Keep: (&keeper{}).keep, Changed: ch.changed, Now: clock.Now, After: clock.After})
+	defer func() {
+		select {
+		case <-b.release:
+		default:
+			close(b.release)
+		}
+	}()
+	started := make(chan error, 1)
+	go func() {
+		_, _, err := f.Start(Copilot, "k17")
+		started <- err
+	}()
+	<-b.entered
+	stopped := make(chan struct{})
+	go func() {
+		f.Stop()
+		close(stopped)
+	}()
+	<-b.canceled
+	for !stopWaits() {
+		select {
+		case <-stopped:
+			t.Fatal("Stop returned while a start was in progress")
+		default:
+			runtime.Gosched()
+		}
+	}
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while a start was in progress")
+	default:
+	}
+	close(b.release)
+	if err := <-started; !errors.Is(err, ErrStopped) {
+		t.Fatalf("the start in progress at Stop: %v", err)
+	}
+	<-stopped
+	if _, ok := f.Latest(Copilot); ok {
+		t.Fatal("a start in progress at Stop kept a flow")
+	}
+	if _, _, err := f.Start(Copilot, "k18"); !errors.Is(err, ErrStopped) {
+		t.Fatalf("a start after Stop: %v", err)
+	}
+	if n := b.calls.Load(); n != 1 {
+		t.Fatalf("GitHub got %d requests, want 1", n)
+	}
+	select {
+	case p := <-ch.ch:
+		t.Fatalf("a change of %s after Stop", p)
+	default:
 	}
 }

@@ -355,12 +355,17 @@ func (f *Flows) SignOut(ctx context.Context, provider string, remove func(contex
 	return remove(ctx)
 }
 
-// Stop cancels every flow and waits for their goroutines: no start, poll
-// or keep runs after it.
+// Stop cancels every flow, waits for a start in progress and for the
+// flows' goroutines: no start, poll or keep runs after it.
 func (f *Flows) Stop() {
 	f.mu.Lock()
 	f.stopped = true
 	f.mu.Unlock()
 	f.stop()
+	// A start holds startMu through its request to GitHub, which the cancel
+	// ends; one that takes startMu after this sees stopped and asks GitHub
+	// nothing. No other lock is held here, so the lock order stands.
+	f.startMu.Lock()
+	f.startMu.Unlock() //nolint:staticcheck // SA2001: the lock is a wait for the start in progress.
 	f.wg.Wait()
 }
