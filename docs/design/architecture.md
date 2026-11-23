@@ -316,7 +316,7 @@ The desktop client is built on MyGo and frostui, in the `desktop` module. It tal
 
 Session file previews read the recorded working folder through the authenticated file viewer ([ADR-0069](../adr/0069-browse-a-sessions-working-folder.md)).
 
-An NSGo client shares this desktop state layer and packages reusable controls separately ([ADR-0068](../adr/0068-build-a-shared-nsgo-client-beside-the-desktop-client.md)).
+Linux and web ship the shared NSGo UI, with an explicit MyGo fallback on Linux ([ADR-0070](../adr/0070-ship-nsgo-as-the-default-linux-client.md)). An NSGo client shares this desktop state layer and packages reusable controls separately ([ADR-0068](../adr/0068-build-a-shared-nsgo-client-beside-the-desktop-client.md)).
 
 **Built (Phases 1 to 3):**
 - **`desktop/internal/state`:** the data layer and state, with no UI import (a depguard rule in `.golangci.yml` refuses MyGo and frostui there), so a phone client can reuse it ([ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)). Every rule in it is code with a test ([ADR-0011](../adr/0011-put-rules-in-code-not-in-model-judgment.md)):

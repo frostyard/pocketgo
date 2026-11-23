@@ -114,7 +114,7 @@ test("make build honours an absolute BUILD_DIR", () => {
   const run = make("-n", "build", `BUILD_DIR=${out}`);
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, new RegExp(`-o "${out}/pocketd"`));
-  assert.match(run.stdout, new RegExp(`-o "${out}/pocket"`));
+  assert.match(run.stdout, new RegExp(`"${out}/pocket"`));
 });
 
 test("make build resolves a relative BUILD_DIR from the repository root", () => {
@@ -137,10 +137,20 @@ test("make snapshot writes the desktop's views to an absolute SNAPSHOT_DIR", () 
   assert.match(run.stdout, /env -u DISPLAY -u WAYLAND_DISPLAY/);
 });
 
-test("make app packages the desktop client with mygo build", () => {
-  const run = make("-n", "app");
-  assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /cd desktop && go tool mygo build/);
+test("Linux selects NSGo for build, run and packaging", () => {
+  for (const target of ["build", "run", "app"]) {
+    const run = make("-n", target, "HOST_OS=Linux", "HOST_ARCH=x86_64");
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /go tool nsgo build .*?-target linux_x64/);
+  }
+});
+
+test("MyGo remains the fallback and the non-Linux packaging default", () => {
+  for (const args of [["app-mygo"], ["app", "HOST_OS=Darwin"]]) {
+    const run = make("-n", ...args);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /cd desktop && go tool mygo build/);
+  }
 });
 
 test("make check formats before it verifies", () => {

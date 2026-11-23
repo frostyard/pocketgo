@@ -266,12 +266,12 @@ The desktop is `desktop/cmd/pocket`, on MyGo and frostui ([ADR-0010](../adr/0010
 ```sh
 make run      # build and start it from source
 make build    # build/pocket and build/pocketd
-make app      # the app as people install it, under desktop/build/mygo/<os>-<arch>
+make app      # package the host client (NSGo on Linux, MyGo on macOS)
 ```
 
-- **Linux** needs GTK 3 to run it from source. The packages `make app` builds also depend on WebKitGTK (`libwebkit2gtk-4.1-0`), since `desktop/mygo.json` does not set `linux.webview` to false. The view tests also need Pango and cairo, with no display (Debian and Ubuntu: `fonts-dejavu-core libpangocairo-1.0-0`).
+- **Linux** uses NSGo and GTK 4. `make run-mygo` and `make app-mygo` select the GTK 3 fallback. See [release candidates](../../packaging/README.md) for Flatpak installation and web serving.
 - **macOS:** `make app` builds `PocketGo.app` and a disk image. Notifications need the packaged app ([ADR-0049](../adr/0049-notify-the-owner-of-what-waits-once-decided-in-code.md)).
-- **The Terminal** draws with Ghostty's emulator, MyGo's terminal plugin, which loads `libghostty-vt`. `make app` puts the library in the app. Run from source, it is downloaded on first use into your cache folder (`mygo/natives/`), checked by its SHA-256; `MYGO_GHOSTTY_VT` names a copy of your own instead.
+- **The MyGo Terminal** draws with Ghostty's emulator, MyGo's terminal plugin, which loads `libghostty-vt`. `make app` puts the library in the app. Run from source, it is downloaded on first use into your cache folder (`mygo/natives/`), checked by its SHA-256; `MYGO_GHOSTTY_VT` names a copy of your own instead.
 - **The device token** is kept in the system keyring, or in a private file in the desktop's config folder only when the platform has no keyring (`config.Credentials`). The config folder is `pocketgo` in your user config folder; `POCKETGO_CONFIG_DIR` names another.
 
 **Sign in:** enter the service URL (step 3) and the device's token (step 8), then Connect. The desktop keeps the token, its pins and what you have seen by the service's origin, so a new URL means signing in again. The desktop and pocketd must speak the same protocol version: rebuild the desktop from the same commit after a deploy that changed it.

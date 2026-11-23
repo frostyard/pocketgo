@@ -1,5 +1,5 @@
 name: PocketGo
-id: org.frostyard.PocketGo.NSGo
+id: org.frostyard.PocketGo
 version: 0.1.0
 icon:
   png: ../../resources/icon.png
