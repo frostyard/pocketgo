@@ -411,6 +411,7 @@ func (s *Store) loadFile(root, p string) {
 
 // OpenFiles navigates to homes, a folder, or a file with its containing folder.
 func (s *Store) OpenFiles(spot FileSpot) {
+	s.filesNav++
 	s.Data.setFilesNote("")
 	if spot.Root == "" {
 		s.Data.closeFiles()
@@ -435,10 +436,17 @@ func (s *Store) OpenFilePath(root, p string) {
 		s.OpenFiles(FileSpot{Root: root})
 		return
 	}
+	s.filesNav++
+	nav := s.filesNav
 	s.Data.closeFile()
 	s.Data.setFilesNote("")
 	name := path.Base(p)
 	s.loadFolder(root, ParentPath(p), func(folder proto.FileFolder) {
+		// A navigation since the lookup began wins: the owner chose
+		// another place while the folder was read.
+		if s.filesNav != nav {
+			return
+		}
 		for _, e := range folder.Entries {
 			if e.Name != name {
 				continue

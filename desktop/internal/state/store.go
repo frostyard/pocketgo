@@ -291,6 +291,10 @@ type Store struct {
 	sheet         *signInSheet
 	signOuts      map[string]*Pending
 	signInsWanted bool
+	// filesNav counts the Files view's navigations (OpenFiles,
+	// OpenFilePath): a path lookup navigates on its folder's answer only
+	// while no navigation came after it (ADR-0066).
+	filesNav uint64
 	// orphan is a start the owner canceled whose answer never came
 	// (settleOrphan).
 	orphan *orphanStart

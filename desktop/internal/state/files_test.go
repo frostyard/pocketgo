@@ -420,3 +420,33 @@ func TestAnOldFilePathLookupCannotNavigateAfterANewerAnswer(t *testing.T) {
 		t.Fatal(h.store.Data.FilesNote())
 	}
 }
+
+// A path lookup whose folder answers after the owner chose another place
+// navigates nowhere: the owner's later choice of a sibling file, which
+// reuses the folder the lookup reads, stays shown, and so does the list
+// of homes (cross-review of #156, round 1).
+func TestAPathLookupNeverUndoesALaterChoice(t *testing.T) {
+	h := filesFixture(t)
+	h.srv.SetFileFolder(proto.FileFolder{Root: "a", Entries: []proto.FileEntry{{Name: "first", Kind: proto.FileEntryFile}, {Name: "second", Kind: proto.FileEntryFile}}})
+	for _, p := range []string{"first", "second"} {
+		h.srv.SetFileContent(proto.FileContent{Root: "a", Path: p, Kind: proto.FileText, Text: p})
+	}
+	second := FileSpot{Root: "a", Path: "second", File: true}
+	for name, choose := range map[string]func() FileSpot{
+		"a sibling file": func() FileSpot { h.store.OpenFiles(second); return second },
+		"the homes":      func() FileSpot { h.store.OpenFiles(FileSpot{}); return FileSpot{} },
+	} {
+		release := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathFilesList)
+		h.store.OpenFilePath("a", "first")
+		h.loop.RunUntil(t, func() bool { return h.srv.Holding(http.MethodGet, proto.PathFilesList) })
+		want := choose()
+		release()
+		h.settle(t)
+		if spot := h.store.Data.FilesSpot(); spot != want {
+			t.Errorf("%s: the late lookup moved the view to %+v", name, spot)
+		}
+		if note := h.store.Data.FilesNote(); note != "" {
+			t.Errorf("%s: the late lookup left the note %q", name, note)
+		}
+	}
+}
