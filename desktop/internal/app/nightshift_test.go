@@ -59,7 +59,7 @@ func TestTheBoardsNightShiftSnapshot(t *testing.T) {
 	x.hasAll(t, "Proposals", "#12 · Pin the CI runner image", "#14 · Write the release notes for 0.9", "#13 · Find why snow fails to boot",
 		"Vera · frostyard/nsl · ci-sweep · 12 rounds · gathered today 20:00", "Duncan · home · docs · 8 rounds · gathered today 20:00",
 		"The arm64 job flakes on the 2-year-old image; pinning it should end the flakes.",
-		"In 4 hours", "Until", "Ends tomorrow 02:00", "Launch picks (0)",
+		"Until", "In 4 hours", "Ends tomorrow 06:45", "Launch picks (0)",
 		"Schedules", "nightly-gather", "every weekday at 21:00", "next tomorrow 21:00", "gather night-shift", "last sent today 21:00",
 		"standup", "Plan the day: read the night's reports and brief the team.",
 		"last missed today 07:00: profile odrade keeps no standing session",
@@ -67,6 +67,12 @@ func TestTheBoardsNightShiftSnapshot(t *testing.T) {
 		"Waits for you", "T1 · Fix the flaky arm64 job")
 	if x.tt.HasText("Bump Go to 1.27") && x.tt.HasText("#11") {
 		t.Error("a launched proposal shows on the board")
+	}
+	if field, ok := x.tt.AccessByRole(ui.RoleTextField, "Until time"); !ok || field.Value != "06:45" {
+		t.Errorf("default Until input: %+v, found %v; want 06:45", field, ok)
+	}
+	if x.a.launchEnd != endUntil {
+		t.Errorf("default end segment: %d; want Until (%d)", x.a.launchEnd, endUntil)
 	}
 	order := []string{"#12 · Pin the CI runner image", "#14 · Write the release notes for 0.9", "#13 · Find why snow fails to boot",
 		"Launch picks (0)", "Schedules", "nightly-gather", "standup", "S2", "weekly", "Waits for you"}
@@ -100,8 +106,8 @@ func (x *testApp) inOrder(t *testing.T, texts ...string) {
 }
 
 // Picking two proposals and pressing Launch picks (2) launches them in
-// board order, whatever order they were picked in, until 4 hours from the
-// clock; they leave the board, and the section says what launched.
+// board order, whatever order they were picked in, until the next 06:45;
+// they leave the board, and the section says what launched.
 func TestLaunchingPicksPostsThemInBoardOrder(t *testing.T) {
 	x := newTestApp(t)
 	x.seedNightShift()
@@ -116,11 +122,11 @@ func TestLaunchingPicksPostsThemInBoardOrder(t *testing.T) {
 	})
 	got := x.srv.LaunchRequests()
 	if len(got) != 1 || got[0].RequestID == "" || !slices.Equal(got[0].Proposals, []int64{12, 13}) ||
-		!got[0].End.Equal(pocketdtest.Now.Add(4*time.Hour)) {
-		t.Fatalf("launched %+v, want #12 then #13 until 4 hours from the clock", got)
+		!got[0].End.Equal(time.Date(2026, 11, 19, 6, 45, 0, 0, time.UTC)) {
+		t.Fatalf("launched %+v, want #12 then #13 until tomorrow 06:45", got)
 	}
 	x.hasAll(t, "#14 · Write the release notes for 0.9", "Launch picks (0)",
-		"Launched L1: 2 proposals until tomorrow 02:00, from the supervisor's standing session.")
+		"Launched L1: 2 proposals until tomorrow 06:45, from the supervisor's standing session.")
 	if x.tt.HasText("Pin the CI runner image") || x.tt.HasText("Find why snow fails to boot") {
 		t.Error("a launched proposal stays on the board")
 	}
@@ -134,7 +140,15 @@ func TestLaunchingUntilAClockTimeSnapshot(t *testing.T) {
 	x.connect(t)
 	x.click(t, "Work Board")
 	x.click(t, "Pick #14")
-	x.click(t, "Until")
+	x.hasAll(t, "Ends tomorrow 06:45")
+	field, ok := x.tt.AccessByRole(ui.RoleTextField, "Until time")
+	if !ok {
+		t.Fatal("no Until time input")
+	}
+	x.tt.ClickAt(field.Bounds.X+field.Bounds.W/2, field.Bounds.Y+field.Bounds.H/2)
+	x.tt.Key(ui.Cmd, ui.KeyA)
+	x.tt.Key(0, ui.KeyBackspace)
+	x.settle()
 	x.hasAll(t, "Write the clock time the launch ends at, as 07:30")
 	if b, ok := x.tt.AccessByRole(ui.RoleButton, "Launch picks (1)"); !ok || !b.Disabled {
 		t.Errorf("Launch picks (1) is enabled with no clock time: %+v, found %v", b, ok)
@@ -279,7 +293,6 @@ func TestChangingTheEndChooserMakesANewLaunch(t *testing.T) {
 	x.srv.Emit(proto.Event{Type: proto.EventProposal, Proposal: &p})
 	x.until(t, func() bool { return len(x.a.st.Data.BoardProposals()) == 2 && x.a.st.InFlight() == 0 })
 	x.hasAll(t, "Launch picks (2)")
-	x.click(t, "Until")
 	x.click(t, "In 4 hours")
 	x.click(t, "Launch picks (1)")
 	x.until(t, func() bool { return len(x.srv.Launches()) == 1 && x.a.st.InFlight() == 0 })
@@ -293,5 +306,21 @@ func TestChangingTheEndChooserMakesANewLaunch(t *testing.T) {
 	}
 	if len(sent) != 2 || sent[1].RequestID == sent[0].RequestID || !slices.Equal(sent[1].Proposals, []int64{14}) {
 		t.Fatalf("sent %+v, want a new request for #14 after the end changed", sent)
+	}
+}
+
+// The hours segment remains available and launches four hours from now.
+func TestLaunchingWithTheHoursSegment(t *testing.T) {
+	x := newTestApp(t)
+	x.seedNightShift()
+	x.connect(t)
+	x.click(t, "Work Board")
+	x.click(t, "Pick #14")
+	x.click(t, "In 4 hours")
+	x.hasAll(t, "Ends tomorrow 02:00")
+	x.click(t, "Launch picks (1)")
+	x.until(t, func() bool { return len(x.srv.Launches()) == 1 && x.a.st.InFlight() == 0 })
+	if got := x.srv.LaunchRequests(); len(got) != 1 || !slices.Equal(got[0].Proposals, []int64{14}) || !got[0].End.Equal(pocketdtest.Now.Add(4*time.Hour)) {
+		t.Fatalf("launched %+v, want #14 until four hours from now", got)
 	}
 }

@@ -22,7 +22,7 @@ func TestCheckLaunchRows(t *testing.T) {
 	}
 }
 
-// A launch ends after hours, at the next clock time, or after 4 hours;
+// A launch ends after hours, at the next clock time, or at the next 06:45;
 // its end is in the future and at most a day away (ADR-0034).
 func TestLaunchEnd(t *testing.T) {
 	zone, err := time.LoadLocation("America/New_York")
@@ -30,8 +30,34 @@ func TestLaunchEnd(t *testing.T) {
 		t.Skip(err)
 	}
 	now := time.Date(2026, 11, 21, 22, 30, 0, 0, zone)
-	if got, err := LaunchEnd(nil, "", now, zone); err != nil || !got.Equal(now.Add(4*time.Hour)) {
-		t.Errorf("the default: %v %v", got, err)
+	for _, tc := range []struct {
+		name      string
+		now, want time.Time
+		clock     bool
+	}{
+		{"evening default", time.Date(2026, 11, 21, 18, 0, 0, 0, zone), time.Date(2026, 11, 22, 6, 45, 0, 0, zone), true},
+		{"early morning default", time.Date(2026, 11, 21, 5, 0, 0, 0, zone), time.Date(2026, 11, 21, 6, 45, 0, 0, zone), true},
+		{"exact clock default", time.Date(2026, 11, 21, 6, 45, 0, 0, zone), time.Date(2026, 11, 22, 6, 45, 0, 0, zone), true},
+		{"spring-forward default", time.Date(2027, 3, 13, 22, 0, 0, 0, zone), time.Date(2027, 3, 14, 6, 45, 0, 0, zone), true},
+		{"fall-back evening default", time.Date(2026, 10, 31, 22, 0, 0, 0, zone), time.Date(2026, 11, 1, 6, 45, 0, 0, zone), true},
+		{"fall-back clamped default", time.Date(2026, 10, 31, 7, 0, 0, 0, zone), time.Date(2026, 10, 31, 7, 0, 0, 0, zone).Add(24 * time.Hour), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := LaunchEnd(nil, "", tc.now, zone)
+			if err != nil || !got.Equal(tc.want) {
+				t.Fatalf("default end: %v %v; want %v", got, err, tc.want)
+			}
+			if tc.clock && (got.In(zone).Hour() != 6 || got.In(zone).Minute() != 45) {
+				t.Errorf("default clock: %v; want 06:45", got.In(zone))
+			}
+			if err := CheckLaunchEnd(got, tc.now); err != nil {
+				t.Errorf("default end refused: %v", err)
+			}
+		})
+	}
+	fallBackNow := time.Date(2026, 10, 31, 7, 0, 0, 0, zone)
+	if got, err := LaunchEnd(nil, "06:45", fallBackNow, zone); err != nil || !got.Equal(time.Date(2026, 11, 1, 6, 45, 0, 0, zone)) {
+		t.Errorf("explicit fall-back clock is not clamped: %v %v", got, err)
 	}
 	half := 1.5
 	if got, err := LaunchEnd(&half, "", now, zone); err != nil || !got.Equal(now.Add(90*time.Minute)) {

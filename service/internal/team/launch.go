@@ -28,9 +28,9 @@ const (
 	// LaunchRounds is a launch's round budget: its proposals' max_rounds
 	// added up.
 	LaunchRounds = 200
-	// DefaultLaunchHours is how long a launch runs when its call names no
-	// end.
-	DefaultLaunchHours = 4
+	// DefaultLaunchUntil is the clock time a launch ends at when its call
+	// names no end (the next such time in the service's zone).
+	DefaultLaunchUntil = proto.DefaultLaunchUntil
 )
 
 // A launch's states and its items'.
@@ -51,7 +51,8 @@ const LaunchEndPassed = "the launch's end passed before it could start"
 
 // LaunchCall is a team_launch call: rows of the caller's board, in the
 // order they start, and the end, in hours from now or a clock time
-// (HH:MM, the service's zone), DefaultLaunchHours when it names neither.
+// (HH:MM, the service's zone). With neither, it ends at the next
+// DefaultLaunchUntil in that zone, at most MaxShiftHours away.
 type LaunchCall struct {
 	Rows  []int64  `json:"rows"`
 	Hours *float64 `json:"hours,omitempty"`
@@ -78,7 +79,8 @@ func CheckLaunchRows(rows []int64) error {
 }
 
 // LaunchEnd is the end a call names, from now in zone: hours after now, or
-// the next time the clock shows until, or DefaultLaunchHours after now.
+// the next time the clock shows until, or the next DefaultLaunchUntil in
+// zone, at most MaxShiftHours away.
 // Both is refused; the end is then checked (CheckLaunchEnd).
 func LaunchEnd(hours *float64, until string, now time.Time, zone *time.Location) (time.Time, error) {
 	until = strings.TrimSpace(until)
@@ -95,7 +97,14 @@ func LaunchEnd(hours *float64, until string, now time.Time, zone *time.Location)
 		// #58, round 1).
 		return proto.NextClockTime(until, now, zone)
 	}
-	return now.Add(DefaultLaunchHours * time.Hour), nil
+	end, err := proto.NextClockTime(DefaultLaunchUntil, now, zone)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if end.Sub(now) > MaxShiftHours*time.Hour {
+		return now.Add(MaxShiftHours * time.Hour), nil
+	}
+	return end, nil
 }
 
 // CheckLaunchEnd refuses an end that has come, or that is more than

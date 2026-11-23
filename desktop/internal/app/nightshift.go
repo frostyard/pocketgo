@@ -15,11 +15,11 @@ import (
 // Schedules section. state holds every rule (the picks, the end, which
 // proposals show); these views only draw them.
 
-// endChoices are the end chooser's segments: in 4 hours, or until a clock
-// time (launchEnd's values).
-var endChoices = []string{"In 4 hours", "Until"}
+// endChoices are the end chooser's segments: until a clock time (the
+// initial choice), or in LaunchChoiceHours hours (launchEnd's values).
+var endChoices = []string{"Until", "In " + itoa(state.LaunchChoiceHours) + " hours"}
 
-const endUntil = 1
+const endUntil = 0
 
 // boardSection draws one section of the board as a card: its icon, its
 // title and its count, then what fn draws.

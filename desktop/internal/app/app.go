@@ -21,6 +21,7 @@ import (
 
 	"github.com/frostyard/pocketgo/desktop/internal/config"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
+	"github.com/frostyard/pocketgo/proto"
 )
 
 // Options are what the program gives the app.
@@ -161,7 +162,8 @@ type App struct {
 	newSession *newSessionForm
 
 	// launchEnd is the board's end chooser's segment (endChoices), and
-	// launchClock the clock time typed for Until.
+	// launchClock the clock time typed for Until; initially Until with
+	// proto.DefaultLaunchUntil.
 	launchEnd   int
 	launchClock string
 
@@ -217,7 +219,7 @@ func New(opts Options) (*App, error) {
 	con := frostui.NewConsole(2000)
 	con.SetNotify(frostui.NewWaker(opts.Post, 80*time.Millisecond).Wake)
 	a := &App{opts: opts, settings: settings, console: con, reasons: map[string]*string{}, argsOpen: map[string]bool{}, argsAll: map[string]*string{},
-		reportOpen: map[string]bool{}}
+		reportOpen: map[string]bool{}, launchEnd: endUntil, launchClock: proto.DefaultLaunchUntil}
 	a.st = state.New(state.Options{
 		Post: opts.Post, After: opts.After, Transport: opts.Transport, Now: opts.Now,
 		Log:       a.logLine,
@@ -374,7 +376,7 @@ func (a *App) resetViews() {
 	a.titleEdit = state.TitleEdit{}
 	a.reasons, a.argsOpen, a.argsAll = map[string]*string{}, map[string]bool{}, map[string]*string{}
 	a.reportOpen = map[string]bool{}
-	a.launchEnd, a.launchClock = 0, ""
+	a.launchEnd, a.launchClock = endUntil, proto.DefaultLaunchUntil
 	a.newSession = nil
 	// A confirmation belongs to the sign-in it was asked under: one left
 	// open would act on the next sign-in's service.

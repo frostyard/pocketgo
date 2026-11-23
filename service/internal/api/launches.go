@@ -528,9 +528,9 @@ func launchLines(f store.LaunchFacts) []team.LaunchLine {
 }
 
 // TeamLaunch is team_launch (ADR-0034): the supervisor's launch of rows of
-// its board, until hours from now or a clock time, DefaultLaunchHours by
-// default. It is recorded once per call (api.TeamCall), and the call run
-// again answers as the first did.
+// its board, until hours from now or a clock time, until the next
+// DefaultLaunchUntil by default. It is recorded once per call (api.TeamCall),
+// and the call run again answers as the first did.
 func (s *Server) TeamLaunch(ctx context.Context, call TeamCall, c team.LaunchCall) (string, error) {
 	// The call's own context bounds the checks and the record: a run the
 	// owner aborted before the launch committed launches nothing (Codex
