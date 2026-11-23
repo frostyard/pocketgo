@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-23",
+  "scope": "desktop",
+  "correction": "A Files path lookup (Store.OpenFilePath) navigates on its folder's answer only while no navigation (OpenFiles or OpenFilePath) came after it began, counted by Store.filesNav: the folder's own fetch token does not tell a later choice that reuses the same folder.",
+  "evidence": "frostyard/pocketgo#156, cross-review round 1 of head 2e88a6cf3d53: medium blocking, desktop/internal/state/files.go: the navigation callback checks only the folder fetch, not the latest navigation",
+  "promoted_to": "desktop/internal/state/files_test.go"
+}

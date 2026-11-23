@@ -173,6 +173,21 @@
       "why": "agent execution: pocketd runs git in a session's checkout, in the sandbox, and reads only a file git lists as changed (ADR-0053)"
     },
     {
+      "glob": "service/internal/files/**",
+      "level": "L2",
+      "why": "secrets: which folders of the service host the owner's file viewer reads, and the walk that keeps a path inside an agent's home and away from hidden and withheld names (ADR-0066)"
+    },
+    {
+      "glob": "service/internal/api/files.go",
+      "level": "L2",
+      "why": "secrets: the file viewer's endpoints, which pick the roots and read agents' files for a device (ADR-0066)"
+    },
+    {
+      "glob": "proto/files.go",
+      "level": "L2",
+      "why": "secrets: the file viewer's path rule and the hidden and withheld names, shared by pocketd and the desktop (ADR-0066)"
+    },
+    {
       "glob": "service/pig/login.go",
       "level": "L2",
       "why": "secrets: pocketd stores model sign-ins, subscriptions by OAuth and API keys, in its data folder (ADR-0005, ADR-0021)"

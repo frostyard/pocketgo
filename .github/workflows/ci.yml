@@ -96,7 +96,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends fonts-dejavu-core libpangocairo-1.0-0
+      # The sandbox's tests (service/pig, ADR-0012) need a root-owned
+      # bwrap that can make a user namespace: Ubuntu's AppArmor refuses
+      # one to an unprivileged program unless this is off. With
+      # POCKETGO_SANDBOX_TESTS=required, a sandbox test that finds no
+      # usable bwrap fails, never skips, so this job proves they ran.
+      - name: Install bubblewrap for the sandbox's tests
+        run: |
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: make test
+        env:
+          POCKETGO_SANDBOX_TESTS: required
 
   # The race detector, as RACE_SHARDS jobs: shard i runs every RACE_SHARDS-th
   # test name of each module (make race), so together they run each test once.

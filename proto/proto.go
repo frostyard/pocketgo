@@ -76,8 +76,9 @@ package proto
 // specialist (ADR-0061): a thread's follows, successor, reopens and
 // reopenedAt.
 // Version 34 marks the service's own messages (ADR-0065): a user
-// entry's and a queued message's sender of kind service.
-const Version = 34
+// entry's and a queued message's sender of kind service. Version 35 adds
+// the owner's read-only file viewer of the agents' homes (ADR-0066).
+const Version = 35
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"

@@ -67,9 +67,12 @@ func (t Tab) Place() string {
 // TabOf is the tab whose own view place is: the tab a compact window
 // chooses as it goes there, whatever way it went (its button, a key, a
 // card's button). The Search view is the Sessions tab's, from whose field
-// it opens (ADR-0050). False for a place of no tab: the Terminal, which
+// it opens (ADR-0050). Files belongs to More, whose row opens it. False for a place of no tab: the Terminal, which
 // iOS lacks, and a session, which shows over the tab chosen.
 func TabOf(place string) (Tab, bool) {
+	if place == PlaceFiles {
+		return TabMore, true
+	}
 	if place == PlaceSearch {
 		return TabSessions, true
 	}

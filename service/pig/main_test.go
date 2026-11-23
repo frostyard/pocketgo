@@ -17,6 +17,10 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == ReadBeneathHelper {
 		os.Exit(RunReadBeneathHelper(os.Args[2:], os.Stdout))
 	}
+	// The file viewer reads agent homes through its sandbox helper (ADR-0066).
+	if len(os.Args) > 1 && os.Args[1] == ReadFilesHelper {
+		os.Exit(RunReadFilesHelper(os.Args[2:], os.Stdout))
+	}
 	if len(os.Args) > 1 && os.Args[1] == ContextHelper {
 		os.Exit(RunContextHelper(os.Args[2:], os.Stdout))
 	}

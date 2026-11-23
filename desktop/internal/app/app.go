@@ -86,6 +86,8 @@ const (
 	placeMore
 	// placeSearch is the Search view (ADR-0050).
 	placeSearch
+	// placeFiles is the read-only viewer of agents' homes (ADR-0066).
+	placeFiles
 )
 
 // placeNames are the places' names, as state names them; a session's is
@@ -97,6 +99,7 @@ var placeNames = map[place]string{
 	placeSessions: state.PlaceSessions,
 	placeMore:     state.PlaceMore,
 	placeSearch:   state.PlaceSearch,
+	placeFiles:    state.PlaceFiles,
 }
 
 // name is the place's name, as state names it: "" for a session.
@@ -140,9 +143,11 @@ type App struct {
 	seenRev    uint64
 	pinRev     uint64
 
-	signIn   signInForm
-	place    place
-	search   searchView
+	signIn signInForm
+	place  place
+	search searchView
+	// files keeps this window's Markdown renderer and decoded image.
+	files    filesView
 	tr       transcriptView
 	composer composer
 	// changes is the Changes view (changes.go, ADR-0053).
@@ -248,6 +253,9 @@ func New(opts Options) (*App, error) {
 	a.shell.Console.EmptyNote = "The connection and every command PocketGo sends show here."
 	a.shell.Panes.Layout = frostui.PaneLayout{Widths: settings.Widths, Collapsed: settings.Collapsed}
 	a.md = markdown.Options{}
+	a.md.CodeLink = func(code string) (string, bool) { return a.st.Data.FileLinkOf(code) }
+	a.md.OnLink = a.followLink
+	a.files.md = markdown.Options{OnLink: a.fileHref}
 	a.composer.drafts = map[int64]*string{}
 	a.signIn.server = settings.Server
 	if a.signIn.server == "" {
@@ -552,6 +560,8 @@ func (a *App) mainPane(c *ui.Context) {
 		a.terminalPane(c)
 	case a.place == placeSearch:
 		a.searchPane(c)
+	case a.place == placeFiles:
+		a.filesPane(c)
 	default:
 		a.inboxPane(c)
 	}
@@ -571,6 +581,10 @@ func (a *App) mainBar(c *ui.Context) {
 	}
 	if a.place == placeTerminal {
 		ui.Text(c, "Terminal").Bold().SingleLine().Grow(1)
+		return
+	}
+	if a.place == placeFiles {
+		a.filesBar(c)
 		return
 	}
 	if a.place == placeSearch {
@@ -722,6 +736,7 @@ func (a *App) setUpCommands() {
 			}},
 	)
 	a.table.Add(a.searchCommand())
+	a.table.Add(a.filesCommand())
 	a.table.Add(a.settingsCommand())
 	a.table.Add(a.zoomCommands()...)
 	a.zoomKeys = frostui.NewCommandTable(a.zoomCommands()...)
