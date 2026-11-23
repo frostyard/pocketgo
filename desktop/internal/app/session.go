@@ -21,6 +21,10 @@ type transcriptView struct {
 	rows []state.Row
 	id   int64
 	rev  uint64
+	// copied is the reply whose Copy button copied last (ADR-0065), and
+	// copyAnnouncement says screen readers are still to hear it.
+	copied           state.Copied
+	copyAnnouncement bool
 	// question is the waiting question the rows show (ADR-0048), its id
 	// and state: a change of it builds them again.
 	question string
@@ -68,8 +72,8 @@ func (cp *composer) draft(id int64) *string {
 }
 
 // sessionBar is the top bar over the open session: its title, where it
-// works, how full its context is and what it used, its state, and Abort
-// while it runs. A private agent's session's title is a field while the
+// works, what it used, its state, and Abort while it runs. How full its
+// context is shows under the composer (contextMark, ADR-0065). A private agent's session's title is a field while the
 // owner renames it, and a double click on it starts that (ADR-0058).
 func (a *App) sessionBar(c *ui.Context) {
 	o := a.st.Data.Open()
@@ -91,49 +95,47 @@ func (a *App) sessionBar(c *ui.Context) {
 		}
 		frostui.Caption(c, sessionMeta(s)).SingleLine()
 	})
-	a.usageMeter(c, o.ID, s)
+	a.usageLine(c, s)
 	a.changesButton(c, o.ID)
 	statePill(c, a.st.Data.StateOf(o.ID))
 	a.sessionActions(c, o, s)
 }
 
-// usageMeter shows how full the open session's context is, as a short bar
-// and its percent, and the session's tokens and cost under it (ADR-0052):
-// the rules are state's (state.Fill, state.UsageLine). It shows nothing
-// before the session used anything.
-func (a *App) usageMeter(c *ui.Context, id int64, s proto.Session) {
+// usageLine shows the session's tokens and cost in the header (ADR-0052),
+// as state.UsageLine says them; nothing before the session used anything.
+func (a *App) usageLine(c *ui.Context, s proto.Session) {
+	if line := state.UsageLine(s.Usage); line != "" {
+		frostui.Caption(c, line).SingleLine().Shrink(0)
+	}
+}
+
+// contextMark is the thin row under the composer, or under a read-only
+// session's caption, that ends with how full the session's context is
+// (ADR-0065): a thin bar colored by its level and the percent, or the
+// label alone when no limit is known, the exact numbers in the tooltip.
+// The rules are state's (state.Fill, ContextFill.Bar, Label, Tooltip). It
+// shows nothing before an answer measured the context.
+func (a *App) contextMark(c *ui.Context, id int64) {
 	f := a.st.Data.FillOf(id)
-	line := state.UsageLine(s.Usage)
-	if !f.Known && line == "" {
+	if f.Label() == "" {
 		return
 	}
 	t := c.Theme()
-	ui.Column(c.Key("usage-meter")).Gap(2).AlignItems(ui.End).Shrink(0).Children(func() {
-		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
-			_, full := f.Thresholds()
-			switch {
-			case f.Label() == "":
-			case !f.Known || full == 0:
-				frostui.Caption(c, "context "+f.Label()).Tooltip(f.Tooltip())
-			default:
-				top := float64(f.Window)
-				if top == 0 {
-					top = full
-				}
-				tone := frostui.Accent
-				switch f.Level {
-				case state.MeterNear:
-					tone = frostui.Warning
-				case state.MeterFull:
-					tone = frostui.Danger
-				}
-				ui.Meter(c, float64(f.Tokens), 0, top, &ui.MeterLevels{NormalColor: frostui.ToneColor(t, tone)}).
-					Width(72).Label("Context").Tooltip(f.Tooltip())
-				frostui.Caption(c, f.Label()).Tooltip(f.Tooltip())
+	ui.Row(c.Key("context-mark")).Gap(frostui.SpaceXS).AlignItems(ui.Center).Padding(0, frostui.SpaceXS).Children(func() {
+		ui.Spacer(c)
+		if value, top, ok := f.Bar(); ok {
+			tone := frostui.Accent
+			switch f.Level {
+			case state.MeterNear:
+				tone = frostui.Warning
+			case state.MeterFull:
+				tone = frostui.Danger
 			}
-		})
-		if line != "" {
-			frostui.Caption(c, line).SingleLine()
+			ui.Meter(c, value, 0, top, &ui.MeterLevels{NormalColor: frostui.ToneColor(t, tone)}).
+				Width(56).MinWidth(0).Height(4).Label("Context").Tooltip(f.Tooltip())
+			frostui.Caption(c, f.Label()).Tooltip(f.Tooltip())
+		} else {
+			frostui.Caption(c, "context "+f.Label()).Tooltip(f.Tooltip())
 		}
 	})
 }
@@ -243,6 +245,10 @@ func (a *App) sessionPane(c *ui.Context) {
 	t := c.Theme()
 	o := a.st.Data.Open()
 	tr := &a.tr
+	if tr.copyAnnouncement {
+		c.Announce("Copied the reply")
+		tr.copyAnnouncement = false
+	}
 	if tr.open == nil {
 		tr.open = map[string]bool{}
 	}
@@ -362,6 +368,11 @@ func (a *App) rowView(c *ui.Context, r *state.Row) {
 					markdown.View(c.Key(r.Key), r.Text, &a.md)
 				}
 			}
+			if text, ok := r.Copy(); ok {
+				ui.Row(c).Gap(frostui.SpaceXS).AlignItems(ui.Center).Children(func() {
+					a.copyButton(c, r, text)
+				})
+			}
 		})
 	case state.RowTool:
 		a.toolRow(c, r)
@@ -389,6 +400,36 @@ func (a *App) rowView(c *ui.Context, r *state.Row) {
 		ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 			ui.Spinner(c).Size(14, 14).Label(strings.TrimSuffix(text, "…"))
 			frostui.Muted(c, text)
+		})
+	}
+}
+
+// copyButton is a reply's Copy button (ADR-0065): it puts the reply's
+// Markdown source on the clipboard (state.Row.Copy), then shows a check
+// named Copied for state.CopyHold and has screen readers say so; a failed
+// copy says why in a toast. On iOS it takes a finger's size
+// (state.MinTarget).
+func (a *App) copyButton(c *ui.Context, r *state.Row, text string) {
+	icon, label := "edit-copy", "Copy"
+	if a.tr.copied.Shows(a.tr.id, r.Key, c.Now()) {
+		icon, label = "object-select", "Copied"
+		c.After(a.tr.copied.Left(c.Now()))
+	}
+	button := frostui.IconButton(c.Key(r.Key+":copy"), icon, label)
+	if m := state.MinTarget(a.opts.Platform); m > 0 {
+		button.MinWidth(m).MinHeight(m)
+	}
+	if button.Clicked() {
+		id, key, now := a.tr.id, r.Key, c.Now()
+		c.WriteClipboardThen(text, func(err error) {
+			if err != nil {
+				a.toast("Copying the reply failed: " + err.Error())
+				return
+			}
+			// Context methods need a building frame; keep the click's clock
+			// and announce on the next frame, after the asynchronous result.
+			a.tr.copied = state.Copied{Session: id, Key: key, At: now}
+			a.tr.copyAnnouncement = true
 		})
 	}
 }
@@ -577,9 +618,13 @@ func (a *App) composerHints() composerHints {
 		busy: "The agent is working. Enter still sends your message to the session."}
 }
 
-// composerView is the message field and its buttons.
+// composerView is the message field, its one row of slim buttons (Attach
+// files, a phone's saved prompts, the model chip, Abort and Send, each a
+// finger's size on iOS, state.MinTarget) and the context mark under it
+// (ADR-0065).
 func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	t := c.Theme()
+	m := state.MinTarget(a.opts.Platform)
 	cp := &a.composer
 	id := o.ID
 	draft := cp.draft(id)
@@ -592,11 +637,16 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 				ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
 					frostui.Caption(c, why).Wrap().Grow(1)
 					if o.Live.Busy {
-						if ui.Button(c, "Abort").Disabled(a.st.Aborting(id).Busy).Clicked() {
+						abort := frostui.IconButton(c, "process-stop", "Abort").Shrink(0)
+						if m > 0 {
+							abort.MinWidth(m).MinHeight(m)
+						}
+						if abort.Disabled(a.st.Aborting(id).Busy).Clicked() {
 							a.st.Abort(id)
 						}
 					}
 				})
+				a.contextMark(c, id)
 				return
 			}
 			if sending.Err != "" {
@@ -669,7 +719,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 			// Keyed, so the field keeps its focus and caret as the picker
 			// or a problem shows above it.
 			box := ui.Column(c.Key("composer-box")).AlignItems(ui.Stretch).Radius(12).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).
-				Background(frostui.Panel(t)).Padding(frostui.SpaceS, frostui.SpaceM).Gap(frostui.SpaceXS)
+				Background(frostui.Panel(t)).Padding(frostui.SpaceXS, frostui.SpaceS).Gap(frostui.SpaceXS)
 			// The field's keys as they come, before it takes them (Codex
 			// review of #108, round 2): a press of Enter of its own, or its
 			// release, ends a hold whether or not a frame saw it; and text
@@ -780,19 +830,11 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 					input.Focus()
 					cp.refocus = false
 				}
-				// A phone's width holds the model's chip or the buttons, not
-				// both: the chip takes a row of its own there, and Attach
-				// files its icon alone (Codex review of #85, round 2).
-				if a.compact {
-					ui.Row(c).AlignItems(ui.Center).Children(func() { a.modelChip(c, id) })
-				}
-				ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
+				ui.Row(c).Gap(frostui.SpaceXS).AlignItems(ui.Center).Children(func() {
 					if a.opts.PickFiles != nil {
-						var attach ui.Element
-						if a.compact {
-							attach = frostui.IconButton(c, "mail-attachment", "Attach files")
-						} else {
-							attach = ui.Button(c, "Attach files")
+						attach := frostui.IconButton(c, "mail-attachment", "Attach files").Shrink(0)
+						if m > 0 {
+							attach.MinWidth(m).MinHeight(m)
 						}
 						if attach.Disabled(cp.picking || !composing.Attaches()).Clicked() {
 							a.pickAttachments(id)
@@ -800,37 +842,52 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 					}
 					// A phone's saved prompts, beside Attach, as a sheet (ADR-0051).
 					if a.compact {
-						if frostui.IconButton(c, "pocket-prompt", "Insert a saved prompt").Disabled(!composing.TakesPrompts()).Clicked() {
+						prompt := frostui.IconButton(c, "pocket-prompt", "Insert a saved prompt").Shrink(0)
+						if m > 0 {
+							prompt.MinWidth(m).MinHeight(m)
+						}
+						if prompt.Disabled(!composing.TakesPrompts()).Clicked() {
 							a.openPromptSheet(id)
 						}
 					}
-					if !a.compact {
-						a.modelChip(c, id)
-					}
+					a.modelChip(c, id)
 					if sending.Busy || answering.Busy {
 						ui.Spinner(c).Size(14, 14).Label("Sending")
 						frostui.Caption(c, "Sending…")
 					}
 					ui.Spacer(c)
 					if o.Live.Busy {
-						if ui.Button(c, "Abort").Disabled(a.st.Aborting(id).Busy).Clicked() {
+						abort := frostui.IconButton(c, "process-stop", "Abort").Shrink(0)
+						if m > 0 {
+							abort.MinWidth(m).MinHeight(m)
+						}
+						if abort.Disabled(a.st.Aborting(id).Busy).Clicked() {
 							a.st.Abort(id)
 						}
 					}
 					if composing.Answers() {
 						// The words are the answer: files make none.
-						if frostui.LabeledButton(c, "document-send", "Send Answer", true).Disabled(strings.TrimSpace(*draft) == "" || answering.Busy).Clicked() {
+						send := frostui.LabeledButton(c, "document-send", "Send Answer", true).Padding(4, frostui.SpaceS).Shrink(0)
+						if m > 0 {
+							send.MinHeight(m)
+						}
+						if send.Disabled(strings.TrimSpace(*draft) == "" || answering.Busy).Clicked() {
 							a.submit(id, composing, *draft)
 						}
 						return
 					}
 					// Files alone make a message (ADR-0029).
 					empty := strings.TrimSpace(*draft) == "" && len(a.st.Attachments(id)) == 0
-					if frostui.LabeledButton(c, "document-send", "Send", true).Disabled(empty || !a.st.MaySend(id)).Clicked() {
+					send := frostui.LabeledButton(c, "document-send", "Send", true).Padding(4, frostui.SpaceS).Shrink(0)
+					if m > 0 {
+						send.MinHeight(m)
+					}
+					if send.Disabled(empty || !a.st.MaySend(id)).Clicked() {
 						a.submit(id, composing, *draft)
 					}
 				})
 			})
+			a.contextMark(c, id)
 		})
 	})
 }
@@ -952,7 +1009,9 @@ func truncate(s string, n int) string { return state.Truncate(s, n, false) }
 // them: frostyard/pocket's chip, whole (ADR-0028). Its menu has a submenu
 // per provider with its models, the current one checked, and a Thinking
 // submenu when the model takes more than one level. Its rules are
-// state.ChipOf's.
+// state.ChipOf's. It is a slim chip (ADR-0065): a model icon, the label cut
+// with an ellipsis when the row is narrow, its whole in the tooltip, and a
+// chevron; it shrinks before the composer's buttons do.
 func (a *App) modelChip(c *ui.Context, id int64) {
 	session, ok := a.st.Data.Session(id)
 	if !ok {
@@ -960,7 +1019,25 @@ func (a *App) modelChip(c *ui.Context, id int64) {
 	}
 	models, problem := a.st.Models()
 	chip := state.ChipOf(session, models, problem)
-	ui.MenuButton(c, chip.Label, func(m *ui.Menu) {
+	t := c.Theme()
+	button := ui.ButtonBase(c).Row().Gap(4).AlignItems(ui.Center).Padding(2, frostui.SpaceS).Radius(6).
+		Cursor(ui.CursorPointer).Shrink(1).MinWidth(0).MaxWidth(220).
+		Label("Model").Tooltip("Change the model: " + chip.Label).Disabled(a.st.ChangingModel(id).Busy)
+	if a.compact {
+		button.MaxWidth(160)
+	}
+	if m := state.MinTarget(a.opts.Platform); m > 0 {
+		button.MinHeight(m)
+	}
+	if button.Hovered() {
+		button.Background(t.SurfaceHover)
+	}
+	button.Children(func() {
+		frostui.Icon(c, "pocket-model").Shrink(0)
+		frostui.Caption(c, chip.Label).SingleLine().MinWidth(0).Shrink(1)
+		frostui.Icon(c, "pan-down").Shrink(0)
+	})
+	button.Menu(func(m *ui.Menu) {
 		if chip.Reload {
 			item := m.Item("Load the models again").ID("reload")
 			if chip.Problem != "" {
@@ -990,5 +1067,5 @@ func (a *App) modelChip(c *ui.Context, id int64) {
 				}
 			})
 		}
-	}).Label("Model").Tooltip("Change the model").Disabled(a.st.ChangingModel(id).Busy)
+	})
 }

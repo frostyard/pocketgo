@@ -77,6 +77,7 @@ Docs are split by the question they answer:
 - [0062 — Sign pocketd in to GitHub Copilot from the desktop, with a device flow it runs](adr/0062-sign-pocketd-in-to-github-copilot-from-the-desktop-with-a-device-flow-it-runs.md)
 - [0063 — Connect a profile's MCP servers to its sessions, with credentials pocketd keeps](adr/0063-connect-a-profiles-mcp-servers-to-its-sessions-with-credentials-pocketd-keeps.md)
 - [0064 — End a launch at the next 06:45 by default](adr/0064-end-a-launch-at-the-next-06-45-by-default.md)
+- [0065 — Slim the composer, copy a reply, and show the context mark by the composer](adr/0065-slim-the-composer-copy-a-reply-and-show-the-context-mark-by-the-composer.md)
 
 ### Org-wide decisions
 

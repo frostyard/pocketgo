@@ -393,13 +393,7 @@ func (a *App) compactNote(c *ui.Context) {
 		if s.Thinking != "" {
 			thinking = "thinking " + s.Thinking
 		}
-		// How full its context is, as the desktop's meter says it
-		// (ADR-0052).
-		fill := ""
-		if label := a.st.Data.FillOf(o.ID).Label(); label != "" {
-			fill = "context " + label
-		}
-		note = joinNonEmpty(shortPath(s.Cwd), s.Model.ID, thinking, fill)
+		note = joinNonEmpty(shortPath(s.Cwd), s.Model.ID, thinking)
 	case a.place == placeBoard:
 		note = a.st.Data.BoardNote()
 	case a.place == placeInbox:

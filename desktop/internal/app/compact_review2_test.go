@@ -41,12 +41,11 @@ func TestAPhonesSendStaysOnScreenWhileARunWorks(t *testing.T) {
 	x.tap(t, "Sessions")
 	x.tap(t, "T1 · Fix the flaky arm64 job")
 	x.until(t, func() bool { o := x.a.st.Data.Open(); return o != nil && o.Loaded && o.Live.Busy })
+	x.assertComposerRow(t, true, "Attach files", "Model", "Abort", "Send")
 	for _, label := range []string{"Attach files", "Abort", "Send"} {
 		x.within(t, ui.RoleButton, label)
 	}
-	if chip, ok := x.tt.Access("Model"); !ok || chip.Bounds.X+chip.Bounds.W > phoneW {
-		t.Errorf("the model's chip runs past the screen: %+v, %v", chip.Bounds, ok)
-	}
+	x.within(t, ui.RoleMenuButton, "Model")
 }
 
 // New Session's buttons stay above a phone's keyboard as it comes up

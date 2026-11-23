@@ -48,3 +48,17 @@ const CompactBelow = 760
 func Compact(goos string, width float32) bool {
 	return goos == platformIOS && width > 0 && width < CompactBelow
 }
+
+// MinTouchTarget is the smallest side, in DIPs, of a control a finger
+// presses on iOS: Apple's Human Interface Guidelines' 44 points.
+const MinTouchTarget = 44
+
+// MinTarget is the smallest side a slim control takes on goos: MinTouchTarget
+// on iOS, the iPad's full window and the iPhone's alike, whose controls a
+// finger presses; 0 elsewhere, where a control keeps the kit's size.
+func MinTarget(goos string) float32 {
+	if goos == platformIOS {
+		return MinTouchTarget
+	}
+	return 0
+}

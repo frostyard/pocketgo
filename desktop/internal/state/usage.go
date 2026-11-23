@@ -131,6 +131,22 @@ func (f ContextFill) Thresholds() (near, full float64) {
 	return limit * NearPercent / 100, limit
 }
 
+// Bar is the context mark's bar: the tokens measured, and the top of its
+// scale, the model's window, else the limit (Thresholds' full); ok only when
+// the fill is known and a limit is known. Otherwise the mark shows its Label
+// alone.
+func (f ContextFill) Bar() (value, top float64, ok bool) {
+	_, full := f.Thresholds()
+	if !f.Known || full == 0 {
+		return 0, 0, false
+	}
+	top = float64(f.Window)
+	if top == 0 {
+		top = full
+	}
+	return float64(f.Tokens), top, true
+}
+
 // Label is the meter's text: the percent of the window, else the tokens
 // when the window is unknown; when the fill is not known, "compacted" or
 // "started over" for a context changed whole, and "" before any answer
