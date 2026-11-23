@@ -166,7 +166,8 @@ const (
 
 // fakeReviewGit makes a review's folder as a plain folder, and names
 // reviewBase where every head leaves the base: the 6a tests' heads are no
-// real commits. The real git is worktree's, and TestAReviewEndToEnd's.
+// real commits. The real git is worktree's, and
+// TestAReviewEndToEndWithRealGit's.
 // fakeReviewGit is reviewGit with no git; notIsolated is what isolated
 // says, and onAdd runs when a review's worktree is made.
 type fakeReviewGit struct {
