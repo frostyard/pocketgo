@@ -273,7 +273,7 @@ func (s *Server) openStanding(w http.ResponseWriter, r *http.Request, key string
 // (reconfigureStanding), and logs what failed: the session keeps what it
 // had, and the next idle moment tries again.
 func (s *Server) refreshStanding(ctx context.Context, id int64) error {
-	_, err := s.reconfigureStanding(ctx, id)
+	err := s.reconfigureStanding(ctx, id)
 	if err != nil && !errors.Is(err, errStandingDeferred) {
 		s.log.Warn("refresh a standing session", "session", id, "err", err)
 	}
@@ -284,13 +284,14 @@ func (s *Server) refreshStanding(ctx context.Context, id int64) error {
 // standing session alone: any other session never waits on refreshMu,
 // which a lessons refresh or a compaction may hold a while (Codex review
 // of #43, round 3).
-func (s *Server) reconfigureStanding(ctx context.Context, id int64) (compactAt int, err error) {
+func (s *Server) reconfigureStanding(ctx context.Context, id int64) error {
 	if standing, err := s.isStanding(ctx, id); err != nil || !standing {
-		return 0, err
+		return err
 	}
 	s.lockRefresh()
 	defer s.refreshMu.Unlock()
-	return s.reconfigureStandingLocked(ctx, id)
+	_, err := s.reconfigureStandingLocked(ctx, id)
+	return err
 }
 
 // isStanding says whether session id is a profile's standing session.
@@ -545,7 +546,7 @@ func (s *Server) messageWent(ctx context.Context, id int64, key string, existed 
 // profile (Codex review of #43, round 4). Another session, and a retry of
 // a message that went, pass.
 func (s *Server) standingBeforeMessage(ctx context.Context, w http.ResponseWriter, id int64) bool {
-	_, err := s.reconfigureStanding(ctx, id)
+	err := s.reconfigureStanding(ctx, id)
 	switch {
 	case errors.Is(err, errStandingDeferred):
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict,

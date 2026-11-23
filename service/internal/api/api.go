@@ -2126,7 +2126,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// pauses a running shift whose specialist's session it is (ADR-0024),
 	// so a message PiG has never leaves its shift running, whatever stops
 	// pocketd (Codex review of #36). One that does not go frees its key.
-	existed, paused, err := s.claimSend(ctx, shift, key, kind)
+	err = s.claimSend(ctx, shift, key, kind)
 	if err != nil && pending {
 		// A claim still to free stays to free (Codex review of #36).
 		s.releaseMu.Lock()
@@ -2145,7 +2145,6 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 	// in the work database (store.RequestPaused), and one that went has
 	// its result: neither is ever freed, whatever restarted between, so a
 	// retry pauses no later round (Codex review of #36).
-	_, _ = existed, paused
 	release := func() { s.releaseSend(ctx, id, key, kind) }
 	// The session is watched before the message goes, so its entry
 	// reaches the event stream (watching a watched one does nothing).

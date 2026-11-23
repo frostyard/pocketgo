@@ -1075,8 +1075,7 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 		// then (ADR-0030; Codex review of #51, round 1). Only a new
 		// submission is held: one placed already is found by its key.
 		check = func(ctx context.Context) error {
-			_, err := s.reconfigureStanding(ctx, row.SessionID)
-			return err
+			return s.reconfigureStanding(ctx, row.SessionID)
 		}
 	}
 	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},

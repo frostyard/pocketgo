@@ -244,8 +244,8 @@ func TestTrustedBwrapIsRootOwned(t *testing.T) {
 	saved := statOwner
 	t.Cleanup(func() { statOwner = saved })
 	statOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0o755, nil }
-	if err := rootOwned("/usr/bin"); err != nil {
-		t.Errorf("rootOwned with root's folders = %v", err)
+	if err := rootOnlyDir("/usr"); err != nil {
+		t.Errorf("rootOnlyDir with root's folder = %v", err)
 	}
 	statOwner = func(path string) (uint32, fs.FileMode, error) {
 		if path == "/usr" {
@@ -253,22 +253,35 @@ func TestTrustedBwrapIsRootOwned(t *testing.T) {
 		}
 		return 0, 0o755, nil
 	}
-	if err := rootOwned("/usr/bin"); err == nil {
-		t.Error("a folder a user owns is trusted")
+	if err := rootOnlyDir("/usr"); err == nil || err.Error() != "/usr can be changed by a user other than root" {
+		t.Errorf("rootOnlyDir with a user-owned folder = %v", err)
 	}
-	statOwner = func(path string) (uint32, fs.FileMode, error) { return 0, 0o775, nil }
-	if err := rootOwned("/usr/bin"); err == nil {
+	statOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0o775, nil }
+	if err := rootOnlyDir("/usr"); err == nil {
 		t.Error("a folder its group may change is trusted")
+	}
+	statOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0o757, nil }
+	if err := rootOnlyDir("/usr"); err == nil {
+		t.Error("a folder other users may change is trusted")
+	}
+	statErr := errors.New("stat failed")
+	statOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0, statErr }
+	if err := rootOnlyDir("/usr"); !errors.Is(err, statErr) {
+		t.Errorf("rootOnlyDir with a stat error = %v, want %v", err, statErr)
+	}
+	truth, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("no true program")
+	}
+	statOwner = func(string) (uint32, fs.FileMode, error) { return 1000, 0o755, nil }
+	if got, err := trustedProgram(truth); err == nil {
+		t.Errorf("trustedProgram(%s) = %q with user-owned folders", truth, got)
 	}
 	statOwner = saved
 
 	// A link in a folder the user owns leads to root's own program (true,
 	// which would pass a trial that only runs a command): refused, since
 	// the user could point the link anywhere.
-	truth, err := exec.LookPath("true")
-	if err != nil {
-		t.Skip("no true program")
-	}
 	link := filepath.Join(t.TempDir(), "bwrap")
 	if err := os.Symlink(truth, link); err != nil {
 		t.Fatal(err)

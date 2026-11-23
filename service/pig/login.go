@@ -54,7 +54,7 @@ func Login(ctx context.Context, authPath, provider string, own []profiles.Provid
 		return fmt.Errorf("sign in to %s: no such provider", provider)
 	}
 	if p.Auth.OAuth == nil {
-		return loginAPIKey(ctx, auth, provider, p, in, out, authPath)
+		return loginAPIKey(auth, provider, p, in, out, authPath)
 	}
 	lines := newLineReader(in)
 	interaction := ai.AuthInteraction{
@@ -124,7 +124,7 @@ func Login(ctx context.Context, authPath, provider string, own []profiles.Provid
 // alone, whose adapter this build links (Codex review of #29, rounds 4 and
 // 5). Another may need an account, a gateway or an endpoint, or an
 // adapter, and is refused before the sign-in it had is replaced.
-func loginAPIKey(ctx context.Context, auth *ai.AuthStorage, provider string, p *ai.ModelsProvider, in io.Reader, out io.Writer, authPath string) error {
+func loginAPIKey(auth *ai.AuthStorage, provider string, p *ai.ModelsProvider, in io.Reader, out io.Writer, authPath string) error {
 	if !TakesAPIKey(provider) || p.Auth.APIKey == nil {
 		return fmt.Errorf("sign in to %s: pocketd keeps an API key for %s alone, and for the owner's providers that take one (%s); nothing was changed",
 			provider, strings.Join(APIKeyProviders, ", "), profiles.ProvidersFile)

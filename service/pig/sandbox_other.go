@@ -13,20 +13,17 @@ var errNoBwrap = errors.New("commands run under bubblewrap, which runs on Linux 
 // writable is false where pocketd cannot run commands at all.
 func writable(string) bool { return false }
 
-// rootOwned refuses every path: bubblewrap runs on Linux only (ADR-0012).
-func rootOwned(string) error { return errNoBwrap }
-
-// rootOwnedEntry refuses every path, as rootOwned does.
+// rootOwnedEntry refuses every path: bubblewrap runs on Linux only (ADR-0012).
 func rootOwnedEntry(string, fs.FileInfo) error { return errNoBwrap }
 
-// openHeld refuses every path, as rootOwned does.
+// openHeld refuses every path, as rootOwnedEntry does.
 func openHeld(string) (*os.File, error) { return nil, errNoBwrap }
 
-// mkdirNoFollow refuses every path, as rootOwned does.
+// mkdirNoFollow refuses every path, as rootOwnedEntry does.
 func mkdirNoFollow(string) error { return errNoBwrap }
 
-// makeFileNoFollow refuses every path, as rootOwned does.
+// makeFileNoFollow refuses every path, as rootOwnedEntry does.
 func makeFileNoFollow(string) error { return errNoBwrap }
 
-// statOwner refuses every path, as rootOwned does.
+// statOwner refuses every path, as rootOwnedEntry does.
 var statOwner = func(string) (uint32, fs.FileMode, error) { return 0, 0, errNoBwrap }

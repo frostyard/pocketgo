@@ -873,31 +873,31 @@ func (s *Server) lockShift(thread int64) (unlock func()) {
 // whatever pocketd's locks say. The pause's event goes with it under
 // workMu. The shift's lock is held by the caller from before this until
 // the message went.
-func (s *Server) claimSend(ctx context.Context, thread int64, key, kind string) (existed, paused bool, err error) {
+func (s *Server) claimSend(ctx context.Context, thread int64, key, kind string) error {
 	if thread == 0 {
-		_, existed, _, err := s.store.ClaimSend(ctx, key, kind, 0, "")
-		return existed, false, err
+		_, _, _, err := s.store.ClaimSend(ctx, key, kind, 0, "")
+		return err
 	}
 	s.outboxMu.Lock()
 	defer s.outboxMu.Unlock()
 	if _, existed, err := s.store.LookupRequest(ctx, key, kind); err != nil {
-		return false, false, err
+		return err
 	} else if !existed {
 		if sh, err := s.store.Shift(ctx, thread); err == nil && sh.State == team.ShiftRunning {
 			if _, err := s.withdrawQueued(ctx, thread, func(row store.ReportRow) bool { return isShiftMessage(row.Key) }); err != nil {
-				return false, false, err
+				return err
 			}
 		} else if err != nil {
-			return false, false, err
+			return err
 		}
 	}
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
-	_, existed, paused, err = s.store.ClaimSend(ctx, key, kind, thread, team.ShiftWhy(team.ShiftPerson, "", 0, 0))
+	_, _, paused, err := s.store.ClaimSend(ctx, key, kind, thread, team.ShiftWhy(team.ShiftPerson, "", 0, 0))
 	if err == nil && paused {
 		s.publishThreadNow(ctx, thread)
 	}
-	return existed, paused, err
+	return err
 }
 
 // withdrawQueued withdraws every attempt still queued of thread's unsent

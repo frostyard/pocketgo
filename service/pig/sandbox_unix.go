@@ -127,23 +127,6 @@ func ownerOf(path string, info fs.FileInfo) (uint32, fs.FileMode, error) {
 	return st.Uid, info.Mode().Perm(), nil
 }
 
-// rootOwned checks that only root can change path: it and every folder
-// above it belong to root and are writable by nobody else.
-func rootOwned(path string) error {
-	for p := path; ; p = filepath.Dir(p) {
-		uid, perm, err := statOwner(p)
-		if err != nil {
-			return err
-		}
-		if uid != 0 || perm&0o022 != 0 {
-			return fmt.Errorf("%s can be changed by a user other than root", p)
-		}
-		if p == filepath.Dir(p) {
-			return nil
-		}
-	}
-}
-
 // rootOwnedEntry checks that only root can change the file info describes,
 // itself (not what it links to).
 func rootOwnedEntry(path string, info fs.FileInfo) error {
@@ -151,8 +134,5 @@ func rootOwnedEntry(path string, info fs.FileInfo) error {
 	if err != nil {
 		return err
 	}
-	if uid != 0 || perm&0o022 != 0 {
-		return fmt.Errorf("%s can be changed by a user other than root", path)
-	}
-	return nil
+	return onlyRoot(path, uid, perm)
 }

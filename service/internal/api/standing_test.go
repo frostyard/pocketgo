@@ -561,7 +561,7 @@ func TestAStandingRefreshReadsUnderTheLock(t *testing.T) {
 		}
 		held = true
 	}
-	if _, err := h.server.reconfigureStanding(context.Background(), standing.ID); err != nil {
+	if err := h.server.reconfigureStanding(context.Background(), standing.ID); err != nil {
 		t.Fatal(err)
 	}
 	if !held {
@@ -643,7 +643,7 @@ func TestAPrivateProfileIsNotAppliedOutsideItsHome(t *testing.T) {
 	standing, _ := h.createStatus(proto.CreateSession{RequestID: "r1", Profile: "odrade"})
 	elsewhere := t.TempDir()
 	writeOdrade(t, dir, "home: ~", "home: "+elsewhere+"\nprivate: true")
-	if _, err := h.server.reconfigureStanding(ctx, standing.ID); err == nil || !strings.Contains(err.Error(), "private") {
+	if err := h.server.reconfigureStanding(ctx, standing.ID); err == nil || !strings.Contains(err.Error(), "private") {
 		t.Fatalf("the refresh: %v", err)
 	}
 	h.engine.mu.Lock()
