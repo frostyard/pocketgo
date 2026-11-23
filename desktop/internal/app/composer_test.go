@@ -64,7 +64,7 @@ func (x *testApp) assertContextBelowComposer(t *testing.T) {
 
 // The desktop's composer has one slim row of buttons: Attach files as an
 // icon, the model chip, which the keyboard reaches and whose tooltip holds
-// its whole label, and a compact Send (ADR-0065).
+// its whole label, and a compact Send (ADR-0066).
 func TestTheComposerKeepsItsButtonsOnOneRow(t *testing.T) {
 	x := newTestApp(t)
 	x.seed()
@@ -85,7 +85,7 @@ func TestTheComposerKeepsItsButtonsOnOneRow(t *testing.T) {
 }
 
 // The context mark sits under the composer, not in the header, and shows
-// nothing before an answer measured the context (ADR-0065).
+// nothing before an answer measured the context (ADR-0066).
 func TestTheContextMarkSitsUnderTheComposer(t *testing.T) {
 	x := newTestApp(t)
 	x.seedUsage()
@@ -131,7 +131,7 @@ func TestTheContextMarkSitsUnderTheComposer(t *testing.T) {
 }
 
 // The iPad's full window keeps the desktop's layout, and a finger can
-// press each of the composer's slim controls (state.MinTarget, ADR-0065).
+// press each of the composer's slim controls (state.MinTarget, ADR-0066).
 func TestTheIPadsComposerIsTouchSized(t *testing.T) {
 	x := newTestApp(t)
 	x.iPadApp(t, nil)
@@ -143,7 +143,7 @@ func TestTheIPadsComposerIsTouchSized(t *testing.T) {
 }
 
 // A phone's note under the title no longer says the context: the mark
-// under the composer does (ADR-0065).
+// under the composer does (ADR-0066).
 func TestThePhonesNoteNoLongerSaysTheContext(t *testing.T) {
 	x := newTestApp(t)
 	x.seedUsage()
@@ -166,7 +166,7 @@ func TestThePhonesNoteNoLongerSaysTheContext(t *testing.T) {
 }
 
 // The slim composer on the desktop, idle and while a run works, on a phone
-// and on an iPad (ADR-0065).
+// and on an iPad (ADR-0066).
 func TestTheSlimComposerSnapshot(t *testing.T) {
 	if !inPhoneProcess(t) {
 		return

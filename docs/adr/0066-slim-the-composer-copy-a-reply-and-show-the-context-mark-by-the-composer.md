@@ -1,4 +1,4 @@
-# 0065 — Slim the composer, copy a reply, and show the context mark by the composer
+# 0066 — Slim the composer, copy a reply, and show the context mark by the composer
 
 - **Status:** Accepted
 - **Date:** 2026-11-23
@@ -15,7 +15,7 @@
 
 1. **The composer's buttons are slim.** One row under the field holds, in order: Attach files as a paperclip icon button, on a phone Insert a saved prompt as an icon button, the model chip, Sending… while a message goes, then at the end Abort as a stop icon button while a run works, and Send as a compact primary button (its icon and a short label). Each keeps its accessible name, its tooltip, its enabled and disabled states and its action; the field's keys are unchanged. The model chip is a small button with a model icon, the label `state.ChipOf` gives, cut with an ellipsis when the row is narrow, and a chevron; its menu is unchanged. A phone keeps one row: the chip shrinks before any button does.
 2. **A finger can press every slim control.** On iOS, the iPad's full window as the iPhone's, each icon button, the chip, Send and the Copy button take at least `state.MinTouchTarget` (44 DIPs) a side (`state.MinTarget`), as Apple's guidelines ask; elsewhere they keep the kit's size.
-3. **Each finished reply has a Copy button.** Under an agent's reply, a small copy icon button named Copy puts the reply's Markdown source on the clipboard, its thinking left out (`state.Row.Copy`). Only a finished reply with words has one: not the owner's or a supervisor's message, a tool call, a note, a question or the reply still being written. Once it copied, the button shows a check named Copied for `state.CopyHold` (`state.Copied`), and screen readers hear "Copied the reply"; a failed copy says why in a toast.
+3. **Each finished reply has a Copy button.** Under an agent's reply, a small copy icon button named Copy puts the reply's Markdown source on the clipboard, its thinking left out (`state.Row.Copy`). Only a finished reply with words has one: not the owner's or a supervisor's message, a message the service placed ([ADR-0065](0065-mark-the-services-own-messages-and-fold-them-in-the-desktops-transcript.md)), a tool call, a note, a question or the reply still being written. Once it copied, the button shows a check named Copied for `state.CopyHold` (`state.Copied`), and screen readers hear "Copied the reply"; a failed copy says why in a toast.
 4. **The context mark sits under the composer.** A thin row under the composer's box ends with the context mark: a thin bar and the percent (`state.ContextFill.Bar`, `Label`), colored by its level, with the exact numbers in its tooltip, on every layout, a session with no composer (a worker's, a review's) included. The thresholds, the label and the tooltip are ADR-0052's, unchanged.
 5. **The header keeps the session's tokens and cost, not the mark.** The desktop's header still shows the session's tokens and cost, and no longer the bar and percent; the phone's note no longer says `context 61%`. One mark, by the field the owner writes in, is enough, and the header's room goes to the title.
 6. **No wire change.** Everything the views read was in the desktop already.
@@ -39,5 +39,5 @@
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#desktop-client)
-- Built by: [plans/roadmap.md](../plans/roadmap.md#phase-2--team-work-board-and-inbox) (item 38, the slim composer)
+- Built by: [plans/roadmap.md](../plans/roadmap.md#phase-2--team-work-board-and-inbox) (item 39, the slim composer)
 - Builds on: [ADR-0052](0052-show-each-sessions-context-fill-and-usage-and-sum-the-days-usage-in-code.md), whose decision 7's header meter and phone note it amends, [ADR-0028](0028-let-the-owner-change-a-sessions-model-from-the-composer.md), [ADR-0040](0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md)

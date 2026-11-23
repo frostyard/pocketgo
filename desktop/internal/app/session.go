@@ -21,7 +21,7 @@ type transcriptView struct {
 	rows []state.Row
 	id   int64
 	rev  uint64
-	// copied is the reply whose Copy button copied last (ADR-0065), and
+	// copied is the reply whose Copy button copied last (ADR-0066), and
 	// copyAnnouncement says screen readers are still to hear it.
 	copied           state.Copied
 	copyAnnouncement bool
@@ -29,6 +29,7 @@ type transcriptView struct {
 	// and state: a change of it builds them again.
 	question string
 	open     map[string]bool // folds the owner opened: thinking and tool calls
+	unfolded state.Unfolded  // the service's messages the owner opened (ADR-0065)
 	// picks are the options checked on a question's card that takes
 	// several, by question.
 	picks map[string]map[int]bool
@@ -43,8 +44,10 @@ type transcriptView struct {
 
 // composer is the message field's state: a draft for each session.
 type composer struct {
-	drafts map[int64]*string
-	field  ui.Handle
+	// workersOpen are the sessions whose worker cards show all, after "+N more".
+	workersOpen map[int64]bool
+	drafts      map[int64]*string
+	field       ui.Handle
 	// focus asks the field for the keyboard focus on the next frame, as
 	// after opening a session.
 	focus bool
@@ -73,8 +76,9 @@ func (cp *composer) draft(id int64) *string {
 
 // sessionBar is the top bar over the open session: its title, where it
 // works, what it used, its state, and Abort while it runs. How full its
-// context is shows under the composer (contextMark, ADR-0065). A private agent's session's title is a field while the
-// owner renames it, and a double click on it starts that (ADR-0058).
+// context is shows under the composer (contextMark, ADR-0066). A private
+// agent's session's title is a field while the owner renames it, and a
+// double click on it starts that (ADR-0058).
 func (a *App) sessionBar(c *ui.Context) {
 	o := a.st.Data.Open()
 	s, _ := a.st.Data.Session(o.ID)
@@ -111,7 +115,7 @@ func (a *App) usageLine(c *ui.Context, s proto.Session) {
 
 // contextMark is the thin row under the composer, or under a read-only
 // session's caption, that ends with how full the session's context is
-// (ADR-0065): a thin bar colored by its level and the percent, or the
+// (ADR-0066): a thin bar colored by its level and the percent, or the
 // label alone when no limit is known, the exact numbers in the tooltip.
 // The rules are state's (state.Fill, ContextFill.Bar, Label, Tooltip). It
 // shows nothing before an answer measured the context.
@@ -252,6 +256,9 @@ func (a *App) sessionPane(c *ui.Context) {
 	if tr.open == nil {
 		tr.open = map[string]bool{}
 	}
+	if tr.unfolded == nil {
+		tr.unfolded = state.Unfolded{}
+	}
 	// The session's question that waits shows in its transcript, after
 	// its call (ADR-0048).
 	var question *proto.Question
@@ -353,7 +360,11 @@ func (a *App) dock(c *ui.Context, o *state.OpenSession) {
 func (a *App) rowView(c *ui.Context, r *state.Row) {
 	switch r.Kind {
 	case state.RowUser:
-		a.userRow(c, r)
+		if r.FromService() {
+			a.serviceRow(c, r)
+		} else {
+			a.userRow(c, r)
+		}
 	case state.RowAssistant:
 		ui.Column(c).Gap(frostui.SpaceS).AlignItems(ui.Stretch).Children(func() {
 			if strings.TrimSpace(r.Thinking) != "" {
@@ -404,7 +415,7 @@ func (a *App) rowView(c *ui.Context, r *state.Row) {
 	}
 }
 
-// copyButton is a reply's Copy button (ADR-0065): it puts the reply's
+// copyButton is a reply's Copy button (ADR-0066): it puts the reply's
 // Markdown source on the clipboard (state.Row.Copy), then shows a check
 // named Copied for state.CopyHold and has screen readers say so; a failed
 // copy says why in a toast. On iOS it takes a finger's size
@@ -474,6 +485,55 @@ func (a *App) userRow(c *ui.Context, r *state.Row) {
 			}
 		})
 	})
+}
+
+// serviceRow is a message the service placed itself (ADR-0065), folded
+// to one line by default: its header and the start of its first line
+// (state.FoldOf), a button that opens it to its Markdown and folds it
+// again; the choice is the window's (state.Unfolded).
+func (a *App) serviceRow(c *ui.Context, r *state.Row) {
+	t := c.Theme()
+	f := state.FoldOf(r.Text)
+	folded := a.tr.unfolded.Folds(*r)
+	open := !folded
+	ui.Column(c.Key(r.Key)).AlignItems(ui.Stretch).Radius(8).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).Children(func() {
+		head := ui.ButtonBase(c).Row().Gap(frostui.SpaceS).AlignItems(ui.Center).Padding(6, frostui.SpaceM).
+			Cursor(ui.CursorPointer).Label(serviceLabel(f)).Expanded(open)
+		if head.Hovered() {
+			head.Background(t.SurfaceHover)
+		}
+		if head.Clicked() {
+			a.tr.unfolded.Toggle(*r)
+			a.tr.list.HoldPlace()
+		}
+		head.Children(func() {
+			frostui.Icon(c, chevron(open))
+			if f.Head != "" {
+				frostui.Strong(c, f.Head).SingleLine()
+			}
+			if f.Line != "" {
+				frostui.Muted(c, f.Line).SingleLine().Grow(1)
+			} else {
+				ui.Row(c).Grow(1)
+			}
+			if r.Queued {
+				frostui.Pill(c, "queued", frostui.Neutral)
+			}
+		})
+		if open {
+			ui.Column(c).Padding(frostui.SpaceXS, frostui.SpaceM, frostui.SpaceM, frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
+				markdown.View(c.Key(r.Key), r.Text, &a.md)
+			})
+		}
+	})
+}
+
+func serviceLabel(f state.Folded) string {
+	label := strings.TrimSpace(f.Head + " " + f.Line)
+	if label == "" {
+		return "Message"
+	}
+	return label
 }
 
 // senderName names the supervisor's session that sent a message: its
@@ -621,7 +681,7 @@ func (a *App) composerHints() composerHints {
 // composerView is the message field, its one row of slim buttons (Attach
 // files, a phone's saved prompts, the model chip, Abort and Send, each a
 // finger's size on iOS, state.MinTarget) and the context mark under it
-// (ADR-0065).
+// (ADR-0066).
 func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	t := c.Theme()
 	m := state.MinTarget(a.opts.Platform)
@@ -632,6 +692,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	readOnly, why := a.st.Data.ReadOnly(id)
 	ui.Column(c).AlignItems(ui.Center).Padding(0, a.gutter(), frostui.SpaceL, a.gutter()).Children(func() {
 		ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch).Gap(frostui.SpaceXS).Children(func() {
+			a.workerStrip(c, id)
 			if readOnly {
 				// No message goes to it: the owner reads it, and may stop it.
 				ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
@@ -1009,7 +1070,7 @@ func truncate(s string, n int) string { return state.Truncate(s, n, false) }
 // them: frostyard/pocket's chip, whole (ADR-0028). Its menu has a submenu
 // per provider with its models, the current one checked, and a Thinking
 // submenu when the model takes more than one level. Its rules are
-// state.ChipOf's. It is a slim chip (ADR-0065): a model icon, the label cut
+// state.ChipOf's. It is a slim chip (ADR-0066): a model icon, the label cut
 // with an ellipsis when the row is narrow, its whole in the tooltip, and a
 // chevron; it shrinks before the composer's buttons do.
 func (a *App) modelChip(c *ui.Context, id int64) {

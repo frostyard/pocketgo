@@ -1,6 +1,6 @@
 # 0052 — Show each session's context fill and usage, and sum the days' usage, in code
 
-- **Status:** Accepted; decision 7's header meter and phone note move to a context mark under the composer, by [0065](0065-slim-the-composer-copy-a-reply-and-show-the-context-mark-by-the-composer.md)
+- **Status:** Accepted; decision 7's header meter and phone note move to a context mark under the composer, by [0066](0066-slim-the-composer-copy-a-reply-and-show-the-context-mark-by-the-composer.md)
 - **Date:** 2026-11-21
 
 ## Context

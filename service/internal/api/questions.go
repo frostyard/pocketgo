@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/approvals"
@@ -19,15 +18,9 @@ import (
 // answer, in the same run. The rules are team's; the wait is
 // approvals.Questions', built as an approval's is.
 
-// ownerKeyPrefix begins the request key of every request a device makes
-// (requestKey): a submission of such a key is the owner's own message
-// (POST /v1/sessions/{id}/messages). pocketd's own messages, a schedule's,
-// a note's, a report's or a supervisor's, never carry one.
-const ownerKeyPrefix = "u:"
-
 // ownerMessage says whether a submission of request key is the owner's
 // own message.
-func ownerMessage(key string) bool { return strings.HasPrefix(key, ownerKeyPrefix) }
+func ownerMessage(key string) bool { return team.IsOwnerKey(key) }
 
 // Question puts q to the owner in the calling session and waits for the
 // answer, which is the tool's result (team.QuestionResult). A call run

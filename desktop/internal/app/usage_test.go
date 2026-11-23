@@ -60,7 +60,7 @@ func (x *testApp) seedUsage() {
 
 // The context mark below the composer shows the fill and exact tooltip;
 // the header keeps the session's tokens and cost, and the status bar shows
-// today's total and the week's (ADR-0052, ADR-0065).
+// today's total and the week's (ADR-0052, ADR-0066).
 func TestTheUsageMeterSnapshot(t *testing.T) {
 	x := newTestApp(t)
 	x.seedUsage()

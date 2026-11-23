@@ -66,7 +66,7 @@ func (x *testApp) wantCopyButtons(t *testing.T, copyCount, copiedCount int) {
 
 // Each finished reply has a Copy button, which puts its Markdown on the
 // clipboard, without its thinking, and shows Copied for state.CopyHold
-// (ADR-0065).
+// (ADR-0066).
 func TestACopyButtonCopiesAReplysMarkdown(t *testing.T) {
 	x := copyApp(t, false)
 	x.wantCopyButtons(t, 3, 0)
@@ -80,14 +80,14 @@ func TestACopyButtonCopiesAReplysMarkdown(t *testing.T) {
 	x.wantCopyButtons(t, 3, 0)
 }
 
-// The reply still being written has no Copy button (ADR-0065).
+// The reply still being written has no Copy button (ADR-0066).
 func TestNoCopyButtonOnAReplyStillBeingWritten(t *testing.T) {
 	x := copyApp(t, true)
 	x.hasAll(t, "Still writing")
 	x.wantCopyButtons(t, 3, 0)
 }
 
-// A copy the clipboard refused says why, and shows no Copied (ADR-0065).
+// A copy the clipboard refused says why, and shows no Copied (ADR-0066).
 func TestAFailedCopySaysSo(t *testing.T) {
 	x := copyApp(t, false)
 	x.tt.FailClipboard(errors.New("the clipboard is busy"))
@@ -96,7 +96,7 @@ func TestAFailedCopySaysSo(t *testing.T) {
 	x.wantCopyButtons(t, 3, 0)
 }
 
-// The Copy button takes a finger's size on iOS alone (ADR-0065).
+// The Copy button takes a finger's size on iOS alone (ADR-0066).
 func TestTheCopyButtonIsTouchSizedOnIOS(t *testing.T) {
 	x := copyApp(t, false)
 	x.wantCopyButtons(t, 3, 0)
@@ -120,7 +120,7 @@ func TestTheCopyButtonIsTouchSizedOnIOS(t *testing.T) {
 	}
 }
 
-// The Copy buttons under the replies, and one that copied (ADR-0065).
+// The Copy buttons under the replies, and one that copied (ADR-0066).
 func TestCopyButtonSnapshot(t *testing.T) {
 	x := copyApp(t, false)
 	x.wantCopyButtons(t, 3, 0)

@@ -75,12 +75,14 @@ package proto
 // Version 33 reopens a closed thread when a message reaches its
 // specialist (ADR-0061): a thread's follows, successor, reopens and
 // reopenedAt.
-const Version = 33
+// Version 34 marks the service's own messages (ADR-0065): a user
+// entry's and a queued message's sender of kind service.
+const Version = 34
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"
 
-// The request paths of protocol version 33. A path with {id} takes a session,
+// The request paths of protocol version 34. A path with {id} takes a session,
 // approval, thread, ask, lesson, plan, terminal or device flow id in that
 // segment, and PathSignIn a provider's id;
 // PathQuestion takes its session's id there, and the question's in {qid}.
