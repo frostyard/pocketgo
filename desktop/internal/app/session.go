@@ -40,8 +40,10 @@ type transcriptView struct {
 
 // composer is the message field's state: a draft for each session.
 type composer struct {
-	drafts map[int64]*string
-	field  ui.Handle
+	// workersOpen are the sessions whose worker cards show all, after "+N more".
+	workersOpen map[int64]bool
+	drafts      map[int64]*string
+	field       ui.Handle
 	// focus asks the field for the keyboard focus on the next frame, as
 	// after opening a session.
 	focus bool
@@ -644,6 +646,7 @@ func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	readOnly, why := a.st.Data.ReadOnly(id)
 	ui.Column(c).AlignItems(ui.Center).Padding(0, a.gutter(), frostui.SpaceL, a.gutter()).Children(func() {
 		ui.Column(c).MaxWidth(860).FillWidth().AlignItems(ui.Stretch).Gap(frostui.SpaceXS).Children(func() {
+			a.workerStrip(c, id)
 			if readOnly {
 				// No message goes to it: the owner reads it, and may stop it.
 				ui.Row(c).Gap(frostui.SpaceS).AlignItems(ui.Center).Children(func() {
