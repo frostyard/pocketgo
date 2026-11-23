@@ -78,6 +78,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == pig.ReadBeneathHelper {
 		os.Exit(pig.RunReadBeneathHelper(os.Args[2:], os.Stdout))
 	}
+	// The file viewer reads agent homes through its sandbox helper (ADR-0066).
+	if len(os.Args) > 1 && os.Args[1] == pig.ReadFilesHelper {
+		os.Exit(pig.RunReadFilesHelper(os.Args[2:], os.Stdout))
+	}
 	// Engine.loadContext runs it there to read the files a session's
 	// instructions hold (pig.ContextHelper, ADR-0043).
 	if len(os.Args) > 1 && os.Args[1] == pig.ContextHelper {
@@ -755,6 +759,8 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	server.SetZone(serviceZone())
 	// A gather reads its skill from the skills folder (ADR-0033).
 	server.SetSkills(skillsDir)
+	// The viewer reads the agents' homes only, never these (ADR-0066).
+	server.SetFiles(api.FilesConfig{Home: home, Refused: []string{data, profileDir, skillsDir, uploadsDir, instructionsFile}})
 	// The owner's providers (ADR-0023), from the folder pinned above, not
 	// one put at its name since (Codex review of #34): a file that breaks
 	// a rule registers none of them, and pocketd serves without them.

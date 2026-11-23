@@ -168,6 +168,8 @@ func (a *App) compactView(c *ui.Context) {
 					switch {
 					case a.shownSession() != nil:
 						a.backButton(c)
+					case a.place == placeFiles:
+						a.filesBack(c)
 					case a.place == placeSearch:
 						a.backTo(c, state.PlaceSessions, state.TabSessions.Title())
 					}
@@ -189,6 +191,8 @@ func (a *App) compactView(c *ui.Context) {
 				a.boardPane(c)
 			case a.place == placeSessions:
 				a.phoneSessions(c)
+			case a.place == placeFiles:
+				a.filesPane(c)
 			case a.place == placeSearch:
 				a.searchPane(c)
 			case a.place == placeMore:
@@ -361,6 +365,9 @@ func (a *App) compactTitle() string {
 	}
 	if a.place == placeBoard {
 		return "Work Board"
+	}
+	if a.place == placeFiles {
+		return "Files"
 	}
 	if a.place == placeSearch {
 		return "Search"
@@ -654,6 +661,7 @@ func (a *App) phoneMore(c *ui.Context) {
 			// shows them (ADR-0062; Codex review of #123, round 1).
 			mobile.Section(c.Key("signins"), "Sign-ins", func() { a.phoneSignIns(c) })
 			mobile.Section(c.Key("app"), "PocketGo", func() {
+				item("files", "Files", "folder", false, a.goFiles)
 				item("activity", "Activity", "utilities-terminal", false, func() { a.shell.Console.Open = true })
 				switch {
 				case a.gh.CanSignOut():

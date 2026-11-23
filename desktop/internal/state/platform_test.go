@@ -61,7 +61,7 @@ func TestOnlyIOSSavesOnSuspend(t *testing.T) {
 	}
 }
 
-// Slim controls take a finger's size on iOS alone (ADR-0066).
+// Slim controls take a finger's size on iOS alone (ADR-0067).
 func TestMinTargetIsTouchSizedOnlyOnIOS(t *testing.T) {
 	for _, c := range []struct {
 		goos string

@@ -8,7 +8,7 @@ import (
 )
 
 // Only a finished reply with words copies, its Markdown byte for byte and
-// never its thinking (ADR-0066).
+// never its thinking (ADR-0067).
 func TestCopyKeepsOnlyFinishedReplyMarkdown(t *testing.T) {
 	const markdown = "## Plan\n\n- **one**\n- `two`\n"
 	entries := []proto.Entry{
@@ -39,7 +39,7 @@ func TestCopyKeepsOnlyFinishedReplyMarkdown(t *testing.T) {
 	}
 }
 
-// No row but an agent's reply has a Copy button (ADR-0066).
+// No row but an agent's reply has a Copy button (ADR-0067).
 func TestCopyEligibilityByRowKind(t *testing.T) {
 	for _, kind := range []RowKind{RowUser, RowAssistant, RowTool, RowError, RowNote, RowCompaction, RowQuestion, RowWorking} {
 		r := Row{Kind: kind, Text: "words", Thinking: "secret thought"}

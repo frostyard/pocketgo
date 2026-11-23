@@ -81,6 +81,11 @@ const linkTarget = 4096
 // helper runs ReadBeneathHelper with args in the sandbox and gives what it
 // printed, at most room bytes.
 func (e *Engine) helper(ctx context.Context, room int, args ...string) (string, error) {
+	return e.runHelper(ctx, room, ReadBeneathHelper, args...)
+}
+
+// runHelper runs a hidden command in the sandbox with bounded output.
+func (e *Engine) runHelper(ctx context.Context, room int, command string, args ...string) (string, error) {
 	self := e.opts.Self
 	if self == "" {
 		var err error
@@ -88,7 +93,7 @@ func (e *Engine) helper(ctx context.Context, room int, args ...string) (string, 
 			return "", err
 		}
 	}
-	cmd, err := e.sandboxed(ctx, append([]string{self, ReadBeneathHelper}, args...))
+	cmd, err := e.sandboxed(ctx, append([]string{self, command}, args...))
 	if err != nil {
 		return "", err
 	}

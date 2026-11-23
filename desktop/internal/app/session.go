@@ -21,7 +21,7 @@ type transcriptView struct {
 	rows []state.Row
 	id   int64
 	rev  uint64
-	// copied is the reply whose Copy button copied last (ADR-0066), and
+	// copied is the reply whose Copy button copied last (ADR-0067), and
 	// copyAnnouncement says screen readers are still to hear it.
 	copied           state.Copied
 	copyAnnouncement bool
@@ -76,7 +76,7 @@ func (cp *composer) draft(id int64) *string {
 
 // sessionBar is the top bar over the open session: its title, where it
 // works, what it used, its state, and Abort while it runs. How full its
-// context is shows under the composer (contextMark, ADR-0066). A private
+// context is shows under the composer (contextMark, ADR-0067). A private
 // agent's session's title is a field while the owner renames it, and a
 // double click on it starts that (ADR-0058).
 func (a *App) sessionBar(c *ui.Context) {
@@ -115,7 +115,7 @@ func (a *App) usageLine(c *ui.Context, s proto.Session) {
 
 // contextMark is the thin row under the composer, or under a read-only
 // session's caption, that ends with how full the session's context is
-// (ADR-0066): a thin bar colored by its level and the percent, or the
+// (ADR-0067): a thin bar colored by its level and the percent, or the
 // label alone when no limit is known, the exact numbers in the tooltip.
 // The rules are state's (state.Fill, ContextFill.Bar, Label, Tooltip). It
 // shows nothing before an answer measured the context.
@@ -415,7 +415,7 @@ func (a *App) rowView(c *ui.Context, r *state.Row) {
 	}
 }
 
-// copyButton is a reply's Copy button (ADR-0066): it puts the reply's
+// copyButton is a reply's Copy button (ADR-0067): it puts the reply's
 // Markdown source on the clipboard (state.Row.Copy), then shows a check
 // named Copied for state.CopyHold and has screen readers say so; a failed
 // copy says why in a toast. On iOS it takes a finger's size
@@ -681,7 +681,7 @@ func (a *App) composerHints() composerHints {
 // composerView is the message field, its one row of slim buttons (Attach
 // files, a phone's saved prompts, the model chip, Abort and Send, each a
 // finger's size on iOS, state.MinTarget) and the context mark under it
-// (ADR-0066).
+// (ADR-0067).
 func (a *App) composerView(c *ui.Context, o *state.OpenSession) {
 	t := c.Theme()
 	m := state.MinTarget(a.opts.Platform)
@@ -1070,7 +1070,7 @@ func truncate(s string, n int) string { return state.Truncate(s, n, false) }
 // them: frostyard/pocket's chip, whole (ADR-0028). Its menu has a submenu
 // per provider with its models, the current one checked, and a Thinking
 // submenu when the model takes more than one level. Its rules are
-// state.ChipOf's. It is a slim chip (ADR-0066): a model icon, the label cut
+// state.ChipOf's. It is a slim chip (ADR-0067): a model icon, the label cut
 // with an ellipsis when the row is narrow, its whole in the tooltip, and a
 // chevron; it shrinks before the composer's buttons do.
 func (a *App) modelChip(c *ui.Context, id int64) {

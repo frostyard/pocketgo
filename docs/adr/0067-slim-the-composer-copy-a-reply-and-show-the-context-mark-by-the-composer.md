@@ -1,4 +1,4 @@
-# 0066 — Slim the composer, copy a reply, and show the context mark by the composer
+# 0067 — Slim the composer, copy a reply, and show the context mark by the composer
 
 - **Status:** Accepted
 - **Date:** 2026-11-23
@@ -39,5 +39,5 @@
 ## References
 
 - Shapes: [design/architecture.md](../design/architecture.md#desktop-client)
-- Built by: [plans/roadmap.md](../plans/roadmap.md#phase-2--team-work-board-and-inbox) (item 39, the slim composer)
+- Built by: [plans/roadmap.md](../plans/roadmap.md#phase-2--team-work-board-and-inbox) (item 40, the slim composer)
 - Builds on: [ADR-0052](0052-show-each-sessions-context-fill-and-usage-and-sum-the-days-usage-in-code.md), whose decision 7's header meter and phone note it amends, [ADR-0028](0028-let-the-owner-change-a-sessions-model-from-the-composer.md), [ADR-0040](0040-build-the-ipad-and-iphone-client-from-the-desktops-code-on-mygos-ios-target.md), [ADR-0044](0044-navigate-a-compact-window-by-a-bar-of-tabs.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md)

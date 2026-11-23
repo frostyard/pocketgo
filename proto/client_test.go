@@ -33,7 +33,7 @@ func TestNewRequestIDIsRandomHex(t *testing.T) {
 
 func TestClientSendsProtocolAuthAndBody(t *testing.T) {
 	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(HeaderProtocol) != "34" || r.Header.Get("Authorization") != "Bearer tok" {
+		if r.Header.Get(HeaderProtocol) != "35" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("headers: %v", r.Header)
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/sessions/7/messages" {
@@ -685,5 +685,38 @@ func TestClientCallsTheSignIns(t *testing.T) {
 	}
 	if FlowWaiting.Ended() {
 		t.Fatal("a waiting flow is ended")
+	}
+}
+
+// TestClientReadsTheFileViewer encodes query values and decodes each answer.
+func TestClientReadsTheFileViewer(t *testing.T) {
+	root, path := "agent & a", "notes/a+b & c.md"
+	client := handlerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method %s", r.Method)
+		}
+		if r.URL.Path != PathFiles && (r.URL.Query().Get("root") != root || r.URL.Query().Get("path") != path || len(r.URL.Query()) != 2) {
+			t.Errorf("query %s", r.URL.RawQuery)
+		}
+		switch r.URL.Path {
+		case PathFiles:
+			_ = json.NewEncoder(w).Encode(FileRoots{Roots: []FileRoot{{ID: root, Path: "/home/agent"}}})
+		case PathFilesList:
+			_ = json.NewEncoder(w).Encode(FileFolder{Root: root, Path: path, Real: "notes", Entries: []FileEntry{{Name: "file.md", Kind: FileEntryFile}}})
+		case PathFilesRead:
+			_ = json.NewEncoder(w).Encode(FileContent{Root: root, Path: path, Real: path, Kind: FileMarkdown, Text: "# Hello"})
+		default:
+			t.Errorf("path %s", r.URL.Path)
+		}
+	}))
+	ctx := context.Background()
+	if got, err := client.FileRoots(ctx); err != nil || len(got.Roots) != 1 || got.Roots[0].ID != root {
+		t.Fatalf("roots %+v %v", got, err)
+	}
+	if got, err := client.ListFiles(ctx, root, path); err != nil || got.Root != root || got.Path != path || len(got.Entries) != 1 || got.Entries[0].Kind != FileEntryFile {
+		t.Fatalf("folder %+v %v", got, err)
+	}
+	if got, err := client.ReadFile(ctx, root, path); err != nil || got.Kind != FileMarkdown || got.Text != "# Hello" || got.Path != path {
+		t.Fatalf("file %+v %v", got, err)
 	}
 }

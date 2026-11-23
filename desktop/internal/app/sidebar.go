@@ -29,10 +29,11 @@ import (
 const (
 	sidebarInbox    = state.PlaceInbox
 	sidebarBoard    = state.PlaceBoard
+	sidebarFiles    = state.PlaceFiles
 	sidebarTerminal = state.PlaceTerminal
 )
 
-var sidebarPlaces = []string{sidebarInbox, sidebarBoard, sidebarTerminal}
+var sidebarPlaces = []string{sidebarInbox, sidebarBoard, sidebarFiles, sidebarTerminal}
 
 // places are the sidebar's places on the window's platform: the Terminal
 // only where the platform has it (state.HasTerminal, ADR-0040).
@@ -218,6 +219,8 @@ func (a *App) shownKey() (state.SidebarKey, bool) {
 		return state.PlaceKey(sidebarBoard), true
 	case placeTerminal:
 		return state.PlaceKey(sidebarTerminal), true
+	case placeFiles:
+		return state.PlaceKey(sidebarFiles), true
 	case placeSearch:
 		return state.SearchKey(), true
 	}
@@ -255,6 +258,8 @@ func (a *App) goPlace(key string) {
 		a.goInbox()
 	case sidebarBoard:
 		a.goBoard()
+	case sidebarFiles:
+		a.goFiles()
 	case sidebarTerminal:
 		a.goTerminal()
 	}
@@ -278,6 +283,8 @@ func (a *App) sidebarRow(k state.SidebarKey) frostui.SourceRow {
 func (a *App) placeRow(key string) frostui.SourceRow {
 	d := &a.st.Data
 	switch key {
+	case sidebarFiles:
+		return frostui.SourceRow{Title: "Files", Icon: "folder"}
 	case sidebarInbox:
 		row := frostui.SourceRow{Title: "Inbox", Icon: "mail-unread"}
 		n := 0

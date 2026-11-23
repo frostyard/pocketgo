@@ -23,6 +23,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/approvals"
 	"github.com/frostyard/pocketgo/service/internal/auth"
 	"github.com/frostyard/pocketgo/service/internal/events"
+	"github.com/frostyard/pocketgo/service/internal/files"
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 	"github.com/frostyard/pocketgo/service/internal/router"
 	"github.com/frostyard/pocketgo/service/internal/search"
@@ -224,6 +225,10 @@ type Engine interface {
 	// longer the folder id names, or "none" for neither, a path through a
 	// link included. rel is a path proto.CheckChangedPath takes.
 	ReadIn(ctx context.Context, root, id, rel string, max int) (kind string, data []byte, err error)
+	// ListFiles is the folder at rel below the agent's home root, as a command in the sandbox lists it (files.List, ADR-0066).
+	ListFiles(ctx context.Context, root, rel string, maxEntries, maxNames int) (files.Folder, error)
+	// ReadFile is the file at rel below the agent's home root, as a command in the sandbox reads it (files.Read, ADR-0066).
+	ReadFile(ctx context.Context, root, rel string, max int64) (files.File, error)
 	Same(ctx context.Context, a, b string) (bool, error)
 	// Dir says whether path is a folder, a link to one included, as a
 	// command in the sandbox sees it.
@@ -489,6 +494,9 @@ type Server struct {
 	// changesSlots holds a place for each read of a session's changes that
 	// runs, at most maxChangesReads (ADR-0053).
 	changesSlots chan struct{}
+	// filesCfg names viewer roots exclusions; filesSlots bounds its sandbox reads.
+	filesCfg   FilesConfig
+	filesSlots chan struct{}
 	// modelLocks holds each session, by id, from the read that decides a
 	// change of its model to the change's record (lockModel); onModelLock,
 	// in tests, runs right before a change takes it.
@@ -832,6 +840,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.changesSlots = make(chan struct{}, maxChangesReads)
+	server.filesSlots = make(chan struct{}, proto.MaxFileReads)
 	server.launchStanding = server.openStandingFor
 	server.markLaunchFailed = s.MarkLaunchStartFailed
 	server.terms = terminal.New(terminal.Options{Now: now, OnChange: server.publishTerminals})
@@ -1201,6 +1210,9 @@ func (s *Server) Handler() http.Handler {
 		{"POST", proto.PathLaunches, s.ownerLaunch},
 		{"GET", proto.PathSearch, s.search},
 		{"GET", proto.PathPrompts, s.listPrompts},
+		{"GET", proto.PathFiles, s.fileRoots},
+		{"GET", proto.PathFilesList, s.listFiles},
+		{"GET", proto.PathFilesRead, s.readFile},
 		{"GET", proto.PathEvents, s.events},
 		{"GET", proto.PathUsage, s.usage},
 		{"GET", proto.PathTerminals, s.terminalList},

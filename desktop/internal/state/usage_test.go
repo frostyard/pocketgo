@@ -520,7 +520,7 @@ func TestAReconnectFetchesTotalsThatFailedOrWhoseDayEnded(t *testing.T) {
 }
 
 // The context mark's bar reads the window, and shows only for a fill
-// known against a known limit (ADR-0066).
+// known against a known limit (ADR-0067).
 func TestContextBarUsesTheWindowAndRequiresKnownFillAndLimit(t *testing.T) {
 	measured := func(tokens int64, window, compactAt int) ContextFill {
 		return Fill([]proto.Entry{{ID: 1, Kind: proto.EntryAssistant, Usage: usageOf(tokens)}}, proto.Live{}, window, compactAt)

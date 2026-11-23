@@ -526,15 +526,29 @@ func usableSandbox(t *testing.T, l layout) *Sandbox {
 // test skips where none can.
 func usableBwrap(t *testing.T) string {
 	t.Helper()
+	// CI's test job sets sandboxTestsRequired, so a sandbox test there
+	// fails rather than skips: a skip would hide that the reads the
+	// sandbox guards (ADR-0053, ADR-0066) were never run in it.
+	skip := t.Skipf
+	if os.Getenv(sandboxTestsEnv) == sandboxTestsRequired {
+		skip = t.Fatalf
+	}
 	bwrap, err := trustedBwrap()
 	if err != nil {
-		t.Skipf("no usable bwrap: %v", err)
+		skip("no usable bwrap: %v", err)
 	}
 	if out, err := exec.Command(bwrap, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--", "true").CombinedOutput(); err != nil {
-		t.Skipf("bwrap cannot make a sandbox here (user namespaces may be off): %v: %s", err, out)
+		skip("bwrap cannot make a sandbox here (user namespaces may be off): %v: %s", err, out)
 	}
 	return bwrap
 }
+
+// sandboxTestsEnv set to sandboxTestsRequired makes a sandbox test that
+// finds no usable bwrap fail, not skip; CI's test job sets it.
+const (
+	sandboxTestsEnv      = "POCKETGO_SANDBOX_TESTS"
+	sandboxTestsRequired = "required"
+)
 
 // A command in the sandbox cannot see the data folder or the runtime
 // folder, cannot change pocketd's start files, cannot move a folder above

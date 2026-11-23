@@ -66,7 +66,7 @@ func (x *testApp) assertContextBelowComposer(t *testing.T) {
 
 // The desktop's composer has one slim row of buttons: Attach files as an
 // icon, the model chip, which the keyboard reaches and whose tooltip holds
-// its whole label, and a compact Send (ADR-0066).
+// its whole label, and a compact Send (ADR-0067).
 func TestTheComposerKeepsItsButtonsOnOneRow(t *testing.T) {
 	x := newTestApp(t)
 	x.seed()
@@ -87,7 +87,7 @@ func TestTheComposerKeepsItsButtonsOnOneRow(t *testing.T) {
 }
 
 // The context mark sits under the composer, not in the header, and shows
-// nothing before an answer measured the context (ADR-0066).
+// nothing before an answer measured the context (ADR-0067).
 func TestTheContextMarkSitsUnderTheComposer(t *testing.T) {
 	x := newTestApp(t)
 	x.seedUsage()
@@ -133,7 +133,7 @@ func TestTheContextMarkSitsUnderTheComposer(t *testing.T) {
 }
 
 // The iPad's full window keeps the desktop's layout, and a finger can
-// press each of the composer's slim controls (state.MinTarget, ADR-0066).
+// press each of the composer's slim controls (state.MinTarget, ADR-0067).
 func TestTheIPadsComposerIsTouchSized(t *testing.T) {
 	x := newTestApp(t)
 	x.iPadApp(t, nil)
@@ -145,7 +145,7 @@ func TestTheIPadsComposerIsTouchSized(t *testing.T) {
 }
 
 // A phone's note under the title no longer says the context: the mark
-// under the composer does (ADR-0066).
+// under the composer does (ADR-0067).
 func TestThePhonesNoteNoLongerSaysTheContext(t *testing.T) {
 	x := newTestApp(t)
 	x.seedUsage()
@@ -168,7 +168,7 @@ func TestThePhonesNoteNoLongerSaysTheContext(t *testing.T) {
 }
 
 // The slim composer on the desktop, idle and while a run works, on a phone
-// and on an iPad (ADR-0066).
+// and on an iPad (ADR-0067).
 func TestTheSlimComposerSnapshot(t *testing.T) {
 	if !inPhoneProcess(t) {
 		return
@@ -234,7 +234,7 @@ func crowdedComposer(t *testing.T, answering bool) *testApp {
 
 // assertPhoneComposerTargets checks that every control of the phone's
 // composer row is at least 44×44 and on screen, the model chip included,
-// whose label yields its room but never its target (ADR-0066; cross-review
+// whose label yields its room but never its target (ADR-0067; cross-review
 // of #155 at ea1a944).
 func (x *testApp) assertPhoneComposerTargets(t *testing.T, send string) {
 	t.Helper()
@@ -262,7 +262,7 @@ func (x *testApp) assertPhoneComposerTargets(t *testing.T, send string) {
 	}
 }
 
-// A crowded phone row keeps every target touch sized (ADR-0066).
+// A crowded phone row keeps every target touch sized (ADR-0067).
 func TestAPhonesCrowdedComposerKeepsEveryTargetTouchSized(t *testing.T) {
 	x := crowdedComposer(t, false)
 	x.assertPhoneComposerTargets(t, "Send")

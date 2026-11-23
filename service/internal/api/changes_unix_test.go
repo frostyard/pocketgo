@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/frostyard/pocketgo/service/internal/files"
 	"io"
 	"os"
 	"strings"
@@ -86,4 +87,14 @@ func (f *fakeEngine) ReadIn(_ context.Context, root, id, rel string, max int) (s
 		return changes.KindExec, data, err
 	}
 	return changes.KindFile, data, err
+}
+
+// ListFiles lists a fixture outside any sandbox, as only a test does.
+func (f *fakeEngine) ListFiles(_ context.Context, root, rel string, maxEntries, maxNames int) (files.Folder, error) {
+	return files.List(root, rel, maxEntries, maxNames)
+}
+
+// ReadFile reads a fixture outside any sandbox, as only a test does.
+func (f *fakeEngine) ReadFile(_ context.Context, root, rel string, max int64) (files.File, error) {
+	return files.Read(root, rel, max)
 }
