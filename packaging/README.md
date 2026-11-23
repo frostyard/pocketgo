@@ -8,6 +8,6 @@ Extract the web ZIP into its own web root and serve it over HTTPS. Route `/v1/` 
 
 ## Frostyard remote
 
-The **PocketGo release candidate** workflow builds both files on a manual dispatch or a candidate Git tag. Pushing the matching version tag (currently `v0.1.0-rc.1`) also publishes the Flatpak as OCI at `ghcr.io/frostyard/pocketgo:v0.1.0-rc.1` and attests its digest. The package must be public for the catalogue to read it.
+The **PocketGo release candidate** workflow builds both files on client and packaging pull requests, on a manual dispatch, or on a candidate Git tag. The version comes from `nsgo.yaml`. Use `POCKETGO_RC_VERSION=0.1.0-rc.2 make rc` to build a later candidate locally. The embedded app version is the base release so that promotion can keep the same image. Pushing the matching version tag (for example `v0.1.0-rc.1`) also publishes the Flatpak as OCI at `ghcr.io/frostyard/pocketgo:v0.1.0-rc.1` and attests its digest. The package must be public for the catalogue to read it.
 
 Test that digest through a local staged catalogue using the [index staging runbook](https://github.com/frostyard/flatpak-index/blob/main/docs/runbooks/stage-a-candidate.md). For a public release, promote the tested digest to `latest` and register `frostyard/pocketgo`, tag `latest`, and workflow `.github/workflows/flatpak.yml` in [apps.json](https://github.com/frostyard/flatpak-index/blob/main/apps.json). The underlying Flatpak branch stays `stable` throughout. Web hosting is independent of the Flatpak index.

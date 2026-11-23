@@ -2,6 +2,15 @@ name: PocketGo release candidate
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/flatpak.yml'
+      - 'packaging/**'
+      - 'desktop/**'
+      - 'proto/**'
+      - 'go.work*'
+      - 'Makefile'
   push:
     tags: ['v[0-9]*-rc.[0-9]*']
 
@@ -26,7 +35,12 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y flathub org.gnome.Sdk//51 org.gnome.Platform//51
-      - run: make rc
+      - name: Build the paired candidates
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            export POCKETGO_RC_VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          make rc
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pocketgo-rc-${{ github.sha }}

@@ -4,7 +4,12 @@ set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 revision=$(git -C "$root" rev-parse HEAD)
 id=org.frostyard.PocketGo
-version=0.1.0-rc.1
+release=$(git -C "$root" show "$revision:desktop/cmd/pocket-nsgo/nsgo.yaml" | sed -n 's/^version: //p')
+version=${POCKETGO_RC_VERSION:-$release-rc.1}
+if [[ ! $release =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ${version%-rc.*} != "$release" || ! $version =~ -rc\.[1-9][0-9]*$ ]]; then
+    echo "Expected a candidate of $release (for example $release-rc.1)." >&2
+    exit 1
+fi
 name=pocketgo-$version-${revision:0:12}
 out=$(realpath -m "${1:?supply an output directory}")
 if [[ $(uname -sm) != 'Linux x86_64' ]]; then
@@ -29,12 +34,14 @@ go_root=$("${GOCMD:-go}" env GOROOT)
 export PATH="$go_root/bin:$PATH"
 cd "$stage/src/desktop/cmd/pocket-nsgo"
 export GOWORK="$stage/src/go.work"
-"$go_root/bin/go" tool nsgo build -target linux_x64,web -installers=false -channel none -version "$version" -output "$stage/dist"
+"$go_root/bin/go" tool nsgo build -target linux_x64,web -installers=false -channel none -version "$release" -output "$stage/dist"
 
 cd "$stage"
 cp src/packaging/flatpak/* .
-mv "dist/PocketGo-$version-linux_x64" native
-web="$stage/dist/PocketGo-$version-web"
+release_date=$(git -C "$root" show -s --format=%cs "$revision")
+sed -i "s/@VERSION@/$release/; s/@DATE@/$release_date/" "$id.metainfo.xml"
+mv "dist/PocketGo-$release-linux_x64" native
+web="$stage/dist/PocketGo-$release-web"
 printf '%s\n' "$revision" > result/revision.txt
 cp result/revision.txt native/
 cp result/revision.txt "$web/"

@@ -10,5 +10,5 @@
   <url type="homepage">https://github.com/frostyard/pocketgo</url>
   <developer id="org.frostyard"><name>Frostyard</name></developer>
   <content_rating type="oars-1.1"/>
-  <releases><release version="0.1.0-rc.1" date="2026-11-23" type="development"/></releases>
+  <releases><release version="@VERSION@" date="@DATE@"/></releases>
 </component>
