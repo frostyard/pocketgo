@@ -25,6 +25,7 @@ type transcriptView struct {
 	// and state: a change of it builds them again.
 	question string
 	open     map[string]bool // folds the owner opened: thinking and tool calls
+	unfolded state.Unfolded  // the service's messages the owner opened (ADR-0065)
 	// picks are the options checked on a question's card that takes
 	// several, by question.
 	picks map[string]map[int]bool
@@ -248,6 +249,9 @@ func (a *App) sessionPane(c *ui.Context) {
 	if tr.open == nil {
 		tr.open = map[string]bool{}
 	}
+	if tr.unfolded == nil {
+		tr.unfolded = state.Unfolded{}
+	}
 	// The session's question that waits shows in its transcript, after
 	// its call (ADR-0048).
 	var question *proto.Question
@@ -349,7 +353,11 @@ func (a *App) dock(c *ui.Context, o *state.OpenSession) {
 func (a *App) rowView(c *ui.Context, r *state.Row) {
 	switch r.Kind {
 	case state.RowUser:
-		a.userRow(c, r)
+		if r.FromService() {
+			a.serviceRow(c, r)
+		} else {
+			a.userRow(c, r)
+		}
 	case state.RowAssistant:
 		ui.Column(c).Gap(frostui.SpaceS).AlignItems(ui.Stretch).Children(func() {
 			if strings.TrimSpace(r.Thinking) != "" {
@@ -435,6 +443,55 @@ func (a *App) userRow(c *ui.Context, r *state.Row) {
 			}
 		})
 	})
+}
+
+// serviceRow is a message the service placed itself (ADR-0065), folded
+// to one line by default: its header and the start of its first line
+// (state.FoldOf), a button that opens it to its Markdown and folds it
+// again; the choice is the window's (state.Unfolded).
+func (a *App) serviceRow(c *ui.Context, r *state.Row) {
+	t := c.Theme()
+	f := state.FoldOf(r.Text)
+	folded := a.tr.unfolded.Folds(*r)
+	open := !folded
+	ui.Column(c.Key(r.Key)).AlignItems(ui.Stretch).Radius(8).BorderWidth(1, 1, 1, 1).BorderColor(t.Border).Children(func() {
+		head := ui.ButtonBase(c).Row().Gap(frostui.SpaceS).AlignItems(ui.Center).Padding(6, frostui.SpaceM).
+			Cursor(ui.CursorPointer).Label(serviceLabel(f)).Expanded(open)
+		if head.Hovered() {
+			head.Background(t.SurfaceHover)
+		}
+		if head.Clicked() {
+			a.tr.unfolded.Toggle(*r)
+			a.tr.list.HoldPlace()
+		}
+		head.Children(func() {
+			frostui.Icon(c, chevron(open))
+			if f.Head != "" {
+				frostui.Strong(c, f.Head).SingleLine()
+			}
+			if f.Line != "" {
+				frostui.Muted(c, f.Line).SingleLine().Grow(1)
+			} else {
+				ui.Row(c).Grow(1)
+			}
+			if r.Queued {
+				frostui.Pill(c, "queued", frostui.Neutral)
+			}
+		})
+		if open {
+			ui.Column(c).Padding(frostui.SpaceXS, frostui.SpaceM, frostui.SpaceM, frostui.SpaceM).AlignItems(ui.Stretch).Children(func() {
+				markdown.View(c.Key(r.Key), r.Text, &a.md)
+			})
+		}
+	})
+}
+
+func serviceLabel(f state.Folded) string {
+	label := strings.TrimSpace(f.Head + " " + f.Line)
+	if label == "" {
+		return "Message"
+	}
+	return label
 }
 
 // senderName names the supervisor's session that sent a message: its
