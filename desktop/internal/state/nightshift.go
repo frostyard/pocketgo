@@ -336,19 +336,20 @@ func ClockAt(t, now time.Time) string {
 	return t.Format("2 Jan 15:04")
 }
 
-// DefaultLaunchHours is how long a launch runs when the owner names no
-// clock time (ADR-0034).
-const DefaultLaunchHours = 4
+// LaunchChoiceHours is how long a launch runs when the owner chooses the end
+// chooser's hours segment instead of a clock time (ADR-0034); the chooser
+// opens on Until with proto.DefaultLaunchUntil.
+const LaunchChoiceHours = 4
 
 // LaunchEnd is the absolute end of a launch the owner makes at now: until
-// empty is DefaultLaunchHours from now; a clock time, HH:MM (or H:MM) on
+// empty is LaunchChoiceHours from now; a clock time, HH:MM (or H:MM) on
 // the 24-hour clock, is the first such time strictly after now in now's
 // zone, the desktop's, so the current minute is tomorrow's. Anything else
 // is an error.
 func LaunchEnd(until string, now time.Time) (time.Time, error) {
 	until = strings.TrimSpace(until)
 	if until == "" {
-		return now.Add(DefaultLaunchHours * time.Hour), nil
+		return now.Add(LaunchChoiceHours * time.Hour), nil
 	}
 	// The service's policy across daylight saving, one function (Codex
 	// review of #58, round 1).
@@ -360,8 +361,8 @@ func LaunchEnd(until string, now time.Time) (time.Time, error) {
 var ErrNoClock = errors.New("write the clock time the launch ends at, as 07:30")
 
 // UntilOf is the end chooser as LaunchPicks takes it: "" for in
-// DefaultLaunchHours hours, else the clock time typed for Until, which a
-// blank one is not (ErrNoClock): it would launch for 4 hours.
+// LaunchChoiceHours hours, else the clock time typed for Until, which a
+// blank one is not (ErrNoClock): it would launch for LaunchChoiceHours hours.
 func UntilOf(until bool, clock string) (string, error) {
 	if !until {
 		return "", nil

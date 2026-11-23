@@ -46,3 +46,10 @@ func TestNextClockTime(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultLaunchUntil(t *testing.T) {
+	h, m, err := parseClock(DefaultLaunchUntil)
+	if err != nil || h != 6 || m != 45 {
+		t.Fatalf("default launch clock: %d:%02d, error %v; want 6:45", h, m, err)
+	}
+}

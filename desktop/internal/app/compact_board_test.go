@@ -59,7 +59,7 @@ func TestAPhonesBoardKeepsALaunchAboveTheThreads(t *testing.T) {
 	x.until(t, func() bool {
 		return len(x.srv.Launches()) == 1 && x.a.st.InFlight() == 0 && len(x.a.st.Data.BoardProposals()) == 0
 	})
-	x.above(t, "Launched L1: 1 proposal until tomorrow 02:00, from the supervisor's standing session.", "T1 · Fix the flaky arm64 job")
+	x.above(t, "Launched L1: 1 proposal until tomorrow 06:45, from the supervisor's standing session.", "T1 · Fix the flaky arm64 job")
 }
 
 // The board reads its proposals once a frame, for its order and its

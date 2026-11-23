@@ -76,6 +76,7 @@ Docs are split by the question they answer:
 - [0061 — Reopen a closed thread when a message reaches its specialist](adr/0061-reopen-a-closed-thread-when-a-message-reaches-its-specialist.md)
 - [0062 — Sign pocketd in to GitHub Copilot from the desktop, with a device flow it runs](adr/0062-sign-pocketd-in-to-github-copilot-from-the-desktop-with-a-device-flow-it-runs.md)
 - [0063 — Connect a profile's MCP servers to its sessions, with credentials pocketd keeps](adr/0063-connect-a-profiles-mcp-servers-to-its-sessions-with-credentials-pocketd-keeps.md)
+- [0064 — End a launch at the next 06:45 by default](adr/0064-end-a-launch-at-the-next-06-45-by-default.md)
 
 ### Org-wide decisions
 

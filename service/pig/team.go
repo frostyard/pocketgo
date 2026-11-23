@@ -119,7 +119,7 @@ const githubParameters = `{"type":"object","properties":{` +
 const launchParameters = `{"type":"object","properties":{` +
 	`"rows":{"type":"array","items":{"type":"integer"},"description":"The proposals of your board to launch, by number, in the order they start: 1 to 20."},` +
 	`"hours":{"type":"number","description":"How long their threads run, from now: above 0 and at most 24."},` +
-	`"until":{"type":"string","description":"Or the clock time they run until, HH:MM on the 24-hour clock, the next such time. Neither is 4 hours."}` +
+	`"until":{"type":"string","description":"Or the clock time they run until, HH:MM on the 24-hour clock, the next such time. Neither is until the next ` + team.DefaultLaunchUntil + `."}` +
 	`},"required":["rows"],"additionalProperties":false}`
 
 // inboxParameters are team_inbox's: none.

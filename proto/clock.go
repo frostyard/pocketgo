@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+// DefaultLaunchUntil is the clock time a launch ends at when it names no
+// end: the next 06:45, so a night's launch runs until the morning. The
+// service's team_launch and the desktop's end chooser both take it.
+const DefaultLaunchUntil = "06:45"
+
 // NextClockTime is the first instant after now whose clock in zone reads
 // clock, HH:MM (or H:MM) on the 24-hour clock: a launch's end chosen as a
 // clock time (ADR-0034). The service and the desktop read it by this one
