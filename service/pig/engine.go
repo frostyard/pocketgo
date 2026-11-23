@@ -1061,7 +1061,7 @@ func (e *Engine) TranscriptAfter(ctx context.Context, id, after int64) ([]proto.
 
 // placeEntries gives each user entry of session id's entries the
 // submission that placed it, and its sender when it is not the owner's
-// (ADR-0032), and each answer's usage its cost only when its provider is
+// (ADR-0032, ADR-0065), and each answer's usage its cost only when its provider is
 // metered (ADR-0052).
 func (e *Engine) placeEntries(ctx context.Context, id int64, entries []proto.Entry) ([]proto.Entry, error) {
 	for i := range entries {
@@ -1096,8 +1096,9 @@ type placing struct {
 }
 
 // senderOf names who sent a submission of request key that is not the
-// owner: a supervisor's message, by its key (team.SentBy, ADR-0032), which
-// only pocketd's outbox writes; nil for every other key.
+// owner: a supervisor's message by its key (team.SentBy, ADR-0032), else
+// the service's own for every key a device did not make (team.IsOwnerKey,
+// ADR-0065); nil for the owner's message and for a submission with no key.
 func senderOf(requestKey *string) *proto.Sender {
 	if requestKey == nil {
 		return nil
@@ -1105,7 +1106,10 @@ func senderOf(requestKey *string) *proto.Sender {
 	if supervisor, ok := team.SentBy(*requestKey); ok {
 		return &proto.Sender{Kind: proto.SenderSupervisor, Session: supervisor}
 	}
-	return nil
+	if team.IsOwnerKey(*requestKey) {
+		return nil
+	}
+	return &proto.Sender{Kind: proto.SenderService}
 }
 
 // queuedSender names who sent a queued submission of id, as a live

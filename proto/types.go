@@ -226,8 +226,8 @@ type Entry struct {
 	// wrote or pasted is words.
 	Files int `json:"files,omitempty"`
 	// Sender names who sent a user entry that is not the owner's message:
-	// a supervisor's (ADR-0032). nil for the owner's, and for every entry
-	// the service does not mark.
+	// a supervisor's (ADR-0032) or the service's own (ADR-0065). nil for
+	// the owner's, and for every entry the service does not mark.
 	Sender *Sender `json:"sender,omitempty"`
 }
 
@@ -238,15 +238,22 @@ const (
 	// SenderSupervisor is a supervisor's message to the specialist of a
 	// thread it delegated, sent with team_send (ADR-0032).
 	SenderSupervisor SenderKind = "supervisor"
+	// SenderService is a message the service placed itself (ADR-0065):
+	// a thread's report, a note, a scheduled message, a thread's brief,
+	// an answer to an ask, a shift's round, a worker's message or reply.
+	// Its Session is 0.
+	SenderService SenderKind = "service"
 )
 
 // Sender names who sent a user entry or a queued message that is not the
-// owner's. The service marks it from its own record of the submission
-// that carries the message, never from the message's text.
+// owner's: a supervisor's (ADR-0032) or the service's own (ADR-0065).
+// The service marks it from its own record of the submission that
+// carries the message, never from the message's text.
 type Sender struct {
 	Kind SenderKind `json:"kind"`
-	// Session is the session that sent it: the supervisor's.
-	Session int64 `json:"session"`
+	// Session is the session that sent it: the supervisor's; 0, and left
+	// out, for the service's own message.
+	Session int64 `json:"session,omitempty"`
 }
 
 // ToolStatus is where a live tool call is.
