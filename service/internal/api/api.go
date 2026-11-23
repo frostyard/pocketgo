@@ -1313,7 +1313,7 @@ func decode(w http.ResponseWriter, r *http.Request, into any) bool {
 
 // requestKey scopes a request id to the device that sent it (rule 4).
 func requestKey(r *http.Request, requestID string) string {
-	return "u:" + deviceOf(r).ID + ":" + requestID
+	return team.OwnerKeyPrefix + deviceOf(r).ID + ":" + requestID
 }
 
 func validRequestID(w http.ResponseWriter, id string) bool {
