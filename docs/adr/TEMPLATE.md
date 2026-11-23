@@ -4,6 +4,11 @@
 Filename: NNNN-kebab-case-title.md (next free number).
 ADRs are immutable once Accepted. To reverse one, write a new ADR and set the
 old one's Status to "Superseded by NNNN".
+ADRs record the decision, not how it was reached. State context, decision,
+and consequences as facts. No narration of who asked, who decided, who was
+consulted, the review rounds or the author's process; that belongs in the PR
+description (core ADR-0051:
+https://github.com/frostyard/core/blob/main/docs/adr/0051-adrs-state-facts-not-process.md).
 -->
 
 - **Status:** Proposed | Accepted | Superseded by [NNNN](NNNN-title.md)
