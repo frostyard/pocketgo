@@ -725,6 +725,29 @@ func TestUserEntriesCarryTheirSubmission(t *testing.T) {
 	check("watch", watched)
 }
 
+// senderOf names the owner by a device's key, a supervisor by its
+// team_send key, and the service for every other key (ADR-0032,
+// ADR-0065).
+func TestSenderOfNamesTheOwnerTheSupervisorAndTheService(t *testing.T) {
+	ptr := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		key  *string
+		want *proto.Sender
+	}{
+		{nil, nil},
+		{ptr("u:dev:1"), nil},
+		{ptr(team.SendKey(7, "team:7:3:c1") + ":report"), &proto.Sender{Kind: proto.SenderSupervisor, Session: 7}},
+		{ptr("team:5:3:c1:report"), &proto.Sender{Kind: proto.SenderService}},
+		{ptr("plan:abc:done"), &proto.Sender{Kind: proto.SenderService}},
+		{ptr("team:5:3:c1:ask:0:answer:abcd"), &proto.Sender{Kind: proto.SenderService}},
+	} {
+		got := senderOf(tc.key)
+		if (got == nil) != (tc.want == nil) || (got != nil && tc.want != nil && *got != *tc.want) {
+			t.Errorf("senderOf(%v) = %+v, want %+v", tc.key, got, tc.want)
+		}
+	}
+}
+
 // A supervisor's message carries its sender, the supervisor's session,
 // from the request key of the submission that carries it, queued and
 // placed, in the transcript and on the watch; the owner's message carries
@@ -748,6 +771,78 @@ func TestASupervisorsMessageCarriesItsSender(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := proto.Sender{Kind: proto.SenderSupervisor, Session: 7}
+	_, live, err := e.Transcript(ctx, id)
+	if err != nil || len(live.Queued) != 1 || live.Queued[0].SubmissionID != second || live.Queued[0].Sender == nil || *live.Queued[0].Sender != want {
+		t.Fatalf("while it waits: queued %+v, %v", live.Queued, err)
+	}
+	// The watch sends from its own goroutine: wait for its live state that
+	// lists the queued message (frostyard/pocketgo#113).
+	var watchedQueue *proto.QueuedMessage
+	listed := f.waitLive(func(lives []proto.Live) bool {
+		watchedQueue = nil
+		for _, l := range lives {
+			for _, q := range l.Queued {
+				if q.SubmissionID == second {
+					watchedQueue = &q
+				}
+			}
+		}
+		return watchedQueue != nil
+	})
+	if !listed || watchedQueue.Sender == nil || *watchedQueue.Sender != want {
+		t.Fatalf("the watch's queue %+v", watchedQueue)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+request.ID, request.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	check := func(where string, entries []proto.Entry) {
+		t.Helper()
+		var users []proto.Entry
+		for _, entry := range entries {
+			if entry.Kind == proto.EntryUser {
+				users = append(users, entry)
+			} else if entry.Sender != nil {
+				t.Errorf("%s: a %s entry has a sender", where, entry.Kind)
+			}
+		}
+		if len(users) != 2 || users[0].Sender != nil || users[1].Sender == nil || *users[1].Sender != want || users[1].SubmissionID != second {
+			t.Fatalf("%s: user entries %+v", where, users)
+		}
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("transcript", entries)
+	f.mu.Lock()
+	watched := append([]proto.Entry(nil), f.entries...)
+	f.mu.Unlock()
+	check("watch", watched)
+}
+
+// The service's own message, a report here, carries the service's sender,
+// queued and placed, in the transcript and on the watch; the owner's
+// message carries none, though its text looks like a report (ADR-0065).
+func TestTheServicesOwnMessageCarriesItsSender(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels(toolTurn("bash", map[string]any{"command": "true"}, "b1"), answer("one"), answer("two")))
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
+	id, _ := e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err := e.Watch(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Send(ctx, id, "u:dev:first", "[T5 · Murbella · done] typed by the owner"); err != nil {
+		t.Fatal(err)
+	}
+	request := f.nextApproval() // the run waits: the next message queues
+	key := "team:5:3:c1:report"
+	second, err := e.Send(ctx, id, key, "[T5 · Murbella · done] Merged.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := proto.Sender{Kind: proto.SenderService}
 	_, live, err := e.Transcript(ctx, id)
 	if err != nil || len(live.Queued) != 1 || live.Queued[0].SubmissionID != second || live.Queued[0].Sender == nil || *live.Queued[0].Sender != want {
 		t.Fatalf("while it waits: queued %+v, %v", live.Queued, err)
