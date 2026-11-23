@@ -57,14 +57,14 @@ func (d *Data) Question(id int64) (proto.Question, bool) {
 	return WaitingQuestion(s)
 }
 
-// questionByID is the waiting question with id, of any session.
-func (d *Data) questionByID(id string) (proto.Question, bool) {
+// questionByID says whether a question with id waits, in any session.
+func (d *Data) questionByID(id string) bool {
 	for _, s := range d.sessions {
 		if q, ok := WaitingQuestion(s); ok && q.ID == id {
-			return q, true
+			return true
 		}
 	}
-	return proto.Question{}, false
+	return false
 }
 
 // QuestionsWaiting are the questions that wait for the owner, one for
@@ -357,7 +357,7 @@ func (s *Store) DismissQuestionRefusal(id string) { delete(s.questionRefusals, i
 // request is sent again to learn it (unsureAnswer).
 func (s *Store) CheckingAnswer(id int64) bool {
 	for qid, u := range s.questionUnsure {
-		if _, waits := s.Data.questionByID(qid); u.question.SessionID == id && !waits {
+		if waits := s.Data.questionByID(qid); u.question.SessionID == id && !waits {
 			return true
 		}
 	}
@@ -400,7 +400,7 @@ func (s *Store) settleQuestion(q proto.Question, request proto.AnswerQuestion, t
 	// that one waits: words for a question that settled meanwhile are
 	// kept, never sent to the session's next question or as a message
 	// (Codex review of #95, round 1).
-	if _, waits := s.Data.questionByID(q.ID); !waits {
+	if waits := s.Data.questionByID(q.ID); !waits {
 		if strings.TrimSpace(typed) != "" {
 			s.keepRefused(q.ID, q.SessionID, typed, QuestionGone)
 		}
@@ -513,7 +513,7 @@ func (s *Store) dropDraft(id, typed string) {
 // offers its retry.
 func (s *Store) settleQuestions() {
 	for id, u := range s.questionUnsure {
-		if _, waits := s.Data.questionByID(id); waits {
+		if waits := s.Data.questionByID(id); waits {
 			continue
 		}
 		if p := s.questionAnswers[id]; p != nil && p.Busy {
@@ -528,7 +528,7 @@ func (s *Store) settleQuestions() {
 		})
 	}
 	for id, d := range s.questionDrafts {
-		if _, waits := s.Data.questionByID(id); waits {
+		if waits := s.Data.questionByID(id); waits {
 			continue
 		}
 		if p := s.questionAnswers[id]; p != nil && p.Busy {
@@ -546,7 +546,7 @@ func (s *Store) settleQuestions() {
 		if p.Busy {
 			continue
 		}
-		if _, waits := s.Data.questionByID(id); waits {
+		if waits := s.Data.questionByID(id); waits {
 			continue
 		}
 		if _, unsure := s.questionUnsure[id]; unsure {

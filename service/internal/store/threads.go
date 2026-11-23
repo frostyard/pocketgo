@@ -438,7 +438,7 @@ func (s *Store) FileReportOnShift(ctx context.Context, key string, id int64, sta
 			linked = append(linked, row)
 		}
 	}
-	thread, out, message, _, err := fileReport(ctx, tx, now, key, id, state, report, asks,
+	thread, out, message, err := fileReport(ctx, tx, now, key, id, state, report, asks,
 		func(asks []int64) string { return text(asks, linked) })
 	if err != nil {
 		return ThreadRow{}, nil, ReportRow{}, nil, err
@@ -521,20 +521,20 @@ const askRepeatKind = "askRepeat"
 // report names the open one, and the link is kept under the ask's key in
 // requests so a replay returns the same rows.
 func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64, state, report string, asks []AskRow,
-	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, bool, error) {
+	text func(asks []int64) string) (ThreadRow, []AskRow, ReportRow, error) {
 	thread, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ThreadRow{}, nil, ReportRow{}, false, ErrNotFound
+		return ThreadRow{}, nil, ReportRow{}, ErrNotFound
 	} else if err != nil {
-		return ThreadRow{}, nil, ReportRow{}, false, err
+		return ThreadRow{}, nil, ReportRow{}, err
 	}
 	message, err := scanReport(tx.QueryRowContext(ctx, `SELECT `+reportColumns+` FROM reports WHERE key = ?`, key).Scan)
 	filed := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return ThreadRow{}, nil, ReportRow{}, false, err
+		return ThreadRow{}, nil, ReportRow{}, err
 	}
 	if !filed && thread.State == ThreadClosed {
-		return ThreadRow{}, nil, ReportRow{}, false, ErrConflict
+		return ThreadRow{}, nil, ReportRow{}, ErrConflict
 	}
 	var out []AskRow
 	for _, a := range asks {
@@ -542,13 +542,13 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 		if !filed {
 			rows, err := tx.QueryContext(ctx, `SELECT `+askColumns+` FROM asks WHERE thread_id = ? AND state = ? ORDER BY id`, id, AskOpen)
 			if err != nil {
-				return ThreadRow{}, nil, ReportRow{}, false, err
+				return ThreadRow{}, nil, ReportRow{}, err
 			}
 			for rows.Next() {
 				candidate, err := scanAsk(rows.Scan)
 				if err != nil {
 					_ = rows.Close()
-					return ThreadRow{}, nil, ReportRow{}, false, err
+					return ThreadRow{}, nil, ReportRow{}, err
 				}
 				if row.ID == 0 && team.QuestionKey(candidate.Question) == team.QuestionKey(a.Question) {
 					row = candidate
@@ -557,12 +557,12 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 			err = rows.Err()
 			_ = rows.Close()
 			if err != nil {
-				return ThreadRow{}, nil, ReportRow{}, false, err
+				return ThreadRow{}, nil, ReportRow{}, err
 			}
 			if row.ID != 0 {
 				if _, err := tx.ExecContext(ctx, `INSERT INTO requests (key, kind, result, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 					a.Key, askRepeatKind, strconv.FormatInt(row.ID, 10), now); err != nil {
-					return ThreadRow{}, nil, ReportRow{}, false, err
+					return ThreadRow{}, nil, ReportRow{}, err
 				}
 			} else {
 				options := a.Options
@@ -571,12 +571,12 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 				}
 				encoded, err := json.Marshal(options)
 				if err != nil {
-					return ThreadRow{}, nil, ReportRow{}, false, err
+					return ThreadRow{}, nil, ReportRow{}, err
 				}
 				if _, err := tx.ExecContext(ctx, `INSERT INTO asks (key, thread_id, session_id, question, options, state, created_at)
 					VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING`,
 					a.Key, id, a.SessionID, a.Question, string(encoded), AskOpen, now); err != nil {
-					return ThreadRow{}, nil, ReportRow{}, false, err
+					return ThreadRow{}, nil, ReportRow{}, err
 				}
 			}
 		}
@@ -592,7 +592,7 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			} else if err != nil {
-				return ThreadRow{}, nil, ReportRow{}, false, err
+				return ThreadRow{}, nil, ReportRow{}, err
 			}
 		}
 		if !slices.ContainsFunc(out, func(existing AskRow) bool { return existing.ID == row.ID }) {
@@ -607,10 +607,10 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 		message = ReportRow{Key: key, ThreadID: id, SessionID: thread.SupervisorSession, Text: text(ids)}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (key, thread_id, session_id, text, created_at) VALUES (?, ?, ?, ?, ?)`,
 			key, id, message.SessionID, message.Text, now); err != nil {
-			return ThreadRow{}, nil, ReportRow{}, false, err
+			return ThreadRow{}, nil, ReportRow{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ?`, state, report, now, id); err != nil {
-			return ThreadRow{}, nil, ReportRow{}, false, err
+			return ThreadRow{}, nil, ReportRow{}, err
 		}
 		// A new ask of a plan changes its gate, and takes one that waits
 		// for the owner's approval back to drafting (ADR-0020): the plan
@@ -618,14 +618,14 @@ func fileReport(ctx context.Context, tx *sql.Tx, now int64, key string, id int64
 		if thread.IsPlanThread() && len(out) > 0 {
 			if _, err := tx.ExecContext(ctx, `UPDATE plans SET state = CASE WHEN state = ? THEN ? ELSE state END, updated_at = ? WHERE id = ?`,
 				team.PlanReview, team.PlanDrafting, now, thread.Plan); err != nil {
-				return ThreadRow{}, nil, ReportRow{}, false, err
+				return ThreadRow{}, nil, ReportRow{}, err
 			}
 		}
 		if thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan); err != nil {
-			return ThreadRow{}, nil, ReportRow{}, false, err
+			return ThreadRow{}, nil, ReportRow{}, err
 		}
 	}
-	return thread, out, message, filed, nil
+	return thread, out, message, nil
 }
 
 // ReportFiled says whether report call key was filed.

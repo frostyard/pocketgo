@@ -1186,14 +1186,7 @@ func linksStayProtected(dir string, protected []string) error {
 			if inProtected(next) || holdsProtected(next) {
 				return nil
 			}
-			uid, perm, err := statOwner(dir)
-			if err != nil {
-				return err
-			}
-			if uid != 0 || perm&0o022 != 0 {
-				return fmt.Errorf("%s can be changed by a user other than root", dir)
-			}
-			return nil
+			return rootOnlyDir(dir)
 		})
 		if err != nil {
 			return refuse(err)
@@ -1455,19 +1448,31 @@ func trustedBwrap() (string, error) {
 	return "", fmt.Errorf("commands run under bubblewrap (ADR-0012), and bwrap is not installed in %s", strings.Join(bwrapPaths, ", "))
 }
 
+// onlyRoot refuses path unless its owner uid is root and perm lets no
+// group or other user write it.
+func onlyRoot(path string, uid uint32, perm fs.FileMode) error {
+	if uid != 0 || perm&0o022 != 0 {
+		return fmt.Errorf("%s can be changed by a user other than root", path)
+	}
+	return nil
+}
+
+// rootOnlyDir checks that only root can change folder dir (statOwner,
+// following links).
+func rootOnlyDir(dir string) error {
+	uid, perm, err := statOwner(dir)
+	if err != nil {
+		return err
+	}
+	return onlyRoot(dir, uid, perm)
+}
+
 // trustedProgram follows path to the program it names, the way the kernel
 // does, and checks that only root can change each step: every folder it
 // passes through, links included, and the program itself.
 func trustedProgram(path string) (string, error) {
 	resolved, err := walkPath(path, func(dir string, _ fs.FileInfo) error {
-		uid, perm, err := statOwner(dir)
-		if err != nil {
-			return err
-		}
-		if uid != 0 || perm&0o022 != 0 {
-			return fmt.Errorf("%s can be changed by a user other than root", dir)
-		}
-		return nil
+		return rootOnlyDir(dir)
 	})
 	if err != nil {
 		return "", err

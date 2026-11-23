@@ -86,12 +86,13 @@ func (a *App) fitWidth(c *ui.Context, want float32) float32 {
 // headTitle is the title of a card's head row, before its caption and
 // its buttons: on one line on a desktop's window, and on as many as it
 // takes on a compact one, where the row's buttons leave it little room.
-func (a *App) headTitle(c *ui.Context, text string) ui.Element {
+func (a *App) headTitle(c *ui.Context, text string) {
 	e := frostui.Strong(c, text).Grow(1)
 	if a.compact {
-		return e.Wrap()
+		e.Wrap()
+		return
 	}
-	return e.SingleLine()
+	e.SingleLine()
 }
 
 // headCaption is a card's caption that names where it comes from, as its

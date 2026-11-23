@@ -510,7 +510,7 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 		// it cannot.
 		for _, row := range rows {
 			if row.Source == store.ScheduleOwner {
-				item := wireSchedule(row, s.zone)
+				item := wireSchedule(row)
 				item.ID, item.Next, item.Problem = row.Name, nil, file.problem
 				out.Schedules = append(out.Schedules, item)
 			}
@@ -528,12 +528,12 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 			item.Repeat = e.Spec.Repeat.String()
 		}
 		if row, ok := owners[e.ID]; ok && file.fires[e.ID] {
-			item = wireSchedule(row, s.zone)
+			item = wireSchedule(row)
 			item.ID, item.When = e.ID, e.When
 		} else if ok {
 			// An entry that breaks a rule keeps what its record counted, with
 			// its problem and no next time (Codex review of #51, round 1).
-			kept := wireSchedule(row, s.zone)
+			kept := wireSchedule(row)
 			item.Runs, item.Skipped, item.Last = kept.Runs, kept.Skipped, kept.Last
 		} else if item.Problem == "" {
 			// An entry no pass has read yet goes out first at its first
@@ -569,14 +569,14 @@ func (s *Server) scheduleList(ctx context.Context, file ownerFile, rows []store.
 	}
 	for _, row := range rows {
 		if row.Source == store.ScheduleSession && row.State == store.ScheduleActive {
-			out.Schedules = append(out.Schedules, wireSchedule(row, s.zone))
+			out.Schedules = append(out.Schedules, wireSchedule(row))
 		}
 	}
 	return out
 }
 
 // wireSchedule is a schedule's record as the protocol has it.
-func wireSchedule(row store.ScheduleRow, service *time.Location) proto.Schedule {
+func wireSchedule(row store.ScheduleRow) proto.Schedule {
 	item := proto.Schedule{ID: schedule.ID(row.ID), Source: proto.ScheduleSession, Session: row.SessionID, When: row.Spec, Zone: row.Zone,
 		Message: row.Text, Gather: wireScheduleGather(row.Gather), Next: row.NextAt, Runs: row.Runs, Skipped: row.Skipped}
 	if row.Source == store.ScheduleOwner {

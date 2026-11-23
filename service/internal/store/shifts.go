@@ -398,7 +398,7 @@ func (s *Store) EndShift(ctx context.Context, thread int64, end ShiftEnd) (Shift
 			return err
 		}
 		r := end.Report(ended)
-		updated, _, message, _, err = fileReport(ctx, tx, now, r.Key, thread, r.State, r.Message, nil, r.Text)
+		updated, _, message, err = fileReport(ctx, tx, now, r.Key, thread, r.State, r.Message, nil, r.Text)
 		return err
 	})
 	if replayed || errors.Is(err, ErrConflict) {
