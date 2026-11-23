@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -102,10 +103,11 @@ type Row struct {
 	// Entry is the transcript entry the row was built from: its words, or
 	// one of its tool calls; 0 for the run at work and a queued message.
 	// A search's hit opens at it (TargetRow).
-	Entry    int64
-	Text     string
-	Thinking string
-	Tool     *ToolRow
+	At, Started time.Time // Entry timestamp and the preceding prompt time, when recorded.
+	Entry       int64
+	Text        string
+	Thinking    string
+	Tool        *ToolRow
 	// Live marks the reply still being written: its text streams in.
 	Live bool
 	// Queued marks a message that waits for a run (Live.Queued): taken,
@@ -234,7 +236,11 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 			questionRow()
 		}
 	}
+	var started time.Time
 	for i, e := range entries {
+		if e.Kind == proto.EntryUser {
+			started = e.At
+		}
 		key := fmt.Sprintf("e%d", e.ID)
 		// The rows this entry builds stand for it (Row.Entry).
 		first := len(b.rows)
@@ -283,6 +289,7 @@ func BuildRows(entries []proto.Entry, live proto.Live, approvals []proto.Approva
 		}
 		for j := first; j < len(b.rows); j++ {
 			b.rows[j].Entry = e.ID
+			b.rows[j].At, b.rows[j].Started = e.At, started
 		}
 	}
 	if pe := live.Partial; pe != nil {

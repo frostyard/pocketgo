@@ -2,7 +2,7 @@
 // each test fails on the Makefile as it was before the fix it names.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, test } from "node:test";
@@ -97,6 +97,14 @@ test("make fmt-check names an unformatted file and fails", () => {
 test("make fmt-check passes on formatted code", () => {
   const module = tempDir();
   writeFileSync(join(module, "fine.go"), "package fine\n\nfunc F() {}\n");
+  const run = make("fmt-check", `MODULES=${module}`);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+});
+
+test("make fmt-check ignores the NSGo compiler cache", () => {
+  const module = tempDir();
+  mkdirSync(join(module, ".nsgo"));
+  writeFileSync(join(module, ".nsgo", "generated.go"), "package generated\nfunc  F( ) {}\n");
   const run = make("fmt-check", `MODULES=${module}`);
   assert.equal(run.status, 0, run.stdout + run.stderr);
 });

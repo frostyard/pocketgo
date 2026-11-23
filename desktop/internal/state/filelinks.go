@@ -48,8 +48,8 @@ func ParseFileLink(dest string) (root, p string, ok bool) {
 	return root, p, true
 }
 
-// absoluteFileSpot matches a cleaned absolute path to its longest containing home.
-func absoluteFileSpot(roots proto.FileRoots, p string) (root, rel string, ok bool) {
+// AbsoluteFileSpot matches a cleaned absolute path to its longest containing home.
+func AbsoluteFileSpot(roots proto.FileRoots, p string) (root, rel string, ok bool) {
 	if strings.HasPrefix(p, "~/") {
 		if roots.Home == "" {
 			return "", "", false
@@ -92,7 +92,7 @@ func FileLink(code string, roots proto.FileRoots, openRoot string, top []string)
 		return "", false
 	}
 	if strings.HasPrefix(code, "/") || strings.HasPrefix(code, "~/") {
-		root, p, ok := absoluteFileSpot(roots, code)
+		root, p, ok := AbsoluteFileSpot(roots, code)
 		if !ok {
 			return "", false
 		}
@@ -207,7 +207,7 @@ func ResolveFileHref(roots proto.FileRoots, spot FileSpot, href string) (root, p
 		return "", "", false
 	}
 	if strings.HasPrefix(decoded, "/") || strings.HasPrefix(decoded, "~/") {
-		return absoluteFileSpot(roots, decoded)
+		return AbsoluteFileSpot(roots, decoded)
 	}
 	if spot.Root == "" {
 		return "", "", false

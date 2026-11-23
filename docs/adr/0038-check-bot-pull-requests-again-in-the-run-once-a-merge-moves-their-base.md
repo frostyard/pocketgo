@@ -77,3 +77,4 @@ This amends the last point of ADR-0031's decision 4, "a run merges at most one w
 - Shapes: [design/architecture.md](../design/architecture.md#desktop-client)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (item 16, Merge All Ready and the verdict as an approval)
 - Builds on: [ADR-0031](0031-count-pocketds-ready-cross-review-as-an-approval-and-merge-all-ready-at-once.md), whose decision 4 it amends, [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0018](0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md)
+- [Shared owner merge service proposal](../plans/shared-merge-service.md)

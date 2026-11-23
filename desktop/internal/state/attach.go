@@ -10,7 +10,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -528,7 +527,7 @@ type snapshots struct {
 // snapFile is a copy: its open file, how many write or read it, and
 // whether it was dropped.
 type snapFile struct {
-	file    *os.File
+	file    *snapshotBacking
 	using   int
 	dropped bool
 }

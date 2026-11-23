@@ -77,3 +77,4 @@ The code is in Go, with only the standard library, and its tests run against fak
 - Shapes: [design: system architecture](../design/architecture.md#desktop-client), [plans: roadmap](../plans/roadmap.md)
 - Set up by: [design: setup guide](../design/setup.md)
 - Builds on: [ADR-0010](0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0017](0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md)
+- [Shared owner merge service proposal](../plans/shared-merge-service.md)

@@ -58,7 +58,9 @@ func (s *Server) filesRoutes(mux *http.ServeMux) {
 			root := r.URL.Query().Get("root")
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			if !slices.ContainsFunc(s.fileRoots.Roots, func(h proto.FileRoot) bool { return h.ID == root }) {
+			session, scoped := proto.ParseSessionFilesRoot(root)
+			hasSession := scoped && s.sessions[session] != nil
+			if !hasSession && !slices.ContainsFunc(s.fileRoots.Roots, func(h proto.FileRoot) bool { return h.ID == root }) {
 				writeError(w, 404, proto.ErrorCodeNotFound, "no agent home "+root)
 				return
 			}

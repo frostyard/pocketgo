@@ -61,12 +61,12 @@ HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY
 SNAPSHOT_DIR ?= build/snapshots
 
 fmt:
-	gofmt -s -w $(MODULES)
+	find $(MODULES) -type d -name .nsgo -prune -o -type f -name '*.go' -exec gofmt -s -w {} +
 
 # Fail when gofmt itself fails (a file it cannot parse) or names a file that
 # needs formatting; print what it reported either way.
 fmt-check:
-	@out="$$(gofmt -s -l $(MODULES))" || { echo "gofmt failed"; exit 1; }; \
+	@out="$$(find $(MODULES) -type d -name .nsgo -prune -o -type f -name '*.go' -exec gofmt -s -l {} +)" || { echo "gofmt failed"; exit 1; }; \
 	if [ -n "$$out" ]; then echo "gofmt: these files need formatting (run make fmt):"; echo "$$out"; exit 1; fi
 
 tidy:

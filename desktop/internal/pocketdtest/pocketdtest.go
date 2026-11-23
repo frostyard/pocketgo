@@ -1750,10 +1750,17 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if !noHello {
 		backlog = append([]proto.Event{{Seq: start, Type: proto.EventHello}}, backlog...)
 	}
+	flush := func() {
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
+	flush()
 	for _, ev := range backlog {
 		if proto.WriteEvent(w, ev) != nil {
 			return
 		}
+		flush()
 	}
 	for {
 		select {
@@ -1766,6 +1773,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			if proto.WriteEvent(w, ev) != nil {
 				return
 			}
+			flush()
 		}
 	}
 }

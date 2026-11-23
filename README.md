@@ -39,6 +39,8 @@ build/pocketd serve -listen 127.0.0.1:8788
 
 Start the desktop client with `build/pocket` (or `make run`), and sign in with the service URL and the device's token. `make app` packages it for this machine, in `desktop/build/mygo`. It needs GTK 3 on Linux.
 
+The [NSGo port](desktop/cmd/pocket-nsgo/README.md) builds a GTK 4 desktop client and a web/WASM client from the same Go UI. Its preview runs both against disposable data.
+
 To run pocketgo on a host of your own, follow the [setup guide](docs/design/setup.md): the service host and its sandbox, deploying, the tailnet, model sign-ins, devices, the profile folder, GitHub, the desktop, and a first delegated thread.
 
 ## How it works

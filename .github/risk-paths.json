@@ -411,6 +411,31 @@
       "glob": "desktop/internal/app/terminal*.go",
       "level": "L2",
       "why": "auth: what a shell on the service host may do on the desktop: no clipboard write or read, web and mail links only, no reply to its history (ADR-0025)"
+    },
+    {
+      "glob": "desktop/internal/ownerauth/**",
+      "level": "L1",
+      "why": "auth: shared GitHub credential lifecycle and cross-process lock"
+    },
+    {
+      "glob": "desktop/internal/nsgoclient/accounts*.go",
+      "level": "L1",
+      "why": "auth: device credentials, owner sign-in and merge confirmations"
+    },
+    {
+      "glob": "desktop/internal/nsgoclient/transport*.go",
+      "level": "L1",
+      "why": "auth: origin and redirect handling for signed requests"
+    },
+    {
+      "glob": "desktop/internal/nsgoclient/signin.go",
+      "level": "L1",
+      "why": "auth: device sign-in and plain HTTP confirmation"
+    },
+    {
+      "glob": "desktop/internal/nsgoclient/*.go",
+      "level": "L2",
+      "why": "operator actions: service sessions, approvals, work launches, remote terminals and device connection"
     }
   ]
 }

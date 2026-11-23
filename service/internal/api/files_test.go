@@ -20,6 +20,7 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/files"
+	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
 // viewerHome makes a fixture root available through a valid profile.
@@ -75,7 +76,7 @@ func TestFileRootsAreTheProfilesHomes(t *testing.T) {
 	})
 	h.server.SetFiles(FilesConfig{Home: home, Refused: []string{refused}})
 	got, err := h.client.FileRoots(ctx)
-	want := proto.FileRoots{Home: home, Roots: []proto.FileRoot{{ID: "a", Name: "Agent A", Path: a}, {ID: "b", Name: "Private Agent", Path: b, Private: true}}}
+	want := proto.FileRoots{SessionFolders: true, Home: home, Roots: []proto.FileRoot{{ID: "a", Name: "Agent A", Path: a}, {ID: "b", Name: "Private Agent", Path: b, Private: true}}}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v %v; want %+v", got, err, want)
 	}
@@ -284,5 +285,56 @@ func TestTheFileViewerRunsBoundedReads(t *testing.T) {
 	defer mu.Unlock()
 	if peak > proto.MaxFileReads {
 		t.Fatalf("%d concurrent reads", peak)
+	}
+}
+
+func TestSessionFilesStayInsideTheRecordedDirectory(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	home := t.TempDir()
+	hidden := filepath.Join(home, "private")
+	h.server.SetFiles(FilesConfig{Home: home, Refused: []string{hidden}})
+	cwd := filepath.Join(home, "repo--agent-review")
+	viewerWrite(t, cwd, "src/main.go", []byte("package main"))
+	viewerWrite(t, home, "sibling.txt", []byte("sibling"))
+	viewerLink(t, cwd, "escape", "../sibling.txt")
+	viewerLink(t, home, "alias", cwd)
+	for i, dir := range []string{cwd, hidden, home, filepath.Join(home, ".ssh"), filepath.Join(home, "alias"), t.TempDir()} {
+		_, err := h.store.InsertSession(ctx, store.SessionRow{ID: int64(i + 1), Title: "test", Cwd: dir, Provider: "faux", Model: "faux-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := proto.SessionFilesRoot(1)
+	folder, err := h.client.ListFiles(ctx, root, "src")
+	if err != nil || len(folder.Entries) != 1 || folder.Root != root {
+		t.Fatalf("%+v %v", folder, err)
+	}
+	file, err := h.client.ReadFile(ctx, root, "src/main.go")
+	if err != nil || file.Text != "package main" {
+		t.Fatalf("%+v %v", file, err)
+	}
+	_, err = h.client.ReadFile(ctx, root, "escape")
+	asError(t, err, 404, proto.ErrorCodeNotFound)
+	_, err = h.client.ReadFile(ctx, root, "../sibling.txt")
+	asError(t, err, 400, proto.ErrorCodeBadRequest)
+	for _, id := range []int64{2, 3, 4, 5, 6, 999} {
+		_, err = h.client.ListFiles(ctx, proto.SessionFilesRoot(id), "")
+		asError(t, err, 404, proto.ErrorCodeNotFound)
+	}
+}
+
+func TestSessionFileRootForARegisteredWorktree(t *testing.T) {
+	h := newRepoHarness(t)
+	ctx := context.Background()
+	h.server.SetFiles(FilesConfig{Home: t.TempDir()})
+	s, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "worktree-files", Profile: "duncan", Repository: "frostyard/chairlift", Worktree: true, Title: "Review files"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerWrite(t, s.Cwd, "notes.md", []byte("Worktree notes"))
+	f, err := h.client.ReadFile(ctx, proto.SessionFilesRoot(s.ID), "notes.md")
+	if err != nil || f.Text != "Worktree notes" {
+		t.Fatalf("%+v %v", f, err)
 	}
 }
