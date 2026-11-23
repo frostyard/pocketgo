@@ -3,6 +3,7 @@ package proto
 import (
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -92,6 +93,16 @@ const (
 	PathFilesRead = "/v1/files/read"
 )
 
+// SessionFilesRoot names the session's recorded working directory in list and read requests.
+func SessionFilesRoot(id int64) string { return "session:" + strconv.FormatInt(id, 10) }
+
+// ParseSessionFilesRoot accepts only the canonical form of a positive session ID.
+func ParseSessionFilesRoot(root string) (int64, bool) {
+	raw, ok := strings.CutPrefix(root, "session:")
+	id, err := strconv.ParseInt(raw, 10, 64)
+	return id, ok && err == nil && id > 0 && root == SessionFilesRoot(id)
+}
+
 // Kinds of a FileEntry.
 const (
 	FileEntryFolder = "folder"
@@ -110,8 +121,10 @@ const (
 
 // FileRoots lists the profiles' readable homes.
 type FileRoots struct {
-	Home  string     `json:"home,omitempty"` // the service user's home, which "~/" stands for
-	Roots []FileRoot `json:"roots"`          // by id; never nil
+	// SessionFolders advertises session-scoped list and read on this service.
+	SessionFolders bool       `json:"sessionFolders,omitempty"`
+	Home           string     `json:"home,omitempty"` // the service user's home, which "~/" stands for
+	Roots          []FileRoot `json:"roots"`          // by id; never nil
 }
 
 // FileRoot names an agent's home.

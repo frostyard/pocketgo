@@ -1,0 +1,41 @@
+{
+  "app-id": "org.frostyard.PocketGo",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "51",
+  "sdk": "org.gnome.Sdk",
+  "branch": "stable",
+  "command": "PocketGo",
+  "finish-args": [
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--share=ipc",
+    "--device=dri",
+    "--share=network",
+    "--talk-name=org.freedesktop.secrets",
+    "--filesystem=~/.config/org.frostyard.PocketGo:create"
+  ],
+  "modules": [
+    {
+      "name": "pocketgo",
+      "buildsystem": "simple",
+      "sources": [
+        {"type": "dir", "path": "native"},
+        {"type": "file", "path": "org.frostyard.PocketGo.metainfo.xml"}
+      ],
+      "build-commands": [
+        "install -Dm755 -t /app/bin PocketGo libghostty-vt.so",
+        "desktop-file-install --dir=/app/share/applications --set-key=Exec --set-value=PocketGo --add-category=Development org.frostyard.PocketGo.desktop",
+        "install -Dm644 org.frostyard.PocketGo.png -t /app/share/icons/hicolor/512x512/apps",
+        "install -Dm644 org.frostyard.PocketGo.metainfo.xml -t /app/share/metainfo",
+        "install -Dm644 LICENSE THIRD_PARTY_NOTICES.txt -t /app/share/licenses/org.frostyard.PocketGo",
+        "install -Dm644 revision.txt -t /app/share/pocketgo"
+      ],
+      "test-commands": [
+        "grep -Fx 'Exec=PocketGo' /app/share/applications/org.frostyard.PocketGo.desktop",
+        "desktop-file-validate /app/share/applications/org.frostyard.PocketGo.desktop",
+        "appstreamcli validate --no-net /app/share/metainfo/org.frostyard.PocketGo.metainfo.xml",
+        "test -x /app/bin/PocketGo && test -r /app/bin/libghostty-vt.so"
+      ]
+    }
+  ]
+}

@@ -478,7 +478,7 @@ func TestACopyInUseGoesAsItsLastHandleCloses(t *testing.T) {
 		if err := r.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := sf.file.Stat(); !errors.Is(err, os.ErrClosed) {
+		if _, err := sf.file.ReadAt(make([]byte, 1), 0); !errors.Is(err, os.ErrClosed) {
 			t.Fatalf("closed %v: the copy stayed open once its last reader ended: %v", close, err)
 		}
 	}

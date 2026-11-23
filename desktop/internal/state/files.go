@@ -479,3 +479,21 @@ func (s *Store) RefreshFiles() {
 		s.loadFile(f.Root, f.Path)
 	}
 }
+
+// BrowseFolder reads a listing for an independent explorer without moving the Files selection.
+func (s *Store) BrowseFolder(root, path string, done func(proto.FileFolder, error)) {
+	var folder proto.FileFolder
+	s.do("Read folder", func(ctx context.Context, c *proto.Client) (err error) {
+		folder, err = c.ListFiles(ctx, root, path)
+		return err
+	}, func(err error) { done(folder, err) })
+}
+
+// BrowseFile reads a bounded preview for an independent explorer.
+func (s *Store) BrowseFile(root, path string, done func(proto.FileContent, error)) {
+	var file proto.FileContent
+	s.do("Read file", func(ctx context.Context, c *proto.Client) (err error) {
+		file, err = c.ReadFile(ctx, root, path)
+		return err
+	}, func(err error) { done(file, err) })
+}

@@ -2,7 +2,7 @@
 // each test fails on the Makefile as it was before the fix it names.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, test } from "node:test";
@@ -101,12 +101,20 @@ test("make fmt-check passes on formatted code", () => {
   assert.equal(run.status, 0, run.stdout + run.stderr);
 });
 
+test("make fmt-check ignores the NSGo compiler cache", () => {
+  const module = tempDir();
+  mkdirSync(join(module, ".nsgo"));
+  writeFileSync(join(module, ".nsgo", "generated.go"), "package generated\nfunc  F( ) {}\n");
+  const run = make("fmt-check", `MODULES=${module}`);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+});
+
 test("make build honours an absolute BUILD_DIR", () => {
   const out = join(tempDir(), "out");
   const run = make("-n", "build", `BUILD_DIR=${out}`);
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, new RegExp(`-o "${out}/pocketd"`));
-  assert.match(run.stdout, new RegExp(`-o "${out}/pocket"`));
+  assert.match(run.stdout, new RegExp(`"${out}/pocket"`));
 });
 
 test("make build resolves a relative BUILD_DIR from the repository root", () => {
@@ -129,10 +137,20 @@ test("make snapshot writes the desktop's views to an absolute SNAPSHOT_DIR", () 
   assert.match(run.stdout, /env -u DISPLAY -u WAYLAND_DISPLAY/);
 });
 
-test("make app packages the desktop client with mygo build", () => {
-  const run = make("-n", "app");
-  assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /cd desktop && go tool mygo build/);
+test("Linux selects NSGo for build, run and packaging", () => {
+  for (const target of ["build", "run", "app"]) {
+    const run = make("-n", target, "HOST_OS=Linux", "HOST_ARCH=x86_64");
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /go tool nsgo build .*?-target linux_x64/);
+  }
+});
+
+test("MyGo remains the fallback and the non-Linux packaging default", () => {
+  for (const args of [["app-mygo"], ["app", "HOST_OS=Darwin"]]) {
+    const run = make("-n", ...args);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /cd desktop && go tool mygo build/);
+  }
 });
 
 test("make check formats before it verifies", () => {

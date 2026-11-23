@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.frostyard.PocketGo</id>
+  <name>PocketGo</name>
+  <summary>Work with your pocketd agent team</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description><p>Read agent conversations, review work on the board and respond to questions from your pocketd service.</p></description>
+  <launchable type="desktop-id">org.frostyard.PocketGo.desktop</launchable>
+  <url type="homepage">https://github.com/frostyard/pocketgo</url>
+  <developer id="org.frostyard"><name>Frostyard</name></developer>
+  <content_rating type="oars-1.1"/>
+  <releases><release version="@VERSION@" date="@DATE@"/></releases>
+</component>

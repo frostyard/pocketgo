@@ -1,4 +1,4 @@
-package main
+package ownerauth
 
 import (
 	"errors"
@@ -27,7 +27,7 @@ func (r memRing) Delete(k string) error { delete(r, k); return nil }
 // review of #24, round 1).
 func TestTheSignInHoldsItsLockUntilClose(t *testing.T) {
 	dir := t.TempDir()
-	g := newGitHubAuthWith(config.GitHubApp{Ring: memRing{}, NotFound: errNoKey}, dir)
+	g := New(config.GitHubApp{Ring: memRing{}, NotFound: errNoKey}, dir)
 	if err := g.Open(); err != nil && !errors.Is(err, config.ErrNoSignIn) {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestTheSignInHoldsItsLockUntilClose(t *testing.T) {
 // start never leaves the lock taken (Codex review of #24, round 2).
 func TestNoLockAfterClose(t *testing.T) {
 	dir := t.TempDir()
-	g := newGitHubAuthWith(config.GitHubApp{Ring: memRing{}, NotFound: errNoKey}, dir)
+	g := New(config.GitHubApp{Ring: memRing{}, NotFound: errNoKey}, dir)
 	g.Close()
 	if err := g.Open(); err == nil {
 		t.Fatal("Open after Close succeeded")

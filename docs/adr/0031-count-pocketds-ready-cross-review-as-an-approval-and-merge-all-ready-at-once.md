@@ -77,3 +77,4 @@ The owner decided both on 2026-11-20.
 - Shapes: [design/architecture.md](../design/architecture.md#desktop-client)
 - Built by: [plans/roadmap.md](../plans/roadmap.md) (item 16, Merge All Ready and the verdict as an approval)
 - Builds on: [ADR-0010](0010-port-the-desktop-client-selectively-from-frostyard-pocket.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0017](0017-record-cross-review-verdicts-and-set-ready-for-human-in-code.md), [ADR-0018](0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md), [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)
+- [Shared owner merge service proposal](../plans/shared-merge-service.md)

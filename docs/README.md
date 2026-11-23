@@ -80,6 +80,9 @@ Docs are split by the question they answer:
 - [0065 — Mark the service's own messages, and fold them in the desktop's transcript](adr/0065-mark-the-services-own-messages-and-fold-them-in-the-desktops-transcript.md)
 - [0066 — Let the owner read the agents' homes in a read-only file viewer](adr/0066-let-the-owner-read-the-agents-homes-in-a-read-only-file-viewer.md)
 - [0067 — Slim the composer, copy a reply, and show the context mark by the composer](adr/0067-slim-the-composer-copy-a-reply-and-show-the-context-mark-by-the-composer.md)
+- [0068 — Build a shared NSGo client beside the desktop client](adr/0068-build-a-shared-nsgo-client-beside-the-desktop-client.md)
+- [0069 — Browse a session's working folder](adr/0069-browse-a-sessions-working-folder.md)
+- [0070 — Ship NSGo as the default Linux client](adr/0070-ship-nsgo-as-the-default-linux-client.md)
 
 ### Org-wide decisions
 
@@ -102,6 +105,7 @@ Docs are split by the question they answer:
 ### Plans
 
 - [Roadmap](plans/roadmap.md)
+- [Shared owner merge service](plans/shared-merge-service.md)
 - [Phone and tablet client](plans/phone-client.md)
 
 ## Conventions

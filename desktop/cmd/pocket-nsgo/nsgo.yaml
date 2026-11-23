@@ -1,0 +1,9 @@
+name: PocketGo
+id: org.frostyard.PocketGo
+version: 0.1.0
+icon:
+  png: ../../resources/icon.png
+dev:
+  target: native
+build:
+  targets: [linux_x64, web]

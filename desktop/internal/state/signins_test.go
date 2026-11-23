@@ -101,15 +101,21 @@ func TestTheSheetFollowsItsFlow(t *testing.T) {
 		t.Fatalf("the time left after a minute: %s", v.Left)
 	}
 	copilot := proto.Model{ModelRef: proto.ModelRef{Provider: CopilotProvider, ID: "gpt-5"}, Name: "GPT-5"}
+	// The flow read can finish before the provider event and model refresh.
+	releaseModels := h.srv.HoldAnswerOnce(http.MethodGet, proto.PathModels)
+	t.Cleanup(releaseModels)
 	h.srv.EndSignIn(CopilotProvider, proto.FlowApproved, "octocat", "", copilot)
-	h.loop.RunUntil(t, func() bool { return h.store.SignInSheet().Phase == SheetSignedIn })
-	h.settle(t)
+	h.loop.RunUntil(t, func() bool {
+		return h.store.SignInSheet().Phase == SheetSignedIn && h.srv.Holding(http.MethodGet, proto.PathModels)
+	})
 	if v := h.store.SignInSheet(); v.Text != "Signed in as @octocat. GitHub Copilot models are now available." {
 		t.Fatalf("the approved sheet says %q", v.Text)
 	}
-	if models, _ := h.store.Models(); !slices.ContainsFunc(models, func(m proto.Model) bool { return m.ModelRef == copilot.ModelRef }) {
-		t.Fatalf("the models after the sign-in: %+v", models)
-	}
+	releaseModels()
+	h.loop.RunUntil(t, func() bool {
+		models, _ := h.store.Models()
+		return slices.ContainsFunc(models, func(m proto.Model) bool { return m.ModelRef == copilot.ModelRef })
+	})
 	if row, _ := h.store.Data.SignIn(CopilotProvider); row.State != proto.SignInSignedIn || row.Account != "octocat" {
 		t.Fatalf("the row after the sign-in %+v", row)
 	}

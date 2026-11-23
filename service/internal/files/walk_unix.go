@@ -24,10 +24,33 @@ func pathError(what string, err error) error {
 	return err
 }
 
-// openRoot follows the owner's configured root, not a viewer-supplied link.
+// openRoot pins the physical path supplied by the service. Replacing any
+// directory with a link between authorization and the sandbox read fails closed.
 func openRoot(root string) (int, error) {
-	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	return fd, pathError("home", err)
+	const flags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+	if !strings.HasPrefix(root, "/") {
+		return -1, ErrBadPath
+	}
+	fd, err := unix.Open("/", flags, 0)
+	if err != nil {
+		return -1, pathError("root", err)
+	}
+	for _, part := range strings.Split(strings.Trim(root, "/"), "/") {
+		if part == "" {
+			continue
+		}
+		if part == ".." {
+			_ = unix.Close(fd)
+			return -1, ErrOutside
+		}
+		next, err := unix.Openat(fd, part, flags, 0)
+		_ = unix.Close(fd)
+		if err != nil {
+			return -1, pathError("folder", err)
+		}
+		fd = next
+	}
+	return fd, nil
 }
 
 // resolve walks relative links using a stack of pinned folders, never kernel '..'.

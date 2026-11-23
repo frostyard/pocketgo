@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/files"
+	"github.com/frostyard/pocketgo/service/internal/store"
 )
 
 // FilesConfig names the service home and the paths no agent home may expose.
@@ -69,11 +71,125 @@ func (s *Server) fileRoots(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "read profiles", err)
 		return
 	}
-	out := proto.FileRoots{Home: s.filesCfg.Home, Roots: []proto.FileRoot{}}
+	out := proto.FileRoots{SessionFolders: true, Home: s.filesCfg.Home, Roots: []proto.FileRoot{}}
 	for _, h := range homes {
 		out.Roots = append(out.Roots, proto.FileRoot{ID: h.ID, Name: h.Name, Path: h.Path, Private: h.Private})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// viewerRoot resolves owner-configured links before handing a physical path to
+// the sandbox. The sandbox pins each component without following more links.
+func (s *Server) viewerRoot(ctx context.Context, id string) (files.Home, error) {
+	if session, ok := proto.ParseSessionFilesRoot(id); ok {
+		return s.sessionFileRoot(ctx, id, session)
+	}
+	homes, err := s.filesHomes()
+	if err != nil {
+		return files.Home{}, err
+	}
+	for _, h := range homes {
+		if h.ID == id {
+			real, err := filepath.EvalSymlinks(h.Path)
+			if err != nil {
+				return files.Home{}, err
+			}
+			return s.checkedRoot(id, real)
+		}
+	}
+	return files.Home{}, files.ErrNotFound
+}
+
+func (s *Server) checkedRoot(id, p string) (files.Home, error) {
+	roots := files.Roots([]files.Home{{ID: id, Path: p}}, s.filesCfg.Refused)
+	if len(roots) == 0 {
+		return files.Home{}, files.ErrNotFound
+	}
+	return roots[0], nil
+}
+
+func (s *Server) sessionFileRoot(ctx context.Context, id string, session int64) (files.Home, error) {
+	row, err := s.store.Session(ctx, session)
+	if err != nil {
+		return files.Home{}, err
+	}
+	cwd := row.Cwd
+	if !filepath.IsAbs(cwd) || cwd != filepath.Clean(cwd) || cwd == "/" {
+		return files.Home{}, files.ErrNotFound
+	}
+	if _, err := s.checkedRoot(id, cwd); err != nil {
+		return files.Home{}, err
+	}
+	anchors := []string{}
+	if s.filesCfg.Home != "" && cwd != filepath.Clean(s.filesCfg.Home) {
+		anchors = append(anchors, s.filesCfg.Home)
+	}
+	var siblings []string
+	if s.profiles != nil {
+		pp, _, err := s.profiles.Load()
+		if err != nil {
+			return files.Home{}, err
+		}
+		for _, p := range pp {
+			anchors = append(anchors, p.Folders()...)
+			for _, repo := range p.Repositories {
+				if filepath.Dir(cwd) == filepath.Dir(repo) && strings.HasPrefix(cwd, repo+"--") {
+					siblings = append(siblings, filepath.Dir(repo))
+				}
+			}
+		}
+	}
+	if len(siblings) > 0 {
+		owned, err := s.hasFileWorktree(ctx, row)
+		if err != nil {
+			return files.Home{}, err
+		}
+		if owned {
+			anchors = append(anchors, siblings...)
+		}
+	}
+	// Prefer the explicitly configured checkout or home when a broader
+	// authorized directory also contains it. Only configured links may resolve.
+	slices.SortStableFunc(anchors, func(a, b string) int { return len(b) - len(a) })
+	for _, anchor := range anchors {
+		if !filepath.IsAbs(anchor) {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(anchor)
+		if err != nil {
+			continue
+		}
+		// Sessions can record either spelling of an owner-configured link,
+		// such as /home on a host whose physical directory is /var/home.
+		for _, prefix := range []string{anchor, real} {
+			rel, err := filepath.Rel(prefix, cwd)
+			if err != nil {
+				continue
+			}
+			rel, err = proto.CheckFilePath(rel)
+			if err == nil {
+				return s.checkedRoot(id, filepath.Join(real, rel))
+			}
+		}
+	}
+	return files.Home{}, files.ErrNotFound
+}
+
+// A generated sibling is eligible only if pocketd recorded the worktree.
+func (s *Server) hasFileWorktree(ctx context.Context, row store.SessionRow) (bool, error) {
+	owned, err := s.store.SessionWorktreeAt(ctx, row.Cwd)
+	if owned || err != nil {
+		return owned, err
+	}
+	specialist := row.ID
+	if row.StartedBy != 0 {
+		specialist = row.StartedBy
+	}
+	thread, err := s.store.ThreadOfSession(ctx, specialist)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return thread.Cwd == row.Cwd && thread.Branch != "", err
 }
 
 // readFiles validates a request, pins its profile root and bounds the sandbox work.
@@ -83,23 +199,14 @@ func (s *Server) readFiles(w http.ResponseWriter, r *http.Request, read func(con
 		writeError(w, http.StatusBadRequest, proto.ErrorCodeBadRequest, err.Error())
 		return
 	}
-	homes, err := s.filesHomes()
-	if err != nil {
-		s.internal(w, "read profiles", err)
+	id := r.URL.Query().Get("root")
+	root, err := s.viewerRoot(r.Context(), id)
+	if errors.Is(err, files.ErrNotFound) || errors.Is(err, os.ErrNotExist) || errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "File root unavailable: "+id)
 		return
 	}
-	id := r.URL.Query().Get("root")
-	var root files.Home
-	found := false
-	for _, h := range homes {
-		if h.ID == id {
-			root = h
-			found = true
-			break
-		}
-	}
-	if !found {
-		writeError(w, http.StatusNotFound, proto.ErrorCodeNotFound, "no agent home "+id)
+	if err != nil {
+		s.internal(w, "resolve file root", err)
 		return
 	}
 	select {

@@ -3,6 +3,11 @@
 # A bare `make` verifies; formatting stays an explicit `make fmt` or `make check`.
 .DEFAULT_GOAL := verify
 
+.PHONY: linux-client build-mygo run-mygo app-mygo rc
+HOST_OS := $(shell uname -s)
+HOST_ARCH := $(shell uname -m)
+NSGO_ARCH := $(patsubst x86_64,x64,$(patsubst aarch64,arm64,$(HOST_ARCH)))
+
 GOCMD ?= go
 
 # The Go modules of go.work (ADR-0007). Every Go gate runs once in each.
@@ -61,12 +66,12 @@ HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY
 SNAPSHOT_DIR ?= build/snapshots
 
 fmt:
-	gofmt -s -w $(MODULES)
+	find $(MODULES) -type d -name .nsgo -prune -o -type f -name '*.go' -exec gofmt -s -w {} +
 
 # Fail when gofmt itself fails (a file it cannot parse) or names a file that
 # needs formatting; print what it reported either way.
 fmt-check:
-	@out="$$(gofmt -s -l $(MODULES))" || { echo "gofmt failed"; exit 1; }; \
+	@out="$$(find $(MODULES) -type d -name .nsgo -prune -o -type f -name '*.go' -exec gofmt -s -l {} +)" || { echo "gofmt failed"; exit 1; }; \
 	if [ -n "$$out" ]; then echo "gofmt: these files need formatting (run make fmt):"; echo "$$out"; exit 1; fi
 
 tidy:
@@ -141,20 +146,47 @@ portable:
 		if printf '%s\n' "$$deps" | grep -qx "$$pkg"; then echo "the desktop's iOS app imports $$pkg, which MyGo's iOS build cannot bundle (ADR-0040)"; exit 1; fi; \
 	done
 
-build:
+build: daemon
+
+.PHONY: daemon
+daemon:
 	@mkdir -p "$(BUILD_PATH)"
 	cd service && $(GOCMD) build -o "$(BUILD_PATH)/pocketd" ./cmd/pocketd
+ifeq ($(HOST_OS),Linux)
+build: linux-client
+run: linux-client
+	"$(BUILD_PATH)/pocket"
+app:
+	cd desktop/cmd/pocket-nsgo && $(GOCMD) tool nsgo build -target linux_$(NSGO_ARCH)
+else
+build:
 	cd desktop && $(GOCMD) build -o "$(BUILD_PATH)/pocket" ./cmd/pocket
+run: run-mygo
+app: app-mygo
+endif
 
-# Start the desktop client.
-run:
+# Use the NSGo packager so the executable carries the configured app identity
+# and loads its matching terminal library beside it.
+linux-client:
+	@mkdir -p "$(BUILD_PATH)"
+	@set -eu; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	(cd desktop/cmd/pocket-nsgo && $(GOCMD) tool nsgo build -installers=false -target linux_$(NSGO_ARCH) -output "$$tmp"); \
+	set -- "$$tmp"/PocketGo-*-linux_$(NSGO_ARCH); \
+	install -m755 "$$1/PocketGo" "$(BUILD_PATH)/pocket"; \
+	install -m755 "$$1/libghostty-vt.so" "$(BUILD_PATH)/libghostty-vt.so"
+
+build-mygo:
+	@mkdir -p "$(BUILD_PATH)"
+	cd desktop && $(GOCMD) build -o "$(BUILD_PATH)/pocket-mygo" ./cmd/pocket
+
+run-mygo:
 	cd desktop && $(GOCMD) run ./cmd/pocket
 
-# The desktop app as people install it, for this machine (desktop/mygo.json):
-# PocketGo.app and a disk image on macOS, the executable and its packages on
-# Linux. Output in desktop/build/mygo.
-app:
+app-mygo:
 	cd desktop && $(GOCMD) tool mygo build
+
+rc:
+	GOCMD="$(GOCMD)" packaging/build-rc.sh "$(BUILD_PATH)/rc"
 
 # Write the desktop's views as PNGs in SNAPSHOT_DIR (POCKETGO_DARK=1 for the
 # dark theme), from the headless view tests.
