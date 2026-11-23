@@ -49,7 +49,7 @@ fi
 "${builder[@]}" --disable-download --repo=repo app "$id.json"
 flatpak build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo repo "result/$name-x86_64.flatpak" "$id" rc
 
-(cd result && sha256sum *.flatpak *.zip revision.txt > SHA256SUMS)
+(cd result && sha256sum -- *.flatpak *.zip revision.txt > SHA256SUMS)
 # Publish a complete local set. Keep concurrently built candidates separate.
 if [[ -e "$out/$name" ]]; then
     echo "Candidate already exists at $out/$name. Choose another BUILD_DIR to rebuild." >&2

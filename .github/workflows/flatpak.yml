@@ -57,7 +57,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flatpak ostree skopeo
           ostree init --mode=archive-z2 --repo=repo
-          flatpak build-import-bundle repo *.flatpak
+          flatpak build-import-bundle repo ./*.flatpak
           flatpak build-bundle --oci repo image org.frostyard.PocketGo rc
       - name: Push the commit tag
         id: push
