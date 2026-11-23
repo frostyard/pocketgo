@@ -23,9 +23,13 @@ git -C "$root" archive "$revision" | tar -x -C "$stage/src"
 
 # NSGo stamps the stable application ID and includes the native terminal
 # companion. Its release directory is private to this invocation.
+# Resolve the selected Go toolchain in the caller’s checkout. This also
+# lets NSGo invoke its child Go builds without reselecting a version.
+go_root=$("${GOCMD:-go}" env GOROOT)
+export PATH="$go_root/bin:$PATH"
 cd "$stage/src/desktop/cmd/pocket-nsgo"
 export GOWORK="$stage/src/go.work"
-"${GOCMD:-go}" tool nsgo build -target linux_x64,web -installers=false -channel none -version "$version" -output "$stage/dist"
+"$go_root/bin/go" tool nsgo build -target linux_x64,web -installers=false -channel none -version "$version" -output "$stage/dist"
 
 cd "$stage"
 cp src/packaging/flatpak/* .
