@@ -60,3 +60,17 @@ func TestOnlyIOSSavesOnSuspend(t *testing.T) {
 		}
 	}
 }
+
+// Slim controls take a finger's size on iOS alone (ADR-0067).
+func TestMinTargetIsTouchSizedOnlyOnIOS(t *testing.T) {
+	for _, c := range []struct {
+		goos string
+		want float32
+	}{
+		{"ios", 44}, {"linux", 0}, {"darwin", 0}, {"windows", 0}, {"", 0},
+	} {
+		if got := MinTarget(c.goos); got != c.want {
+			t.Errorf("MinTarget(%q) = %v, want %v", c.goos, got, c.want)
+		}
+	}
+}

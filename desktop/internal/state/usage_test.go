@@ -518,3 +518,30 @@ func TestAReconnectFetchesTotalsThatFailedOrWhoseDayEnded(t *testing.T) {
 		t.Errorf("a reconnect after a failed fetch fetched the report %d times, want 1", got)
 	}
 }
+
+// The context mark's bar reads the window, and shows only for a fill
+// known against a known limit (ADR-0067).
+func TestContextBarUsesTheWindowAndRequiresKnownFillAndLimit(t *testing.T) {
+	measured := func(tokens int64, window, compactAt int) ContextFill {
+		return Fill([]proto.Entry{{ID: 1, Kind: proto.EntryAssistant, Usage: usageOf(tokens)}}, proto.Live{}, window, compactAt)
+	}
+	for _, c := range []struct {
+		name       string
+		fill       ContextFill
+		value, top float64
+		ok         bool
+	}{
+		{"unmeasured", Fill(nil, proto.Live{}, 128_000, 0), 0, 0, false},
+		{"compacted", Fill([]proto.Entry{{ID: 1, Kind: proto.EntryAssistant, Usage: usageOf(78_200)}, {ID: 2, Kind: proto.EntryCompaction}}, proto.Live{}, 128_000, 0), 0, 0, false},
+		{"window", measured(78_200, 128_000, 0), 78_200, 128_000, true},
+		{"compactAt below window", measured(78_200, 200_000, 150_000), 78_200, 200_000, true},
+		{"unknown window drops compactAt", measured(78_200, 0, 150_000), 0, 0, false},
+		{"past window", measured(130_000, 128_000, 0), 130_000, 128_000, true},
+		{"limit fallback", ContextFill{Known: true, Tokens: 78_200, CompactAt: 150_000}, 78_200, 150_000, true},
+	} {
+		value, top, ok := c.fill.Bar()
+		if value != c.value || top != c.top || ok != c.ok {
+			t.Errorf("%s: Bar = (%v, %v, %v), want (%v, %v, %v)", c.name, value, top, ok, c.value, c.top, c.ok)
+		}
+	}
+}

@@ -79,6 +79,7 @@ Docs are split by the question they answer:
 - [0064 — End a launch at the next 06:45 by default](adr/0064-end-a-launch-at-the-next-06-45-by-default.md)
 - [0065 — Mark the service's own messages, and fold them in the desktop's transcript](adr/0065-mark-the-services-own-messages-and-fold-them-in-the-desktops-transcript.md)
 - [0066 — Let the owner read the agents' homes in a read-only file viewer](adr/0066-let-the-owner-read-the-agents-homes-in-a-read-only-file-viewer.md)
+- [0067 — Slim the composer, copy a reply, and show the context mark by the composer](adr/0067-slim-the-composer-copy-a-reply-and-show-the-context-mark-by-the-composer.md)
 
 ### Org-wide decisions
 

@@ -13,6 +13,8 @@ func Embedded() map[string][]byte {
 	return map[string][]byte{
 		// A speech bubble: a session.
 		"pocket-session": svg(`<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>`),
+		// A chip: a session's model (ADR-0067).
+		"pocket-model": svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/>`),
 		// A robot face: a named agent.
 		"pocket-agent": svg(`<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4M9 13v1M15 13v1M10 17h4"/><circle cx="12" cy="3" r="1"/>`),
 		// A raised hand: waiting for you.

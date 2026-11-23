@@ -58,9 +58,9 @@ func (x *testApp) seedUsage() {
 	}})
 }
 
-// The session's header shows its context fill as a bar and a percent, with
-// the exact numbers in its tooltip, and its tokens and cost under it; the
-// status bar shows today's total and the week's (ADR-0052).
+// The context mark below the composer shows the fill and exact tooltip;
+// the header keeps the session's tokens and cost, and the status bar shows
+// today's total and the week's (ADR-0052, ADR-0067).
 func TestTheUsageMeterSnapshot(t *testing.T) {
 	x := newTestApp(t)
 	x.seedUsage()
@@ -72,6 +72,10 @@ func TestTheUsageMeterSnapshot(t *testing.T) {
 	meter, ok := x.tt.AccessByRole(ui.RoleMeter, "Context")
 	if !ok || !strings.HasPrefix(meter.Description, "Context: 78,200 tokens of 128,000 (61%)") {
 		t.Errorf("the meter %+v, found %v", meter, ok)
+	}
+	field, found := x.tt.Access("Message")
+	if !found || meter.Bounds.Y <= field.Bounds.Y+field.Bounds.H {
+		t.Errorf("context meter %+v is not below Message %+v (found %v)", meter.Bounds, field.Bounds, found)
 	}
 	x.snapshot(t, "usage-1-session")
 
