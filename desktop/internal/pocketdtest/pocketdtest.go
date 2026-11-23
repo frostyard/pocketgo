@@ -57,6 +57,11 @@ type Server struct {
 	// prompts are what GET /v1/prompts answers (ADR-0051).
 	prompts  proto.Prompts
 	sessions map[int64]*session
+	// fileRoots lists the homes; fileFolders and fileContents hold viewer
+	// answers keyed by root and path (files.go).
+	fileRoots    proto.FileRoots
+	fileFolders  map[string]proto.FileFolder
+	fileContents map[string]proto.FileContent
 	// questions are the sessions' questions (ADR-0048), waiting and
 	// settled, by id (question.go).
 	questions map[string]proto.Question
@@ -821,6 +826,7 @@ func (s *Server) routes() http.Handler {
 	s.uploadRoutes(mux)
 	s.usageRoutes(mux)
 	s.changesRoutes(mux)
+	s.filesRoutes(mux)
 	s.signInRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// An upload's body is the file, up to proto.MaxUpload, as

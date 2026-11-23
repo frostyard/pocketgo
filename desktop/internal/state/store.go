@@ -849,8 +849,9 @@ func (s *Store) forgetAnswer(id int64) {
 	s.ids.Done(fmt.Sprintf("answer:%d", id))
 }
 
-// retryFailed fetches again what failed to load or has not loaded yet: a
-// list, the open session's detail, or a tracked session's changes or the
+// retryFailed fetches again what failed to load or has not loaded yet,
+// including the file roots: a list, the open session's detail, or a
+// tracked session's changes or the
 // diff shown (retryChanges, ADR-0053), whose fetch failed or is still in
 // flight, also over what loaded before, as the refetch a resync started.
 // A fetch in flight may fail after the stream came back, and the client is
@@ -900,6 +901,9 @@ func (s *Store) retryFailed() {
 	if status, _ := s.Data.PromptsStatus(); status != ListLoaded || s.fetching["prompts"] > 0 {
 		s.LoadPrompts()
 	}
+	if s.Data.FileRoots().Status != ListLoaded || s.fetching["fileroots"] > 0 {
+		s.LoadFileRoots()
+	}
 	// The sign-ins, once the Sign-ins page asked for them, and a start
 	// canceled whose answer never came (ADR-0062).
 	if status, _ := s.Data.SignInsStatus(); s.signInsWanted && (status != ListLoaded || s.fetching["signins"] > 0) {
@@ -920,7 +924,8 @@ func (s *Store) retryFailed() {
 // approvals, the open asks, the lessons, the threads, their pull requests,
 // the plans, the board's proposals and the schedules, the profiles, the
 // owner's terminals, the usage report (ADR-0052), the saved prompts, the
-// changes of the sessions it counts them for (ADR-0053), the open session
+// file roots, the changes of the sessions it counts them for (ADR-0053),
+// the open session
 // and the models the composer's chip offers, and the service's hello when
 // it has none yet.
 func (s *Store) Refresh() {
@@ -943,6 +948,10 @@ func (s *Store) Refresh() {
 	// The composer's / picker has them at once, and asks again as it
 	// opens (ADR-0051).
 	s.LoadPrompts()
+	s.LoadFileRoots()
+	if root := s.Data.OpenFileRoot(); root != "" {
+		s.LoadFileTop(root)
+	}
 	// The sign-ins, once the Sign-ins page asked for them: a resync may
 	// have missed a flow's end (ADR-0062).
 	if s.signInsWanted {
@@ -1406,6 +1415,7 @@ func (s *Store) Open(id int64) {
 		s.loadDetail(id)
 	}
 	s.syncChanges()
+	s.syncFileTop()
 }
 
 // pending returns the entry of m under key, made when missing.

@@ -596,3 +596,27 @@ func WriteEvent(w io.Writer, event Event) error {
 	_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Seq, event.Type, data)
 	return err
 }
+
+// FileRoots lists the profiles' homes the viewer may read (rule 70).
+func (c *Client) FileRoots(ctx context.Context) (FileRoots, error) {
+	var out FileRoots
+	return out, c.do(ctx, http.MethodGet, PathFiles, nil, &out)
+}
+
+// ListFiles lists a folder below a profile's home (rule 71).
+func (c *Client) ListFiles(ctx context.Context, root, path string) (FileFolder, error) {
+	q := url.Values{}
+	q.Set("root", root)
+	q.Set("path", path)
+	var out FileFolder
+	return out, c.do(ctx, http.MethodGet, PathFilesList+"?"+q.Encode(), nil, &out)
+}
+
+// ReadFile reads a file below a profile's home (rule 72).
+func (c *Client) ReadFile(ctx context.Context, root, path string) (FileContent, error) {
+	q := url.Values{}
+	q.Set("root", root)
+	q.Set("path", path)
+	var out FileContent
+	return out, c.do(ctx, http.MethodGet, PathFilesRead+"?"+q.Encode(), nil, &out)
+}

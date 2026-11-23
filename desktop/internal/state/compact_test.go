@@ -107,6 +107,9 @@ func TestEachTabHasItsPlace(t *testing.T) {
 			t.Errorf("TabOf(%q) = %v, %v", w.place, got, ok)
 		}
 	}
+	if tab, ok := TabOf(PlaceFiles); !ok || tab != TabMore {
+		t.Fatalf("Files tab %v %v", tab, ok)
+	}
 	for _, place := range []string{PlaceTerminal, "", "session"} {
 		if got, ok := TabOf(place); ok {
 			t.Errorf("TabOf(%q) = %v, want none", place, got)

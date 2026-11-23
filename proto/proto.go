@@ -75,7 +75,7 @@ package proto
 // Version 33 reopens a closed thread when a message reaches its
 // specialist (ADR-0061): a thread's follows, successor, reopens and
 // reopenedAt.
-const Version = 33
+const Version = 35
 
 // HeaderProtocol carries Version on every request.
 const HeaderProtocol = "Pocket-Protocol"

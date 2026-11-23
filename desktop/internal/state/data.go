@@ -95,6 +95,16 @@ type Data struct {
 	// signIns are pocketd's sign-ins (signins.go, ADR-0062).
 	signIns signInData
 
+	// fileRoots and fileRootsList keep the homes and their newest applied fetch.
+	fileRoots     FileRootsView
+	fileRootsList list
+	// fileTops keeps the newest answered top-folder names for transcript links, by home.
+	fileTops map[string]*fileTop
+	// filesFolder and filesFile are the Files view's selections; filesNote explains a link that cannot open.
+	filesFolder *ShownFolder
+	filesFile   *ShownFile
+	filesNote   string
+
 	epoch           uint64
 	sessionTouched  map[int64]uint64
 	approvalTouched map[string]uint64

@@ -38,7 +38,7 @@ func TestTheSpecNamesThisVersion(t *testing.T) {
 		t.Errorf("the architecture lacks %q", want)
 	}
 	for _, path := range []string{PathHello, PathModels, PathProfiles, PathSessions, PathSession, PathMessages, PathAbort, PathStartOver, PathModel, PathTitle, PathUploads, PathQuestion, PathChanges, PathChangesFile,
-		PathApprovals, PathApproval, PathThreads, PathCloseThread, PathAsks, PathAsk, PathLessons, PathLesson, PathPulls, PathPull, PathPlans, PathApprovePlan, PathSchedules, PathGathers, PathProposals, PathSearch, PathPrompts, PathEvents,
+		PathApprovals, PathApproval, PathThreads, PathCloseThread, PathAsks, PathAsk, PathLessons, PathLesson, PathPulls, PathPull, PathPlans, PathApprovePlan, PathSchedules, PathGathers, PathProposals, PathSearch, PathPrompts, PathFiles, PathFilesList, PathFilesRead, PathEvents,
 		PathTerminals, PathTerminal, PathTerminalOutput, PathTerminalInput, PathTerminalResize, PathUsage, PathSignIns, PathSignIn, PathSignInFlow, PathCancelSignIn} {
 		if !strings.Contains(spec, " "+path+"` |") {
 			t.Errorf("the spec's endpoints lack %s", path)
