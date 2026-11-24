@@ -2,7 +2,7 @@ package nsgoclient
 
 import (
 	"encoding/json"
-	"github.com/frostyard/pocketgo/desktop/workspaceui"
+	"github.com/frostyard/frostui/workspaceui"
 	"github.com/nsgo-dev/nsgo/core"
 	"github.com/nsgo-dev/nsgo/nsgotest"
 	"testing"

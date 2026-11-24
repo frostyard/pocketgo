@@ -22,7 +22,6 @@ updates:
       - "/proto"
       - "/service"
       - "/desktop"
-      - "/desktop/workspaceui"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

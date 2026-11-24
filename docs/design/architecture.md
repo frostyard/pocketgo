@@ -318,7 +318,7 @@ Session file previews read the recorded working folder through the authenticated
 
 Linux and web ship the shared NSGo UI, with an explicit MyGo fallback on Linux ([ADR-0070](../adr/0070-ship-nsgo-as-the-default-linux-client.md)). An NSGo client shares this desktop state layer and packages reusable controls separately ([ADR-0068](../adr/0068-build-a-shared-nsgo-client-beside-the-desktop-client.md)).
 
-The workspace module at `github.com/frostyard/pocketgo/desktop/workspaceui` contains the themed controls. Both PocketGo and FrostNotes pin its module version. Go workspace builds resolve the local source for development. Git tags combine the module directory and version, as in [desktop/workspaceui/v0.1.0-rc.1](https://github.com/frostyard/pocketgo/tree/desktop/workspaceui/v0.1.0-rc.1).
+The themed controls come from the workspace module `github.com/frostyard/frostui/workspaceui`, which `desktop/go.mod` pins at v0.1.0 (frostui's tag [workspaceui/v0.1.0](https://github.com/frostyard/frostui/tree/workspaceui/v0.1.0)). The module began in this repository and moved to frostui with its code unchanged ([frostyard/frostui#70](https://github.com/frostyard/frostui/pull/70)); this repository keeps no copy. The earlier tag [desktop/workspaceui/v0.1.0-rc.1](https://github.com/frostyard/pocketgo/tree/desktop/workspaceui/v0.1.0-rc.1) stays for apps that still pin it.
 
 
 **Built (Phases 1 to 3):**
