@@ -102,8 +102,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "$GH_TOKEN" | skopeo login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
-          skopeo copy --format oci --digestfile digest oci:image "docker://ghcr.io/frostyard/pocketgo:$GITHUB_REF_NAME"
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          skopeo copy --authfile "${DOCKER_CONFIG:-$HOME/.docker}/config.json" --format oci --digestfile digest oci:image "docker://ghcr.io/frostyard/pocketgo:$GITHUB_REF_NAME"
           echo "digest=$(cat digest)" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
