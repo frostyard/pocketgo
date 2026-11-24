@@ -31,7 +31,7 @@ The native client can check and approve a GitHub merge through the existing owne
 
 ## Code and checks
 
-[workspaceui](../../workspaceui) contains reusable shell, layout and chat components. Its public API accepts content and callbacks. [nsgoclient](../../internal/nsgoclient) binds these to PocketGo’s state store, network protocol and platform services. The Linux client uses the application ID `org.frostyard.PocketGo`. See the [release candidate instructions](../../../packaging/README.md) for the Flatpak and deployable web archive.
+[workspaceui](https://github.com/frostyard/frostui/tree/workspaceui/v0.1.0/workspaceui), the module `github.com/frostyard/frostui/workspaceui` that `desktop/go.mod` pins at v0.1.0, contains reusable shell, layout and chat components. Its public API accepts content and callbacks. [nsgoclient](../../internal/nsgoclient) binds these to PocketGo’s state store, network protocol and platform services. The Linux client uses the application ID `org.frostyard.PocketGo`. See the [release candidate instructions](../../../packaging/README.md) for the Flatpak and deployable web archive.
 
 Compare the busy-team scene on [Linux](../../internal/nsgoclient/comparison/linux/busy-team-conversation.png) and [Chromium](../../internal/nsgoclient/comparison/web/busy-team-conversation.png).
 

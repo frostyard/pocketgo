@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
-	"github.com/frostyard/pocketgo/desktop/workspaceui"
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/nsgo-dev/nsgo/core"
 	"github.com/nsgo-dev/nsgo/ui"

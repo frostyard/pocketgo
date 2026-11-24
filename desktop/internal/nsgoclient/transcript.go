@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
-	"github.com/frostyard/pocketgo/desktop/workspaceui"
 	"github.com/nsgo-dev/nsgo/base/textview"
 	"github.com/nsgo-dev/nsgo/core"
 	"github.com/nsgo-dev/nsgo/ui/chat"

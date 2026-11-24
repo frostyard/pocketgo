@@ -11,7 +11,7 @@ NSGO_ARCH := $(patsubst x86_64,x64,$(patsubst aarch64,arm64,$(HOST_ARCH)))
 GOCMD ?= go
 
 # The Go modules of go.work (ADR-0007). Every Go gate runs once in each.
-MODULES := proto service desktop desktop/workspaceui
+MODULES := proto service desktop
 
 # Everything builds without CGO (ADR-0007). Only make race turns it on, for
 # the race detector.
@@ -34,7 +34,6 @@ NODE_MAJOR := $(shell node -p "process.versions.node.split('.')[0]" 2>/dev/null)
 # The GOOS/GOARCH pairs each module builds for, as CROSS_<module>. make cross
 # builds and vets every pair and fails for a module without a list; make ci runs
 # make cross.
-CROSS_desktop/workspaceui ?= linux/amd64 darwin/arm64 js/wasm
 CROSS_proto ?= linux/amd64 linux/arm64 darwin/arm64 windows/amd64
 CROSS_service ?= linux/amd64 linux/arm64 darwin/arm64
 CROSS_desktop ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
@@ -67,12 +66,12 @@ HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY
 SNAPSHOT_DIR ?= build/snapshots
 
 fmt:
-	find $(filter-out desktop/workspaceui,$(MODULES)) -type d -name .nsgo -prune -o -type f -name '*.go' -exec gofmt -s -w {} +
+	find $(MODULES) -type d -name .nsgo -prune -o -type f -name '*.go' -exec gofmt -s -w {} +
 
 # Fail when gofmt itself fails (a file it cannot parse) or names a file that
 # needs formatting; print what it reported either way.
 fmt-check:
-	@out="$$(find $(filter-out desktop/workspaceui,$(MODULES)) -type d -name .nsgo -prune -o -type f -name '*.go' -exec gofmt -s -l {} +)" || { echo "gofmt failed"; exit 1; }; \
+	@out="$$(find $(MODULES) -type d -name .nsgo -prune -o -type f -name '*.go' -exec gofmt -s -l {} +)" || { echo "gofmt failed"; exit 1; }; \
 	if [ -n "$$out" ]; then echo "gofmt: these files need formatting (run make fmt):"; echo "$$out"; exit 1; fi
 
 tidy:

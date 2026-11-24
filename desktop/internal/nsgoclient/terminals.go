@@ -4,8 +4,8 @@ import (
 	"io"
 	"sync"
 
+	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
-	"github.com/frostyard/pocketgo/desktop/workspaceui"
 	"github.com/nsgo-dev/nsgo/base/terminal"
 	"github.com/nsgo-dev/nsgo/core"
 	"github.com/nsgo-dev/nsgo/ui"
