@@ -44,13 +44,7 @@ func (c *client) generalSettings(cx *core.Scope) []ui.SettingsItem {
 		rows = append(rows, ui.SettingsItem{ID: "version", Title: "PocketGo", Description: "App version", Control: body(version)})
 	}
 	field := core.Style{Width: core.Pt(140)}
-	theme := ui.Select[core.Appearance]{Label: "Theme", Style: field, Value: cx.Env().Appearance, Options: []ui.Option[core.Appearance]{
-		{Value: core.AppearanceSystem, Label: "System"}, {Value: core.AppearanceLight, Label: "Light"}, {Value: core.AppearanceDark, Label: "Dark"},
-	}, OnChange: func(mode core.Appearance) {
-		c.cx.SetAppearance(mode)
-		name := map[core.Appearance]string{core.AppearanceSystem: "System", core.AppearanceLight: "Light", core.AppearanceDark: "Dark"}[mode]
-		c.result(c.cx.Storage().SetItem("appearance", name))
-	}}
+	theme := workspaceui.AppearanceChoice{Value: cx.Env().Appearance, OnChange: c.saveAppearance}
 	var sizes []ui.Option[string]
 	for _, s := range state.ZoomLabels() {
 		sizes = append(sizes, ui.Option[string]{Value: s, Label: s})

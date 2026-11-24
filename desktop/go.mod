@@ -6,7 +6,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/egoist/mygo v0.10.0
 	github.com/frostyard/frostui v0.10.0
-	github.com/frostyard/frostui/workspaceui v0.1.0
+	github.com/frostyard/frostui/workspaceui v0.2.0
 	github.com/frostyard/pocketgo/proto v0.0.0
 	github.com/nsgo-dev/nsgo v0.3.0
 	golang.org/x/image v0.48.0

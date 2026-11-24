@@ -3,7 +3,7 @@
 # A bare `make` verifies; formatting stays an explicit `make fmt` or `make check`.
 .DEFAULT_GOAL := verify
 
-.PHONY: linux-client build-mygo run-mygo app-mygo rc
+.PHONY: linux-client build-mygo run-mygo app-mygo rc nsgo-live nsgo-pictures
 HOST_OS := $(shell uname -s)
 HOST_ARCH := $(shell uname -m)
 NSGO_ARCH := $(patsubst x86_64,x64,$(patsubst aarch64,arm64,$(HOST_ARCH)))
@@ -193,6 +193,27 @@ rc:
 snapshot:
 	@mkdir -p "$(abspath $(SNAPSHOT_DIR))"
 	cd desktop && POCKETGO_SNAPSHOT_DIR="$(abspath $(SNAPSHOT_DIR))" $(HEADLESS) $(GOCMD) test ./internal/app -run Snapshot -count=1
+
+# The NSGo client's suite in a real Linux window, and its kept pictures taken
+# again (desktop/internal/nsgoclient/comparison/linux). Xvfb gives the run a
+# screen of one size on every host and keeps its windows off the desktop.
+# GDK_BACKEND=x11 is what keeps them off: without it GTK tries Wayland first,
+# and with WAYLAND_DISPLAY unset it still finds a desktop's compositor at the
+# default socket, wayland-0. GTK reads testdata/xdg's settings file last of
+# the system's: it stops the text caret's blinking. make nsgo-live writes its
+# pictures to desktop/internal/nsgoclient/.nsgo/test/screenshots/linux, which
+# git ignores. Neither target is part of make verify or make ci.
+NSGO_CLIENT := desktop/internal/nsgoclient
+NSGO_LIVE = env -u WAYLAND_DISPLAY GDK_BACKEND=x11 XDG_SESSION_TYPE=x11 \
+	XDG_CONFIG_DIRS=/etc/xdg:$(CURDIR)/$(NSGO_CLIENT)/testdata/xdg \
+	xvfb-run -a -s "-screen 0 1600x1200x24" $(GOCMD) tool nsgo test -target linux
+nsgo-live:
+	@command -v xvfb-run >/dev/null 2>&1 || { echo "make nsgo-live needs xvfb-run (the xvfb package)"; exit 1; }
+	cd $(NSGO_CLIENT) && $(NSGO_LIVE)
+
+nsgo-pictures:
+	@command -v xvfb-run >/dev/null 2>&1 || { echo "make nsgo-pictures needs xvfb-run (the xvfb package)"; exit 1; }
+	cd $(NSGO_CLIENT) && $(NSGO_LIVE) -screenshots comparison/linux
 
 # Build pocketd for the target's architecture and install it there as a
 # systemd user service (deploy/deploy.sh): over ssh with DEPLOY_HOST=USER@HOST,

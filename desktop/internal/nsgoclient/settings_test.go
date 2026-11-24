@@ -17,7 +17,6 @@ func TestSettingsDialog(t *testing.T) {
 	composer := app.Find("label:Message").ID
 	app.Press("label:Settings")
 	app.WaitFor("id:settings-sidebar", 3*time.Second)
-	app.Press("label:Theme")
 	app.Press("text:Dark")
 	app.Screenshot("settings")
 	app.Type("label:Search settings", "approvals")

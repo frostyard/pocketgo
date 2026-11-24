@@ -14,7 +14,6 @@ func TestInboxPullCard(t *testing.T) {
 	s.AddPull(p)
 	app := signedInApp(t, s, 1230, 800)
 	app.Press("label:Settings")
-	app.Press("label:Theme")
 	app.Press("text:Dark")
 	app.Press("label:Close settings")
 	app.WaitFor("text:Checks pending", 3*time.Second)

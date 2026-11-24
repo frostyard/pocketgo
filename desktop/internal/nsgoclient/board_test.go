@@ -29,7 +29,6 @@ func TestWorkBoard(t *testing.T) {
 	}
 	app := signedInApp(t, s, 1230, 800)
 	app.Press("label:Settings")
-	app.Press("label:Theme")
 	app.Press("text:Dark")
 	app.Press("label:Close settings")
 	app.Press("text:Work board")

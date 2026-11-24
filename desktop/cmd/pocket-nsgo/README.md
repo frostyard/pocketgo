@@ -1,6 +1,6 @@
 # PocketGo on NSGo
 
-PocketGo’s Linux and web clients render the same Go component tree. The chat uses NSGo’s floating composer, Markdown messages, collapsible work summaries, tool rows and message actions. The shell changes to a navigation button on narrow windows. Appearance follows the system or a live choice in Settings. Compare the same conversation on [Linux](../../internal/nsgoclient/comparison/linux/conversation.png) and [Chromium](../../internal/nsgoclient/comparison/web/conversation.png).
+PocketGo’s Linux and web clients render the same Go component tree. The chat uses NSGo’s floating composer, Markdown messages, collapsible work summaries, tool rows and message actions. The shell changes to a navigation button on narrow windows. Both draw in the shared Frostyard themes, a dark and a light one, with the bundled Inter font. The **Theme** setting follows the system or shows the light or the dark theme at once, and the choice is kept on the device. Compare the same conversation on [Linux](../../internal/nsgoclient/comparison/linux/conversation.png) and [Chromium](../../internal/nsgoclient/comparison/web/conversation.png).
 
 ## Try both against disposable data
 
@@ -31,18 +31,34 @@ The native client can check and approve a GitHub merge through the existing owne
 
 ## Code and checks
 
-[workspaceui](https://github.com/frostyard/frostui/tree/workspaceui/v0.1.0/workspaceui), the module `github.com/frostyard/frostui/workspaceui` that `desktop/go.mod` pins at v0.1.0, contains reusable shell, layout and chat components. Its public API accepts content and callbacks. [nsgoclient](../../internal/nsgoclient) binds these to PocketGo’s state store, network protocol and platform services. The Linux client uses the application ID `org.frostyard.PocketGo`. See the [release candidate instructions](../../../packaging/README.md) for the Flatpak and deployable web archive.
+[workspaceui](https://github.com/frostyard/frostui/tree/workspaceui/v0.2.0/workspaceui), the module `github.com/frostyard/frostui/workspaceui` that `desktop/go.mod` pins at v0.2.0, contains reusable shell, layout and chat components, and the Frostyard look ([its theme spec](https://github.com/frostyard/frostui/blob/workspaceui/v0.2.0/docs/specs/frostyard-theme.md)). Its public API accepts content and callbacks. The client calls `workspaceui.Apply` once at its root, which sets the themes and registers Inter, and puts its views in `workspaceui.Frame`, which paints the ground and sets the text's color and font. The view inside the frame applies the Zoom setting. The Theme setting is the module's `AppearanceChoice`, a segmented control of System, Light and Dark. The client keeps the choice in its storage under `appearance`, as `System`, `Light` or `Dark`, and shows a saved choice at its start. [nsgoclient](../../internal/nsgoclient) binds these to PocketGo’s state store, network protocol and platform services. The Linux client uses the application ID `org.frostyard.PocketGo`. See the [release candidate instructions](../../../packaging/README.md) for the Flatpak and deployable web archive.
 
 Compare the busy-team scene on [Linux](../../internal/nsgoclient/comparison/linux/busy-team-conversation.png) and [Chromium](../../internal/nsgoclient/comparison/web/busy-team-conversation.png).
 
-The real-target tests run the same interactions in a Linux window and a browser. From `desktop/internal/nsgoclient` run:
+The real-target tests run the same interactions in a Linux window and a browser. From the repository root, `make nsgo-live` runs the suite in a Linux window. It needs `xvfb-run` and is no part of `make verify` or `make ci`.
 
 ```sh
-go tool nsgo test -target linux
+make nsgo-live
+```
+
+The target runs `go tool nsgo test -target linux` in `desktop/internal/nsgoclient` under Xvfb, on a screen of 1600 by 1200, and sets `GDK_BACKEND=x11`. Xvfb alone does not keep the windows off a Wayland desktop: GTK tries Wayland first and finds the desktop's compositor even with `WAYLAND_DISPLAY` unset. A picture shorter than the window its test asked for was taken on the desktop, under a title bar. The target also gives GTK the settings file in `testdata/xdg`, which stops the text caret's blinking. It writes its pictures to `desktop/internal/nsgoclient/.nsgo/test/screenshots/linux`, which git ignores.
+
+For the browser, run the suite from `desktop/internal/nsgoclient`. Set `NSGO_BROWSER` to a Chromium executable if the tool cannot find one.
+
+```sh
 go tool nsgo test -target web
 ```
 
-Use Xvfb for a Linux host without a display. Set `NSGO_BROWSER` to a Chromium executable if the tool cannot find one. The headless Go suite also exercises clipboard attachment injection. The repository’s ordinary checks run with `make verify`.
+The kept pictures in `comparison/linux` and `comparison/web` come from the same tests. Take them again after a change to a view, and look at them:
+
+```sh
+make nsgo-pictures
+cd desktop/internal/nsgoclient && go tool nsgo test -target web -screenshots comparison/web
+```
+
+Each folder keeps 13 pictures. Seven show the dark theme, which their tests choose in Settings: `agent-sessions`, `folder-error-toast`, `inbox-asks`, `inbox-pull-request`, `inbox-review-cards`, `settings` and `work-board`. The other six show the light theme. `busy-team-conversation` can differ between two runs of the same tree, since it holds an animated icon.
+
+The headless Go suite also exercises clipboard attachment injection. The repository’s ordinary checks run with `make verify`.
 
 ## Workspace UI task list
 

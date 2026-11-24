@@ -18,7 +18,6 @@ func TestMixedInboxCards(t *testing.T) {
 	s.AddLesson(lesson)
 	app := signedInApp(t, s, 1230, 980)
 	app.Press("label:Settings")
-	app.Press("label:Theme")
 	app.Press("text:Dark")
 	app.Press("label:Close settings")
 	for _, label := range []string{"Session question", "Tool approval", "Plan review", "New lesson", "Approve plan", "Approve lesson"} {

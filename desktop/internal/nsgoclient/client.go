@@ -58,9 +58,16 @@ func newClient(cx *core.Scope, transport http.RoundTripper) core.Node {
 }
 func buildClient(cx *core.Scope, transport http.RoundTripper, production bool) core.Node {
 	cx.SetTitle("PocketGo")
+	// The Frostyard theme is set even when the platform refuses the bundled
+	// font: the text then shows in the system's sans-serif face.
+	fontErr := workspaceui.Apply(cx)
 	c := &client{cx: cx, revision: core.NewSignal(cx, 0), page: core.NewSignal(cx, "Inbox"),
 		session: core.NewSignal(cx, int64(0)), notices: core.NewSignal(cx, (*workspaceui.Notice)(nil)), filter: core.NewSignal(cx, ""), drafts: map[int64]*core.Signal[string]{}}
 	c.seek = core.NewSignal(cx, int64(0))
+	if fontErr != nil {
+		c.log = append(c.log, "Register the Inter font: "+fontErr.Error())
+	}
+	c.restoreAppearance()
 	c.browserHistory = production && runtime.GOOS == "js"
 	c.fileRoute = core.NewSignal(cx, destination{})
 	c.fileRefresh = core.NewSignal(cx, 0)
@@ -106,9 +113,11 @@ func buildClient(cx *core.Scope, transport http.RoundTripper, production bool) c
 		c.platformAccounts()
 		c.restore()
 	}
-	return core.View{Style: core.Style{TransformOrigin: core.ObjectPosition{X: core.PositionStart, Y: core.PositionStart}}, StyleFunc: func() core.Style {
+	// The frame paints the ground and sets the text's color and font; the
+	// view inside it only zooms.
+	return workspaceui.Frame(core.View{TestID: "zoom", Style: core.Style{TransformOrigin: core.ObjectPosition{X: core.PositionStart, Y: core.PositionStart}}, StyleFunc: func() core.Style {
 		z := c.zoom.Get()
-		return core.Style{Width: core.Pct(100 / z), Height: core.Pct(100 / z), Transform: core.Transform{Scale: z}, Background: cx.Palette().Background, Color: cx.Palette().Text}
+		return core.Style{Width: core.Pct(100 / z), Height: core.Pct(100 / z), Transform: core.Transform{Scale: z}}
 	}, Children: []core.Node{
 		core.Show{When: func() bool { c.revision.Get(); return c.store.SignedIn() }, Then: c.workspace, Else: c.signIn},
 		core.Dynamic(func(*core.Scope) core.Node {
@@ -117,7 +126,7 @@ func buildClient(cx *core.Scope, transport http.RoundTripper, production bool) c
 			}
 			return nil
 		}),
-	}}
+	}})
 }
 
 func (c *client) changed() {

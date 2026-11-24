@@ -32,11 +32,6 @@ func (c *client) credentialJob(work func()) {
 	}()
 }
 func (c *client) restore() {
-	if mode, _ := c.cx.Storage().GetItem("appearance"); mode == "Dark" {
-		c.cx.SetAppearance(core.AppearanceDark)
-	} else if mode == "Light" {
-		c.cx.SetAppearance(core.AppearanceLight)
-	}
 	server, _ := c.cx.Storage().GetItem("connected-server")
 	if server == "" || c.creds == nil {
 		return
