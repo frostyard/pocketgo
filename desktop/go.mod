@@ -59,5 +59,3 @@ tool (
 	github.com/egoist/mygo/cmd/mygo
 	github.com/nsgo-dev/nsgo/cmd/nsgo
 )
-
-replace github.com/frostyard/pocketgo/desktop/workspaceui => ./workspaceui

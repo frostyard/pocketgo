@@ -1,5 +1,5 @@
 # Dependabot (frostyard/core ADR-0071 row B13): the actions the workflows pin,
-# and the three Go modules of go.work (ADR-0007). Each entry has 1 group with
+# and the Go modules of go.work (ADR-0007). Each entry has 1 group with
 # `patterns: ["*"]`, so each entry opens at most 1 version-update PR for each
 # run (ADR-0075). The group has no `applies-to`, so security updates stay 1 PR
 # each. PiG is pinned to an exact commit (ADR-0004): a Dependabot PR that moves
@@ -22,6 +22,7 @@ updates:
       - "/proto"
       - "/service"
       - "/desktop"
+      - "/desktop/workspaceui"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
