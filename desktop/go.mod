@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/egoist/mygo v0.10.0
 	github.com/frostyard/frostui v0.10.0
+	github.com/frostyard/pocketgo/desktop/workspaceui v0.1.0-rc.1
 	github.com/frostyard/pocketgo/proto v0.0.0
 	github.com/nsgo-dev/nsgo v0.3.0
 	golang.org/x/image v0.48.0
@@ -58,3 +59,5 @@ tool (
 	github.com/egoist/mygo/cmd/mygo
 	github.com/nsgo-dev/nsgo/cmd/nsgo
 )
+
+replace github.com/frostyard/pocketgo/desktop/workspaceui => ./workspaceui

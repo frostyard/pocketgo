@@ -15,6 +15,8 @@ Build a second entry point in the desktop module using NSGo. Both native and bro
 
 The existing client provides a reference for parity. Changes to either platform need target testing of input, navigation and host integrations. An independent package can later move to another module without bringing PocketGo's protocol with it.
 
+The package now has its own Go module at `github.com/frostyard/pocketgo/desktop/workspaceui`. Its tags start with `desktop/workspaceui/v`. Other apps can depend on the controls without depending on PocketGo or its protocol. The desktop builds against the same source in its checkout.
+
 ## Alternatives considered
 
 - Two independently maintained frontends would require implementing every interaction twice.
