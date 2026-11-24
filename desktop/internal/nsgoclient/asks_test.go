@@ -20,7 +20,6 @@ func TestInboxAsks(t *testing.T) {
 	s.AddAsk(second)
 	app := signedInApp(t, s, 1230, 800)
 	app.Press("label:Settings")
-	app.Press("label:Theme")
 	app.Press("text:Dark")
 	app.Press("label:Close settings")
 	app.WaitFor("text:2 asks wait for you", 3*time.Second)

@@ -14,7 +14,6 @@ func TestFolderErrorToast(t *testing.T) {
 	s.AddSession(proto.Session{ID: 52349, Title: "Release worktree", Cwd: "/projects/release", State: proto.SessionIdle})
 	app := signedInApp(t, s, 1230, 800)
 	app.Press("label:Settings")
-	app.Press("label:Theme")
 	app.Press("text:Dark")
 	app.Press("label:Close settings")
 	app.Press("text:Release worktree")
