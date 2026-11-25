@@ -41,6 +41,17 @@ func TestASearchShowsItsHitsBySession(t *testing.T) {
 	app.Press(hit)
 	app.WaitFor("label:Message", 5*time.Second)
 	app.WaitFor("text:What do the boot logs say now?", 5*time.Second)
+	// The reply the hit opened shows highlighted, and no other row does;
+	// the highlight goes in a moment. It holds for the NSGo client what
+	// TestTheSearchSnapshot holds for the MyGo client.
+	lit := func(row string) bool { return app.Find("id:transcript-row-"+row).Style.Background != 0 }
+	app.WaitUntil(5*time.Second, func() bool { return app.Exists("id:transcript-row-e101") && lit("e101") })
+	if lit("e100") {
+		t.Error("the row before the hit is highlighted too")
+	}
+	app.Screenshot("search-hit-opened")
+	app.Advance(flashHold + flashFade + time.Second)
+	app.WaitUntil(5*time.Second, func() bool { return !lit("e101") })
 }
 
 // TestTheActivityPlaceShowsEachLinesLevelAndCopies checks the Activity

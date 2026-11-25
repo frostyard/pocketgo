@@ -213,6 +213,19 @@ func (c *client) messageComposer(cx *core.Scope, id int64, view *chat.Conversati
 		}
 		return res.Took
 	}
+	// The palette's Insert prompt opens this message box's picker, as
+	// its Saved prompts button does (state.PromptPicker.Summon).
+	summon := func() {
+		txt, _ := picker.Summon(draft.Get())
+		draft.Set(txt)
+		c.changed()
+	}
+	c.summon = &summon
+	cx.Cleanup(func() {
+		if c.summon == &summon {
+			c.summon = nil
+		}
+	})
 	menu := core.NewMemoFunc(cx, func() state.PromptMenu {
 		c.revision.Get()
 		status, why := c.store.Data.PromptsStatus()
@@ -321,7 +334,7 @@ func (c *client) messageComposer(cx *core.Scope, id int64, view *chat.Conversati
 						attach(f)
 					}
 				})
-			}}, chat.IconAction{Label: "Saved prompts", Icon: lucide.Slash, OnPress: func() { txt, _ := picker.Summon(draft.Get()); draft.Set(txt); c.changed() }}, c.modelControls(cx, id)}}
+			}}, chat.IconAction{Label: "Saved prompts", Icon: lucide.Slash, OnPress: summon}, c.modelControls(cx, id)}}
 		},
 		HasAttachments: func() bool {
 			return problem.Get() != "" || displayPrompts.Get().open || len(refusals.Get()) > 0 || len(attachments.Get()) > 0

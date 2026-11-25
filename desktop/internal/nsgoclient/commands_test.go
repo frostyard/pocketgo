@@ -134,3 +134,28 @@ func (s slowToken) Token(server string) (string, error) {
 	<-s.held
 	return s.keptToken.Token(server)
 }
+
+// TestInsertPromptOpensThePickerOfTheSessionShown checks the palette's
+// Insert prompt: off while no session shows, and in a session it puts the
+// picker's / in the message box, as the box's Saved prompts button does.
+// It holds for the NSGo client what TestThePalettesInsertPromptOpensThePicker
+// holds for the MyGo client.
+func TestInsertPromptOpensThePickerOfTheSessionShown(t *testing.T) {
+	s := pocketdtest.New()
+	s.AddSession(proto.Session{ID: 4, Title: "Editor", Cwd: "/work", State: proto.SessionIdle})
+	app := signedInApp(t, s, 1230, 800)
+	app.Key("mod+k")
+	app.WaitFor("text:Insert prompt…", 5*time.Second)
+	app.Find("text:No message box takes a prompt now")
+	app.Key("escape")
+	app.Press("sidebar-panel >> text:Editor")
+	app.WaitFor("label:Message", 5*time.Second)
+	app.Type("label:Message", "Keep this")
+	app.Key("mod+k")
+	app.WaitFor("text:Insert prompt…", 5*time.Second)
+	if app.Exists("text:No message box takes a prompt now") {
+		t.Error("Insert prompt is off in a session's message box")
+	}
+	app.Press("text:Insert prompt…")
+	app.WaitUntil(5*time.Second, func() bool { return app.Find("label:Message").Text == "/\nKeep this" })
+}

@@ -71,6 +71,9 @@ type client struct {
 	// the title, and titleDraft what its field shows.
 	titleEdit  state.TitleEdit
 	titleDraft *core.Signal[string]
+	// summon opens the saved prompts' picker in the shown session's
+	// message box, nil while no message box takes a prompt.
+	summon *func()
 	// signInProblem is what the sign-in screen says went wrong: a field
 	// missing, a sign-in that failed, why pocketd signed this device out,
 	// and a token the keyring would not forget. "" says nothing.
@@ -239,6 +242,16 @@ func (c *client) navigate(id string) {
 	c.goTo(destination{page: id})
 }
 
+// dimmed is how much of a row shows that the owner saw idle long ago, and
+// tagRoom the most width a row's tag takes.
+// tagYield is how much of a row's lack of room its tag and mark take,
+// against the title's 1.
+const (
+	dimmed   = 0.6
+	tagRoom  = 88
+	tagYield = 0.2
+)
+
 func sessionName(s proto.Session) string {
 	if s.Title != "" {
 		return s.Title
@@ -296,6 +309,8 @@ func (c *client) sections() []ui.SidebarSection {
 	}
 	sections := []ui.SidebarSection{{Title: "Workspace", Items: items}}
 	tree := c.store.Data.Sidebar(state.SidebarOptions{Seen: c.prefs.Seen, Pinned: c.prefs.Pinned, Filter: c.filter.Get(), Now: time.Now()})
+	// under is the name of the agent's group whose rows are being added.
+	under := ""
 	var add func(*ui.SidebarSection, state.SidebarKey, int, bool)
 	add = func(section *ui.SidebarSection, k state.SidebarKey, depth int, last bool) {
 		switch k.Kind {
@@ -342,40 +357,69 @@ func (c *client) sections() []ui.SidebarSection {
 			}
 			var trailing core.Node
 			if len(marks) > 0 {
-				trailing = core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceXS, FlexShrink: 0}, Children: marks}
+				// The title gives way before the tag does, as in the MyGo
+				// client's rows, and neither goes entirely.
+				trailing = core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceXS, FlexShrink: tagYield, MinWidth: core.Pt(0)}, Children: marks}
 			}
 			item.Content = workspaceui.BranchLabel{Text: name, Icon: lucide.Users, Expanded: item.Expanded, Trailing: trailing}
 			section.Items = append(section.Items, item)
 			if item.Expanded != nil && item.Expanded() {
+				under = name
 				for i, kid := range children {
 					add(section, kid, depth+1, i == len(children)-1)
 				}
+				under = ""
 			}
 		case state.SidebarSession:
 			r, _ := tree.Session(k.Session)
 			label := r.Title
-			if r.Badge != "" {
-				label += " · " + r.Badge
-			}
 			item := ui.SidebarItem{ID: fmt.Sprintf("session/%d", r.ID), Text: label, Icon: lucide.MessageSquare}
-			var status core.Node
+			// Its tag names the agent it belongs to, where its title and
+			// its place do not (state.SessionRow.Tag): a row under its
+			// agent's own group has no tag, which would say the group's
+			// name again.
+			var marks []core.Node
+			if r.Tag != "" && r.Tag != under {
+				item.Text += ", " + r.Tag
+				marks = append(marks, core.Func(func(cx *core.Scope) core.Node {
+					return core.Text{Content: r.Tag, MaxLines: 1, Style: ui.TypeCaption.Merge(core.Style{FlexShrink: 1, MinWidth: core.Pt(0), MaxWidth: core.Pt(tagRoom)}), StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}
+				}))
+			}
 			switch r.Mark {
 			case state.MarkRunning:
 				item.Text += ", running"
-				status = ui.Badge{Text: "Running", Variant: ui.BadgeAccent}
+				marks = append(marks, ui.Badge{Text: "Running", Variant: ui.BadgeAccent})
 			case state.MarkWaiting:
-				// What it waits for, when the client knows.
+				// What it waits for, when the client knows, and how
+				// many approvals wait, or that a question does
+				// (state.SessionRow.Badge).
 				item.Text += ", waiting"
 				if r.Waits != "" {
 					item.Text += ": " + r.Waits
 				}
-				status = ui.Badge{Text: "Waiting", Variant: ui.BadgeWarn}
+				text := "Waiting"
+				switch {
+				case r.Badge == state.QuestionBadge:
+					text = "Question"
+				case r.Badge != "":
+					text += " " + r.Badge
+				}
+				marks = append(marks, ui.Badge{Text: text, Variant: ui.BadgeWarn})
 			case state.MarkNew:
 				item.Text += ", finished, not read"
-				status = ui.Badge{Text: "New", Variant: ui.BadgeSuccess}
+				marks = append(marks, ui.Badge{Text: "New", Variant: ui.BadgeSuccess})
 			}
-			if depth > 0 || status != nil {
-				item.Content = workspaceui.ChildLabel{Text: label, Icon: item.Icon, Depth: depth, Last: last, Trailing: status}
+			var trailing core.Node
+			if len(marks) > 0 {
+				trailing = core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceXS, FlexShrink: 0}, Children: marks}
+			}
+			if depth > 0 || trailing != nil || r.Dim {
+				item.Content = workspaceui.ChildLabel{Text: label, Icon: item.Icon, Depth: depth, Last: last, Trailing: trailing}
+			}
+			// A session the owner saw idle long ago steps back
+			// (state.SessionRow.Dim).
+			if r.Dim {
+				item.Content = core.View{TestID: fmt.Sprintf("dim-session-%d", r.ID), Style: core.Style{Direction: core.Row, FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(0), Opacity: core.Alpha(dimmed)}, Children: []core.Node{item.Content}}
 			}
 			// The row's menu pins and renames.
 			item.Menu = c.sessionMenu(k)
