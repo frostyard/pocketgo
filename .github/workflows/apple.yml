@@ -1,0 +1,86 @@
+# The NSGo client on Apple's platforms (ADR-0071, the plan's Phase 6): it is
+# built for macOS and for the iOS simulator, and its suite runs in a macOS
+# window and in the simulator. No Linux machine can do this: Go links for
+# them through Xcode's tools. Nothing here is a required check: it shows
+# what the client does there, while the port is made. Actions use full
+# commit SHA pins, the token has only contents read, and checkout does not
+# persist credentials (ADR-0021).
+name: Apple targets
+
+on:
+  pull_request:
+    paths:
+      - desktop/**
+      - proto/**
+      - go.work
+      - .github/workflows/apple.yml
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: apple-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS (build, suite in a window)
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            go.work
+            **/go.mod
+            **/go.sum
+      - name: What this machine builds and runs
+        working-directory: desktop/cmd/pocket-nsgo
+        run: go tool nsgo doctor
+      - name: Build the macOS app
+        working-directory: desktop/cmd/pocket-nsgo
+        run: go tool nsgo build -installers=false -target macos_arm64 -output "$RUNNER_TEMP/pocketgo-macos"
+      - name: List what the build made
+        run: find "$RUNNER_TEMP/pocketgo-macos" -maxdepth 3
+      - name: Run the client's suite in a macOS window
+        working-directory: desktop/internal/nsgoclient
+        run: go tool nsgo test -target macos
+
+  ios-simulator:
+    name: iOS simulator (build, the phone's tests)
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            go.work
+            **/go.mod
+            **/go.sum
+      - name: What this machine builds and runs
+        working-directory: desktop/cmd/pocket-nsgo
+        run: go tool nsgo doctor
+      - name: Build the app for the iOS simulator
+        working-directory: desktop/cmd/pocket-nsgo
+        run: go tool nsgo build -installers=false -target ios_simulator -output "$RUNNER_TEMP/pocketgo-ios"
+      - name: List what the build made
+        run: find "$RUNNER_TEMP/pocketgo-ios" -maxdepth 3
+      # The suite is a desktop's: in a phone's window its tests look for
+      # the desktop's layout (the first run here: 56 of the first 58
+      # failed). The phone's own tests are the ones that say something of
+      # a phone.
+      - name: Run the phone's tests in the iOS simulator
+        working-directory: desktop/internal/nsgoclient
+        run: go tool nsgo test -target ios_simulator -run '^TestAPhone'

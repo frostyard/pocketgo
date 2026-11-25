@@ -20,16 +20,16 @@ import (
 func TestTheCommandsTheMyGoClientHad(t *testing.T) {
 	s := pocketdtest.New()
 	app := signedInApp(t, s, 1230, 800)
-	app.Key("ctrl+shift+f")
+	app.Key("mod+shift+f")
 	app.WaitFor("text:Search every session", 5*time.Second)
-	app.Key("ctrl+shift+p")
+	app.Key("mod+shift+p")
 	app.WaitFor("text:Stop run", 5*time.Second)
 	app.Find("text:Sign out")
 	app.Find("text:Zoom in")
 	app.Press("text:About PocketGo")
 	app.WaitFor("text:The client of pocketd, protocol version "+strconv.Itoa(proto.Version)+".", 5*time.Second)
 	app.Press("role:button Close")
-	app.Key("ctrl+k")
+	app.Key("mod+k")
 	app.WaitFor("text:Sign out", 5*time.Second)
 	app.Press("text:Sign out")
 	app.WaitFor("role:alertdialog", 5*time.Second)
@@ -45,7 +45,7 @@ func TestStopRunDoesNothingWithNoRun(t *testing.T) {
 	app := signedInApp(t, s, 1230, 800)
 	app.Press("sidebar-panel >> text:Editor")
 	app.WaitFor("label:Message", 5*time.Second)
-	app.Key("ctrl+.")
+	app.Key("mod+.")
 	app.Advance(time.Second)
 	if n := len(s.RequestsTo("POST", "/v1/sessions/4/abort")); n != 0 {
 		t.Errorf("Stop run with no run sent %d aborts", n)
@@ -72,7 +72,7 @@ func TestTheZoomKeysWorkOnTheSignInScreen(t *testing.T) {
 	app := nsgotest.Start(t, func(cx *core.Scope) core.Node { return newClient(cx, pocketdtest.New().Transport()) }, nsgotest.Size(1230, 800))
 	app.WaitFor("label:Device token", 5*time.Second)
 	before := app.Find("id:zoom").Bounds().Size.Width
-	app.Key("ctrl+=")
+	app.Key("mod+=")
 	app.WaitUntil(5*time.Second, func() bool { return app.Find("id:zoom").Bounds().Size.Width < before })
 	if kept, _ := app.Storage().GetItem("zoom"); kept == "" || kept == "1" {
 		t.Errorf("the zoom kept after Ctrl+= is %q", kept)
