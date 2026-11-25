@@ -985,7 +985,9 @@ var ErrWithdrawn = fmt.Errorf("%w: the ask was withdrawn", ErrConflict)
 // returns the answered ask and replayed; an ask answered already by another
 // request is ErrConflict, and one withdrawn is ErrWithdrawn, with the ask
 // as it is. Whichever of the answer and the withdrawal commits first
-// stands (ADR-0037).
+// stands (ADR-0037). A new answer files its note to the asking thread's
+// supervisor in the same transaction (answerNote, ADR-0071); a replay
+// files nothing.
 func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by string) (row AskRow, replayed bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1017,11 +1019,12 @@ func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by 
 		}
 		// An answer changes the gate of the plan whose thread asked
 		// (ADR-0020): the plan changed with it, and one it clears may let
-		// the supervisor deliver again.
+		// the supervisor deliver again, which the answer's note says.
 		if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE thread_id = (SELECT thread_id FROM asks WHERE id = ?)`, now, id); err != nil {
 			return AskRow{}, false, err
 		}
-		if err := askCleared(ctx, tx, id, false, now); err != nil {
+		// The thread's supervisor hears of the answer, once (ADR-0071).
+		if err := answerNote(ctx, tx, id, now); err != nil {
 			return AskRow{}, false, err
 		}
 	}

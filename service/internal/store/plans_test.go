@@ -813,9 +813,15 @@ func TestATaskCloseBehindAnOpenAskWaitsForTheAnswer(t *testing.T) {
 	if _, _, err := s.AnswerAsk(ctx, "a", asks[0].ID, "No.", "laptop"); err != nil {
 		t.Fatal(err)
 	}
-	note, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":cleared:"+asks[0].Key)
-	if err != nil || !strings.Contains(note.Text, "- t2 · Sign") || !strings.Contains(note.Text, "- t3 · Docs") {
-		t.Fatalf("the cleared note %+v %v", note, err)
+	// The answer's own note to the supervisor names every ready task, and
+	// no second note is filed for it (ADR-0071).
+	note, err := s.Note(ctx, team.AnsweredKey(facts.Thread.Owner, asks[0].Key, "No."))
+	if err != nil || note.SessionID != 1 || !strings.Contains(note.Text, "has no open question now: its ready tasks may go") ||
+		!strings.Contains(note.Text, "- t2 · Sign") || !strings.Contains(note.Text, "- t3 · Docs") {
+		t.Fatalf("the answer's note %+v %v", note, err)
+	}
+	if _, err := s.Note(ctx, "plan:"+facts.Thread.Owner+":cleared:"+asks[0].Key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a second note for the answer: %v", err)
 	}
 }
 

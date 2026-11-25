@@ -2134,9 +2134,12 @@ func (s *Server) publishAsk(row store.AskRow) {
 	if row.Plan != 0 {
 		// A plan whose read fails here goes at the next pass (publishPlan).
 		s.publishPlan(context.Background(), row.Plan)
-		if row.State == store.AskAnswered {
-			s.deliverLater() // its answer may have cleared the plan's gate (store.askCleared)
-		}
+	}
+	if row.State == store.AskAnswered {
+		// Its answer filed a note to the thread's supervisor, which names the
+		// plan's ready tasks when it cleared its gate (store.answerNote,
+		// ADR-0071).
+		s.deliverLater()
 	}
 }
 

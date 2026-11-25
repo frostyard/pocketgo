@@ -988,13 +988,14 @@ func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) er
 	return nil
 }
 
-// askCleared tells the plan's supervisor, once, when the answer to ask id
-// clears the last open ask of an approved plan that has ready tasks: a
-// delivery the gate refused for that ask may go now (Codex review of #25,
-// round 2). A plan in drafting or review tells nobody: its lead writes the
-// answer in, and the owner approves it later. withdrawn says a
-// supervisor's message withdrew the ask instead (ADR-0037).
-func askCleared(ctx context.Context, tx *sql.Tx, id int64, withdrawn bool, now int64) error {
+// askCleared tells the plan's supervisor, once, when a supervisor's
+// message withdrew ask id (ADR-0037) and so cleared the last open ask of
+// an approved plan that has ready tasks: a delivery the gate refused for
+// that ask may go now (Codex review of #25, round 2). A plan in drafting
+// or review tells nobody: its lead goes on, and the owner approves it
+// later. The owner's answer that clears such a gate tells the supervisor
+// in the answer's own note (answerNote, ADR-0071).
+func askCleared(ctx context.Context, tx *sql.Tx, id int64, now int64) error {
 	ask, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, id).Scan)
 	if err != nil {
 		return err
@@ -1010,24 +1011,74 @@ func askCleared(ctx context.Context, tx *sql.Tx, id int64, withdrawn bool, now i
 	if err != nil {
 		return err
 	}
-	if (facts.Plan.State != team.PlanApproved && facts.Plan.State != team.PlanBuilding) || len(facts.Gate()) > 0 || facts.Graph == nil {
+	ready, cleared := gateCleared(facts)
+	if !cleared || len(ready) == 0 {
 		return nil
-	}
-	var ready []string
-	for _, t := range facts.Graph.Tasks {
-		if t.State == team.TaskReady {
-			ready = append(ready, t.ID)
-		}
-	}
-	if len(ready) == 0 {
-		return nil
-	}
-	note := team.ClearedNote
-	if withdrawn {
-		note = team.WithdrawnNote
 	}
 	return insertNote(ctx, tx, NoteRow{Key: "plan:" + facts.Thread.Owner + ":cleared:" + ask.Key, SessionID: facts.Plan.SupervisorSession,
-		Text: note(plan, ask.ID, team.TasksNamed(facts.Graph.Tasks, ready))}, now)
+		Text: team.WithdrawnNote(plan, ask.ID, ready)}, now)
+}
+
+// gateCleared says an approved plan has nothing in its gate, as facts
+// read it, and its tasks the supervisor may deliver then: an approved or
+// building plan with its graph and an empty gate.
+func gateCleared(facts PlanFacts) (ready []team.Task, cleared bool) {
+	if (facts.Plan.State != team.PlanApproved && facts.Plan.State != team.PlanBuilding) || len(facts.Gate()) > 0 || facts.Graph == nil {
+		return nil, false
+	}
+	var ids []string
+	for _, t := range facts.Graph.Tasks {
+		if t.State == team.TaskReady {
+			ids = append(ids, t.ID)
+		}
+	}
+	return team.TasksNamed(facts.Graph.Tasks, ids), true
+}
+
+// answerNote tells the asking thread's supervisor, once, of the owner's
+// answer to ask id, in the transaction that records it (ADR-0071): a note
+// to the session that delegated the thread, keyed by the thread's owner,
+// the ask's key and a digest of the answer (team.AnsweredKey), which the
+// outbox places as it places every note. A thread with no such session,
+// or whose delegating session asked itself, gets none. A closed thread's
+// supervisor is told too: its specialist cannot report the answer. When
+// the answer clears an approved plan's gate, the note names the plan's
+// ready tasks: no other note is filed for the answer.
+func answerNote(ctx context.Context, tx *sql.Tx, id, now int64) error {
+	ask, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, id).Scan)
+	if err != nil {
+		return err
+	}
+	thread, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, ask.ThreadID).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if thread.SupervisorSession == 0 || thread.SupervisorSession == ask.SessionID {
+		return nil
+	}
+	open, err := queryRows(ctx, tx, func(scan func(...any) error) (int64, error) {
+		var n int64
+		return n, scan(&n)
+	}, `SELECT id FROM asks WHERE thread_id = ? AND state = ? ORDER BY id`, thread.ID, AskOpen)
+	if err != nil {
+		return err
+	}
+	a := team.Answered{Thread: thread.ID, Title: thread.Title, Agent: thread.Agent, Closed: thread.State == ThreadClosed,
+		Ask: ask.ID, Question: ask.Question, Answer: ask.Answer, Open: open}
+	if thread.IsPlanThread() {
+		facts, err := loadPlanFacts(ctx, tx, thread.Plan)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if err == nil {
+			ready, cleared := gateCleared(facts)
+			a.Plan = &team.AnsweredPlan{ID: facts.Plan.ID, State: facts.Plan.State, Cleared: cleared, Ready: ready}
+		}
+	}
+	return insertNote(ctx, tx, NoteRow{Key: team.AnsweredKey(thread.Owner, ask.Key, ask.Answer), SessionID: thread.SupervisorSession,
+		Text: team.AnsweredNote(a)}, now)
 }
 
 // stopConsults stops plan's consults that start or run, with why, and
