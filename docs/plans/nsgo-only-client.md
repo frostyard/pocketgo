@@ -25,7 +25,7 @@ Built and merged on 2026-11-24 and 2026-11-25, each with its tests in `desktop/i
 | 17. The Activity place | #184 | |
 | The terminal's clipboard | #177: 3 tests | |
 | The preferences' move | #182 | not run on a real `settings.json` with a real keyring |
-| A phone's and a tablet's rules | #187, #190: the bar of tabs, a session over its tab, More, the board's order, no Terminal and no Quit on iOS, the held GitHub refresh, tested headless with a phone's and a tablet's environment | the touch size: the composer's buttons measure 26 points in a phone's window, and NSGo's `chat.IconAction` takes no size from the app; a tab chosen in the simulator (Phase 6's first runs); everything on a real device |
+| A phone's and a tablet's rules | #187, #190: the bar of tabs, a session over its tab, More, the board's order, no Terminal and no Quit on iOS, the held GitHub refresh, tested headless with a phone's and a tablet's environment | the touch size: the composer's buttons measure 26 points in a phone's window, and NSGo's `chat.IconAction` takes no size from the app; a long press on a session's row in the simulator, which opened the session and no menu (Phase 6's later runs); everything on a real device |
 | What a removal must change first | #183: the state tests' loop | the Makefile, CI, the lint rules and 2 script tests still name MyGo |
 
 **The owner answered the 6 design questions on 2026-11-25,** each from the 2 clients' pictures side by side (the table of choices under [What the NSGo client lacks](#what-the-nsgo-client-lacks)). Until then the NSGo client's own layout was kept in each. New session as a dialog, and pin and rename on the row and the title, are built (#195). The board's groups, the report on its card and a plan on its thread's card are built too (#197). The palette stays as it is.
@@ -123,6 +123,11 @@ Read from `desktop/internal/app` (the MyGo client: 8,540 lines in 26 files, and 
   - **iOS simulator:** `nsgo build -target ios_simulator` made the app (25.7 MB), and it ran in an iPhone 16 simulator, 393 by 852. The client signed in to the test server and drew the compact window: "Inbox" in the top bar, the Inbox ("Nothing waits for you"; with an ask, "1 ask waits for you" and its card, whose button is 44 high), and the system's bar of tabs along the bottom.
   - The client's suite is a desktop's: of its first 58 tests in the simulator 56 failed, looking for the desktop's layout, so the job runs the phone's tests alone (`TestAPhoneGoesByABarOfTabs`, `TestAPhonesMoreHoldsWhatHasNoTab`, `TestAPhonesBoardKeepsWhatHoldsSomethingAboveTheThreads`). Those 3 fail there: after the test's choice of the Board or the More tab the window still showed the Inbox, and the bar's badge is not in the test host's model on a device. Whether the choice did not reach the app or the app did not follow it is not known.
   - **Not run:** an iPad's simulator; a real iPhone, iPad or Mac; a real pocketd; signing; the Terminal on iOS.
+- **Later runs (2026-11-25), which correct the first.** The same workflow, on #202's head (run 45649773829):
+  - **The 3 phone tests did not fail at a tab's choice.** Each timed out in its helper, at a wait for the bar of tabs after the sign-in: nsgotest's `WaitFor` holds for exactly 1 view, and on a device 2 have the bar's id, the shell's and the system's bar in it. The first runs' sentence above, that the window still showed the Inbox after a tab's choice, misread that: no test reached a choice. #202 waits for the id's presence.
+  - **iOS simulator, with that wait:** 2 passed, 1 failed, 2 skipped. `TestAPhoneGoesByABarOfTabs` and `TestAPhonesMoreHoldsWhatHasNoTab` pass, so a tab's choice by the test host reaches the client and the client follows it. `TestAPhonesBoardKeepsWhatHoldsSomethingAboveTheThreads` and `TestAPhoneHoldsTheGitHubRefreshInTheBackground` are skipped; the log gives no reason. `TestAPhoneRenamesBesideTheTitle` fails: after the test host's long press on a session's row, the window showed that session open and no menu. Whether a finger's long press opens the row's menu on iOS is not known.
+  - **The composer's buttons are 26 by 26 in the simulator's window,** as headless: under the 44 of `state.MinTarget`.
+  - **macOS:** 140 passed, 1 failed, 8 skipped. `TestOnlyWebAndMailLinksOpenFromATerminal` passes since #196: the test held Control and Command, and a press with Control held is a secondary click on a Mac, which opened the terminal's menu. `TestSettingsDialog` still fails: Settings, opened by Cmd+comma, is still open 3 s after Escape. The cause is not known.
 - **Done when:** on the owner's Mac, the NSGo client runs as a macOS app and in the iPad and iPhone simulators, signs in over HTTPS, and the owner answers an ask and sends a message in each.
 
 ## Phase 7 — MyGo is removed, and the first release (medium)
@@ -139,7 +144,7 @@ Read from `desktop/internal/app` (the MyGo client: 8,540 lines in 26 files, and 
 ## Open questions
 
 - **Which of the 17 items are not wanted?** The owner strikes them; an item not struck is built.
-- **NSGo's iOS and macOS targets:** whether they build and run PocketGo is not known. Phase 6's first change finds out, on the owner's Mac.
+- **NSGo's iOS and macOS targets:** they build PocketGo, and its tests run in a macOS window and an iPhone's simulator on a CI runner (Phase 6's runs). The owner's Mac, an iPad's simulator and a real device are not tried.
 
 ## References
 
