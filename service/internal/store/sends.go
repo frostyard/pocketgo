@@ -188,7 +188,7 @@ func sendReopens(ctx context.Context, tx *sql.Tx, key string, id, now int64) (Se
 		return SendNoted{}, err
 	}
 	last := change.Withdrawn[len(change.Withdrawn)-1]
-	return change, askCleared(ctx, tx, last.ID, true, now)
+	return change, askCleared(ctx, tx, last.ID, now)
 }
 
 // WithdrawnAsk is an ask a supervisor's message withdrew, as team_send's

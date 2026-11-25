@@ -819,15 +819,11 @@ func TasksNamed(tasks []TaskFacts, ids []string) []Task {
 	return out
 }
 
-// ClearedNote is the supervisor's message when the owner's answer clears
-// the last open ask of an approved plan with ready tasks.
-func ClearedNote(plan, ask int64, ready []Task) string {
-	return fmt.Sprintf("[P%d · A%d answered] Plan P%d has no open question now: its ready tasks may go. %s",
-		plan, ask, plan, deliverLine(plan, ready))
-}
-
-// WithdrawnNote is ClearedNote when a supervisor's message withdrew the
-// last open ask, ask, as it unblocked the plan's thread (ADR-0037).
+// WithdrawnNote is the supervisor's message when a supervisor's message
+// withdrew the last open ask, ask, of an approved plan with ready tasks,
+// as it unblocked the plan's thread (ADR-0037). The owner's answer that
+// clears such a gate names the ready tasks in its own note instead
+// (AnsweredNote, ADR-0072).
 func WithdrawnNote(plan, ask int64, ready []Task) string {
 	return fmt.Sprintf("[P%d · A%d withdrawn] A supervisor's message unblocked the plan's thread, so plan P%d has no open question now: its ready tasks may go. %s",
 		plan, ask, plan, deliverLine(plan, ready))

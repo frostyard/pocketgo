@@ -985,15 +985,40 @@ var ErrWithdrawn = fmt.Errorf("%w: the ask was withdrawn", ErrConflict)
 // returns the answered ask and replayed; an ask answered already by another
 // request is ErrConflict, and one withdrawn is ErrWithdrawn, with the ask
 // as it is. Whichever of the answer and the withdrawal commits first
-// stands (ADR-0037).
+// stands (ADR-0037). A new answer files its note to the asking thread's
+// supervisor in the same transaction (answerNote, ADR-0072); a replay
+// files nothing.
 func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by string) (row AskRow, replayed bool, err error) {
+	return s.AnswerAskWith(ctx, key, id, answer, by, AnswerFacts{})
+}
+
+// AnswerFacts are what the caller read of the asking thread before an
+// answer, under the outbox's lock it holds through the answer (ADR-0072).
+type AnswerFacts struct {
+	// ReopenHeld says the noting of a message already in the closed
+	// thread's specialist's transcript found its reopen held back by the
+	// close's worker stop (ErrWorkerStopping, ADR-0061): it reopens the
+	// thread at a later noting, so the answer's note says so, and sends the
+	// supervisor to no second message (Codex review of #175, rounds 2 and
+	// 3). The caller holds the outbox's lock from that noting through the
+	// answer, so no noting reopens the thread meanwhile.
+	ReopenHeld bool
+}
+
+// AnswerKind is the kind of the request that answers ask id: a request id
+// is an answer to one ask.
+func AnswerKind(id int64) string { return "answer:" + strconv.FormatInt(id, 10) }
+
+// AnswerAskWith is AnswerAsk with what the caller read of the asking
+// thread, which its note to the supervisor tells.
+func (s *Store) AnswerAskWith(ctx context.Context, key string, id int64, answer, by string, facts AnswerFacts) (row AskRow, replayed bool, err error) {
 	now := s.millis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return AskRow{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	_, existed, err := claimRequest(ctx, tx, key, "answer:"+strconv.FormatInt(id, 10), now)
+	_, existed, err := claimRequest(ctx, tx, key, AnswerKind(id), now)
 	if err != nil {
 		return AskRow{}, false, err
 	}
@@ -1017,11 +1042,12 @@ func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by 
 		}
 		// An answer changes the gate of the plan whose thread asked
 		// (ADR-0020): the plan changed with it, and one it clears may let
-		// the supervisor deliver again.
+		// the supervisor deliver again, which the answer's note says.
 		if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE thread_id = (SELECT thread_id FROM asks WHERE id = ?)`, now, id); err != nil {
 			return AskRow{}, false, err
 		}
-		if err := askCleared(ctx, tx, id, false, now); err != nil {
+		// The thread's supervisor hears of the answer, once (ADR-0072).
+		if err := answerNote(ctx, tx, id, now, facts); err != nil {
 			return AskRow{}, false, err
 		}
 	}

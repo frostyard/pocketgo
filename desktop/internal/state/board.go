@@ -513,6 +513,10 @@ var Movers = []Mover{MoverOwner, MoverSpecialist, MoverSupervisor, MoverNobody}
 // Else a thread is its specialist's while it starts or is open, and its
 // supervisor's once the specialist reported it done or blocked. A state this client does
 // not know goes to the supervisor, who has the thread's report.
+//
+// team.Board.NextMover in service/internal/team mirrors it, rule for rule,
+// for the supervisor's team_threads: a change to one is made to the other
+// (ADR-0072).
 func (d *Data) NextMover(t proto.Thread) Mover {
 	if t.State == proto.ThreadClosed {
 		return MoverNobody

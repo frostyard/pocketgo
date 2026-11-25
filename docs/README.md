@@ -84,6 +84,7 @@ Docs are split by the question they answer:
 - [0069 — Browse a session's working folder](adr/0069-browse-a-sessions-working-folder.md)
 - [0070 — Ship NSGo as the default Linux client](adr/0070-ship-nsgo-as-the-default-linux-client.md)
 - [0071 — Make the NSGo client the only client](adr/0071-make-the-nsgo-client-the-only-client.md)
+- [0072 — Let the supervisor read the threads, and hear each answer to an ask, in code](adr/0072-let-the-supervisor-read-the-threads-and-hear-each-answer-in-code.md)
 
 ### Org-wide decisions
 
