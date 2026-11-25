@@ -83,8 +83,8 @@ Docs are split by the question they answer:
 - [0068 — Build a shared NSGo client beside the desktop client](adr/0068-build-a-shared-nsgo-client-beside-the-desktop-client.md)
 - [0069 — Browse a session's working folder](adr/0069-browse-a-sessions-working-folder.md)
 - [0070 — Ship NSGo as the default Linux client](adr/0070-ship-nsgo-as-the-default-linux-client.md)
-- [0071 — Let the supervisor read the threads, and hear each answer to an ask, in code](adr/0071-let-the-supervisor-read-the-threads-and-hear-each-answer-in-code.md)
-- [0072 — Watch a pull request in code and tell the session once](adr/0072-watch-a-pull-request-in-code-and-tell-the-session-once.md)
+- [0072 — Let the supervisor read the threads, and hear each answer to an ask, in code](adr/0072-let-the-supervisor-read-the-threads-and-hear-each-answer-in-code.md)
+- [0073 — Watch a pull request in code and tell the session once](adr/0073-watch-a-pull-request-in-code-and-tell-the-session-once.md)
 
 ### Org-wide decisions
 

@@ -1080,7 +1080,7 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 	}
 	idle := false
 	if strings.HasPrefix(row.Key, store.WatchNotePrefix) {
-		// A watch's note starts its session's next run (ADR-0072): it goes
+		// A watch's note starts its session's next run (ADR-0073): it goes
 		// only to an idle session, never into PiG's queue, and only while
 		// the session's thread, if any, is open, read right before it is
 		// submitted. A close drops it in its transaction, and no queued

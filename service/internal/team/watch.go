@@ -11,7 +11,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
-// Watches (ADR-0072): a session asks pocketd, with team_watch, to tell it
+// Watches (ADR-0073): a session asks pocketd, with team_watch, to tell it
 // when a pull request reaches a condition. The call returns at once, the
 // session ends its run, and pocketd checks the pull request in its pull
 // rounds, in code. When the condition holds, when the pull request can no
@@ -534,12 +534,12 @@ func WatchCancelledText(id int64, live bool, outcome string) string {
 const WatchesOff = "pocketd reads no pull requests in rounds (-pr-every 0), so nothing would check a watch: none can be kept"
 
 // WatchGuide tells a thread's specialist how to wait for CI, in its brief
-// (ADR-0072).
+// (ADR-0073).
 const WatchGuide = "To wait for CI, open the pull request and call team_watch with action add, the pull request and until checks. " +
 	WatchReceipt + " Never sleep or poll for it."
 
 // WatchRoster tells a supervisor it may watch a merge, in its roster
-// (ADR-0072).
+// (ADR-0073).
 const WatchRoster = "When work should follow a pull request's merge, watch it with team_watch until merged. Only an answer that starts with \"Watching W\" " +
 	"promises a message: end your run then. pocketd tells you once it merged, that it closed without merging, or that the watch's time ran out; " +
 	"delegate the follow-up only when pocketd says it merged, never on a close or an expiry. Any other answer comes with no message: act on it now. "

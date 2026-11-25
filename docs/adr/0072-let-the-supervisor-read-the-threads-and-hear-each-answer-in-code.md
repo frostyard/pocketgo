@@ -1,4 +1,4 @@
-# 0071 — Let the supervisor read the threads, and hear each answer to an ask, in code
+# 0072 — Let the supervisor read the threads, and hear each answer to an ask, in code
 
 - **Status:** Accepted
 - **Date:** 2026-11-24

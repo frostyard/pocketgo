@@ -11,7 +11,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// Watches (ADR-0072): a session's watch of a pull request, kept until the
+// Watches (ADR-0073): a session's watch of a pull request, kept until the
 // pull request reaches its condition, can no longer reach it, or its time
 // is up; then its end files one note to the session, in the transaction
 // that ends it (EndWatch), which the outbox places.
@@ -249,7 +249,7 @@ func (s *Store) CancelWatch(ctx context.Context, id, session int64) (WatchRow, b
 
 // endThreadWatches ends the live watches of thread's specialist session
 // with no note, and drops each note an ended one filed that is not sent,
-// in the transaction that closes the thread (ADR-0072): a closed thread's
+// in the transaction that closes the thread (ADR-0073): a closed thread's
 // specialist starts no run for a watch, as a close drops what goes only
 // while its thread is open (dropAtClose).
 func endThreadWatches(ctx context.Context, tx *sql.Tx, thread, now int64) error {

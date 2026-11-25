@@ -646,7 +646,7 @@ var migrations = []string{
 		AND thread_id IN (SELECT id FROM threads WHERE state = 'closed')
 		AND (substr(key, 1, 13) = 'worker-reply:' OR substr(key, 1, 11) = 'worker-msg:' OR substr(key, 1, 12) = 'shift-round:'
 			OR substr(key, 1, 14) = 'shift-summary:' OR substr(key, 1, 10) = 'team-send:');`,
-	// Version 26: a session's watches of pull requests (ADR-0072). A watch
+	// Version 26: a session's watches of pull requests (ADR-0073). A watch
 	// is keyed by the team_watch call that made it, and its random owner
 	// keys the one note its end files (WatchRow.NoteKey). github_id is
 	// GitHub's own id of the pull request the add read, which no rename

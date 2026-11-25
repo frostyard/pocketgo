@@ -444,7 +444,7 @@ func (s *Server) refreshPulls(ctx context.Context) (fresh map[int64]int64, done 
 
 // StartPulls reads the open pull requests again every interval, in rounds
 // that Stop ends; 0 starts none, and ends every live watch with its note,
-// since nothing would check it (ADR-0072). The service calls it once,
+// since nothing would check it (ADR-0073). The service calls it once,
 // after StartDelivery.
 func (s *Server) StartPulls(every time.Duration) {
 	if every <= 0 {
@@ -502,7 +502,7 @@ func (s *Server) pullRound() {
 	// Each round starts, follows and ends the cross-reviews, after the
 	// heads were read, starting reviews only of those read (ADR-0019).
 	s.reviewPassOf(s.passCtx, reviewWork{fresh: fresh, read: map[int64]bool{}})
-	// Each round checks the watches, after its reads (ADR-0072), in a pass
+	// Each round checks the watches, after its reads (ADR-0073), in a pass
 	// of their own the next round never waits for (Codex review of #173,
 	// round 4).
 	s.watchSoon()

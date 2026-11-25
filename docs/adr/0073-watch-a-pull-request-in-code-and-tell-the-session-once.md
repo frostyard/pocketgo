@@ -1,4 +1,4 @@
-# 0072 — Watch a pull request in code and tell the session once
+# 0073 — Watch a pull request in code and tell the session once
 
 - **Status:** Accepted
 - **Date:** 2026-11-24

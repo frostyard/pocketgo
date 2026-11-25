@@ -986,14 +986,14 @@ var ErrWithdrawn = fmt.Errorf("%w: the ask was withdrawn", ErrConflict)
 // request is ErrConflict, and one withdrawn is ErrWithdrawn, with the ask
 // as it is. Whichever of the answer and the withdrawal commits first
 // stands (ADR-0037). A new answer files its note to the asking thread's
-// supervisor in the same transaction (answerNote, ADR-0071); a replay
+// supervisor in the same transaction (answerNote, ADR-0072); a replay
 // files nothing.
 func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by string) (row AskRow, replayed bool, err error) {
 	return s.AnswerAskWith(ctx, key, id, answer, by, AnswerFacts{})
 }
 
 // AnswerFacts are what the caller read of the asking thread before an
-// answer, under the outbox's lock it holds through the answer (ADR-0071).
+// answer, under the outbox's lock it holds through the answer (ADR-0072).
 type AnswerFacts struct {
 	// ReopenHeld says the noting of a message already in the closed
 	// thread's specialist's transcript found its reopen held back by the
@@ -1046,7 +1046,7 @@ func (s *Store) AnswerAskWith(ctx context.Context, key string, id int64, answer,
 		if _, err := tx.ExecContext(ctx, `UPDATE plans SET updated_at = ? WHERE thread_id = (SELECT thread_id FROM asks WHERE id = ?)`, now, id); err != nil {
 			return AskRow{}, false, err
 		}
-		// The thread's supervisor hears of the answer, once (ADR-0071).
+		// The thread's supervisor hears of the answer, once (ADR-0072).
 		if err := answerNote(ctx, tx, id, now, facts); err != nil {
 			return AskRow{}, false, err
 		}

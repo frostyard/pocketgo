@@ -13,7 +13,7 @@ import (
 
 // A specialist's team_watch call reaches the team with its arguments,
 // keyed by its session, its task and its call's id, and the team's text
-// is its result (ADR-0072).
+// is its result (ADR-0073).
 func TestTeamWatchCallsTheTeam(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels(toolTurn(toolWatch, map[string]any{"action": "add", "pull": "frostyard/example#12", "until": "checks", "hours": 2.5}, "w1"), answer("ok")))
@@ -59,7 +59,7 @@ func TestTeamWatchSaysHowToWait(t *testing.T) {
 }
 
 // A session made before team_watch that gets it now gets it in the place
-// a new session has it, once, every other tool where it is (ADR-0072).
+// a new session has it, once, every other tool where it is (ADR-0073).
 func TestSetWatchToolUpgradesAnOlderSession(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())

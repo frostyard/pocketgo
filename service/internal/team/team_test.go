@@ -172,7 +172,7 @@ func TestRoster(t *testing.T) {
 	}
 	// The supervisor checks team_inbox before it reminds the owner, and
 	// reads a thread before it asks where it stands, with or without
-	// agents to delegate to (ADR-0046, ADR-0071).
+	// agents to delegate to (ADR-0046, ADR-0072).
 	if none := Roster(nil, cannot, 3); !strings.Contains(none, "No agent can take a delegation now.") || !strings.Contains(none, InboxGuide) || !strings.Contains(none, ThreadsGuide) {
 		t.Errorf("an empty roster:\n%s", none)
 	}

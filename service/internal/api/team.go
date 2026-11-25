@@ -405,7 +405,7 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 	}
 	// A shift's brief is its round 1, and says how its rounds go
 	// (ADR-0024). Any other building thread's says how to wait for CI
-	// with team_watch (ADR-0072).
+	// with team_watch (ADR-0073).
 	if sh, err := s.store.Shift(db, thread.ID); err == nil {
 		brief += "\n\n" + team.ShiftRules(team.ShiftPlan{Stop: sh.Stop, MaxRounds: sh.MaxRounds, CI: sh.CI}, sh.Deadline)
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -518,7 +518,7 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	}
 	// One made by a run before team_watch gets it before the brief that
 	// names it: the work database does not know the session yet, so the
-	// start's upgrade passed it by (ADR-0072; Codex review of #173, round
+	// start's upgrade passed it by (ADR-0073; Codex review of #173, round
 	// 1).
 	if spec.Profile == nil {
 		if err := s.recoveredWatchTool(db, id, current, profile); err != nil {
@@ -815,7 +815,7 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 		spec.Plan = thread.Plan
 	}
 	// A shift's specialist watches nothing: its rounds read CI in code
-	// (ADR-0072). The shift is recorded with its thread.
+	// (ADR-0073). The shift is recorded with its thread.
 	if _, err := s.store.Shift(ctx, thread.ID); err == nil {
 		spec.Shift = true
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -2157,7 +2157,7 @@ func (s *Server) publishAsk(row store.AskRow) {
 	if row.State == store.AskAnswered {
 		// Its answer filed a note to the thread's supervisor, which names the
 		// plan's ready tasks when it cleared its gate (store.answerNote,
-		// ADR-0071).
+		// ADR-0072).
 		s.deliverLater()
 	}
 }
@@ -2312,7 +2312,7 @@ func (s *Server) noteSendsPlacedHeld(ctx context.Context, thread int64) (held bo
 // session is neither none nor the asking one), the thread's messages
 // already in its specialist's transcript, as every read of a thread's
 // state does: one may have reopened the closed thread, and the note says
-// what the thread's state lets the supervisor do (ADR-0061, ADR-0071;
+// what the thread's state lets the supervisor do (ADR-0061, ADR-0072;
 // Codex review of #175, round 1). It then holds outboxMu, which the caller
 // releases after the answer's filing, and locked says so. A message placed
 // whose reopen waits for the close's worker stop is told

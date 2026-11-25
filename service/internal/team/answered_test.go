@@ -8,7 +8,7 @@ import (
 
 // An answer's note names its thread, its ask, its agent, the question and
 // the answer cut short, that the answer goes to the agent's session, and
-// the thread's next step, the first that holds (ADR-0071).
+// the thread's next step, the first that holds (ADR-0072).
 func TestAnsweredNote(t *testing.T) {
 	base := Answered{Thread: 5, Title: "Fix CI", Agent: "vera", Ask: 3, Question: "Squash the\ncommits?", Answer: "Yes, squash."}
 	text := AnsweredNote(base)
@@ -70,7 +70,7 @@ func TestAnsweredNote(t *testing.T) {
 // An answer's key names the thread's owner, the ask's key and the answer
 // it carries, never a row number; it is neither a supervisor's nor a
 // device's key, so the note shows as the service's own message
-// (ADR-0065, ADR-0071).
+// (ADR-0065, ADR-0072).
 func TestAnsweredKeyNamesTheAnswer(t *testing.T) {
 	key := AnsweredKey("abc123", "team:5:3:c1:ask:0", "Yes.")
 	if key != AnsweredKey("abc123", "team:5:3:c1:ask:0", "Yes.") || !strings.HasPrefix(key, AnsweredPrefix+"abc123:team:5:3:c1:ask:0:") {

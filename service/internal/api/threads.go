@@ -11,7 +11,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// TeamThreads is team_threads (ADR-0071): every thread not closed, with
+// TeamThreads is team_threads (ADR-0072): every thread not closed, with
 // who moves it next as the desktop's work board groups it, and the closed
 // threads whose records changed in the last team.InboxWindow (list); or
 // one thread whole (read). It is a supervisor's session's alone, which
