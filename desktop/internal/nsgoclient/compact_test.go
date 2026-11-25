@@ -20,6 +20,15 @@ var (
 	tablet = nsgotest.Environment(core.Environment{OS: core.OSIOS, Idiom: core.IdiomTablet, PixelRatio: 2})
 )
 
+// patience is how long a phone's test waits: a simulator on a shared
+// runner took more than 5 seconds to sign in and draw its first window.
+func patience() time.Duration {
+	if nsgotest.Target() != "" {
+		return 40 * time.Second
+	}
+	return 5 * time.Second
+}
+
 // headlessOnly skips a test of a phone or a tablet on a target that is
 // neither: a real window is its platform's, whatever environment the test
 // names (seen on the Linux target: the window kept the desktop's layout).
@@ -39,7 +48,7 @@ func phoneApp(t *testing.T, s *pocketdtest.Server) *nsgotest.App {
 	app.Type("label:Service URL", pocketdtest.URL)
 	app.Type("label:Device token", pocketdtest.Token)
 	app.Press("text:Connect")
-	app.WaitFor("id:tab-bar", 5*time.Second)
+	app.WaitFor("id:tab-bar", patience())
 	return app
 }
 
@@ -83,23 +92,23 @@ func TestAPhoneGoesByABarOfTabs(t *testing.T) {
 		t.Fatalf("the bar's tabs are %q", got)
 	}
 	// What waits shows on the Inbox's tab.
-	app.WaitUntil(5*time.Second, func() bool {
+	app.WaitUntil(patience(), func() bool {
 		badges := fmt.Sprintf("%+v", app.FindMounted(tabBar).NativeProps["badges"])
 		return strings.Contains(badges, "Text:1")
 	})
 	if app.Exists("id:sidebar-panel") || app.Exists("label:Filter sessions") {
 		t.Error("a phone's window shows the navigation beside its content")
 	}
-	app.WaitFor("text:Approve the artifact?", 5*time.Second)
+	app.WaitFor("text:Approve the artifact?", patience())
 
 	app.SelectTab(tabBar, tabBoard)
-	app.WaitFor("text:1 thread on the desk, 1 waits for you", 5*time.Second)
+	app.WaitFor("text:1 thread on the desk, 1 waits for you", patience())
 
 	app.SelectTab(tabBar, tabSessions)
-	app.WaitFor("label:Filter sessions", 5*time.Second)
+	app.WaitFor("label:Filter sessions", patience())
 	app.Find("label:New session")
 	app.Press("text:Editor")
-	app.WaitFor("text:Said in the editor's session.", 5*time.Second)
+	app.WaitFor("text:Said in the editor's session.", patience())
 	// The session shows over the Sessions tab, with a way back to it. That
 	// the bar is hidden over it (state.TabBarShows) does not show headless:
 	// the host gives the system's bar no height.
@@ -107,8 +116,8 @@ func TestAPhoneGoesByABarOfTabs(t *testing.T) {
 		t.Errorf("with a session open the bar's tab is %v, want Sessions (%d)", got, tabSessions)
 	}
 	app.Press("label:Back to Sessions")
-	app.WaitFor("label:Filter sessions", 5*time.Second)
-	app.WaitForGone("text:Said in the editor's session.", 5*time.Second)
+	app.WaitFor("label:Filter sessions", patience())
+	app.WaitForGone("text:Said in the editor's session.", patience())
 }
 
 // TestAPhonesMoreHoldsWhatHasNoTab checks the More tab: the places with
@@ -119,16 +128,16 @@ func TestAPhonesMoreHoldsWhatHasNoTab(t *testing.T) {
 	app := phoneApp(t, s)
 	app.SelectTab(tabBar, tabMore)
 	for _, row := range []string{"Files", "Activity", "Settings", "About PocketGo", "Sign out"} {
-		app.WaitFor("role:button "+row, 5*time.Second)
+		app.WaitFor("role:button "+row, patience())
 	}
 	app.Find("text:pocketd test · laptop")
 	if app.Exists("text:Terminal") {
 		t.Error("a phone's More offers the Terminal")
 	}
 	app.Press("role:button Activity")
-	app.WaitFor("label:Copy the activity", 5*time.Second)
+	app.WaitFor("label:Copy the activity", patience())
 	app.Press("label:Back to More")
-	app.WaitFor("role:button Files", 5*time.Second)
+	app.WaitFor("role:button Files", patience())
 	if app.Exists("text:Quit") {
 		t.Error("a phone's More offers Quit")
 	}
@@ -146,7 +155,7 @@ func TestATabletsFullWindowKeepsTheDesktopsLayout(t *testing.T) {
 	app.Type("label:Service URL", pocketdtest.URL)
 	app.Type("label:Device token", pocketdtest.Token)
 	app.Press("text:Connect")
-	app.WaitFor("label:Filter sessions", 5*time.Second)
+	app.WaitFor("label:Filter sessions", patience())
 	if app.Exists("id:tab-bar") {
 		t.Error("an iPad's full window goes by a bar of tabs")
 	}
@@ -156,7 +165,7 @@ func TestATabletsFullWindowKeepsTheDesktopsLayout(t *testing.T) {
 	}
 	// Narrowed, as in Split View, it goes by the bar of tabs.
 	app.Resize(500, 1180)
-	app.WaitFor("id:tab-bar", 5*time.Second)
+	app.WaitFor("id:tab-bar", patience())
 }
 
 // TestADesktopsNarrowWindowHasNoBarOfTabs checks that the compact layout
@@ -197,7 +206,7 @@ func TestAPhoneHoldsTheGitHubRefreshInTheBackground(t *testing.T) {
 		app := nsgotest.Start(t, func(cx *core.Scope) core.Node {
 			return startClient(cx, pocketdtest.New().Transport(), false, func(c *client) { c.holdWhileSuspended(got) })
 		}, nsgotest.Size(390, 844), nsgotest.Environment(tc.env))
-		app.WaitFor("label:Device token", 5*time.Second)
+		app.WaitFor("label:Device token", patience())
 		away := tc.env
 		away.Lifecycle = core.LifecycleBackground
 		app.SetEnvironment(away)
@@ -223,7 +232,7 @@ func TestAPhonesBoardKeepsWhatHoldsSomethingAboveTheThreads(t *testing.T) {
 
 	app := phoneApp(t, seed())
 	app.SelectTab(tabBar, tabBoard)
-	app.WaitFor("id:board-lane-open", 5*time.Second)
+	app.WaitFor("id:board-lane-open", patience())
 	schedules, threads, night := top(app, "id:board >> text:Schedules"), top(app, "id:board-lane-open"), top(app, "id:board >> text:Night shift")
 	if !(schedules < threads && threads < night) {
 		t.Errorf("a phone's board has the schedules at %v, the threads at %v and the empty night shift at %v: want them in that order", schedules, threads, night)
@@ -231,7 +240,7 @@ func TestAPhonesBoardKeepsWhatHoldsSomethingAboveTheThreads(t *testing.T) {
 
 	desk := signedInApp(t, seed(), 1230, 900)
 	desk.Press("sidebar-panel >> text:Work board")
-	desk.WaitFor("id:board-lane-open", 5*time.Second)
+	desk.WaitFor("id:board-lane-open", patience())
 	if threads, schedules := top(desk, "id:board-lane-open"), top(desk, "id:board >> text:Schedules"); threads >= schedules {
 		t.Errorf("a desktop's board has the threads at %v and the schedules at %v: want the threads first", threads, schedules)
 	}
