@@ -2,7 +2,39 @@
 
 This plan makes the NSGo client PocketGo's only client, as [ADR-0071](../adr/0071-make-the-nsgo-client-the-only-client.md) decides: it gets what the MyGo client has, it is built for the iPad, the iPhone and macOS, MyGo is removed, and `v0.1.0` is released. It follows the [phone and tablet plan](phone-client.md), whose rules it keeps and whose MyGo build it replaces. It is PocketGo's part of the same work in FrostMail and Frostnotes ([frostyard/frostmail's plan 0017](https://github.com/frostyard/frostmail/blob/main/docs/plans/0017-nsgo-as-the-only-client.md)).
 
+## Status (2026-11-25)
+
+Built and merged on 2026-11-24 and 2026-11-25, each with its tests in `desktop/internal/nsgoclient` on pocketd's test server, run headless and in a GTK window on Xvfb. Nothing was run against a real pocketd, in a browser, or on macOS or iOS.
+
+| Item of the list below | Built | Left |
+| --- | --- | --- |
+| 1, 2. Failures and loading | #178, #180: the Inbox, the board, the sidebar, a transcript, a run, a search, the Terminal place, the sign-ins (#184), New session's profiles and models (#181) | |
+| 3. Lessons in force | #181 | |
+| 4. What waits and runs | #181: a status bar under the content | the usage tooltips' text has no test |
+| 5. New session | #181 | |
+| 6, 7. The board, proposals, schedules | #185 | a plan's consults; "Dropping #N…" has no test; the kit's shell cannot open the session's details from the changes' count |
+| 8. The sidebar | #181: the counts, the search offer, a group's role and problem, the New mark | a session's tag and its dimming; a row's menu with Pinned and Rename |
+| 9. A session | #186 | a failed copy's note (NSGo reports none); the unfolded service messages kept |
+| 10. The Terminal place | #186 | a refused `file:` link's toast (NSGo treats it as no link); the terminal's zoom zooming the window |
+| 11. Approve and merge | | all of it: its files are the client's auth files |
+| 12. Sign-ins and the sign-in screen | #184: pocketd's sign-ins | the sign-in screen's texts |
+| 13. Search | #180, #184 | the opened entry's highlight |
+| 14. Zoom that fits | #182 | |
+| 15. A notification clicked at start | #182 | it runs headless only: a press did not reach the client in the real window |
+| 16. Commands | #182 | Insert Prompt as a command; Show or Hide the Sessions |
+| 17. The Activity place | #184 | |
+| The terminal's clipboard | #177: 3 tests | |
+| The preferences' move | #182 | not run on a real `settings.json` with a real keyring |
+| A phone's and a tablet's rules | #187: the bar of tabs, a session over its tab, More, no Terminal and no Quit on iOS, the held GitHub refresh, tested headless with a phone's and a tablet's environment | `state.BoardOrder`; the touch size; every run on macOS and iOS (#188, a draft, builds and runs them on a macOS runner) |
+| What a removal must change first | #183: the state tests' loop | the Makefile, CI, the lint rules and 2 script tests still name MyGo |
+
+**The owner's open questions were not answered, and the NSGo client's own layout was kept** in each of them: the board's lanes by state, New session as a page, rename and pin in the session's inspector, the report as a collapsible, the palette's sessions, the plans' own section. The missing information was added inside that layout.
+
+**A correction.** #177, #178, #180, #181, #182 and #184 each said in its body that no path of `.github/risk-paths.json` was touched. That was false: `desktop/internal/nsgoclient/*.go` is on the list at L2, and #182 changed `accounts.go` and `accounts_native.go`, which are on it at L1. Each body now carries the correction. #180 to #187 were merged by admin merge on the owner's authorization of 2026-11-24 for that night; #182's change of the 2 auth files is the one to read again: a notification clicked at start opens after the same sign-in, and a first start reads the MyGo client's `settings.json` and so signs in to the service it names with the keyring's token and no form. #187 changed `accounts_native.go` by 1 line, which its body names: the GitHub sign-in's refresh is held while iOS has the app in the background.
+
 ## What the NSGo client lacks
+
+The list as it was read on 2026-11-24, before the work above. The status table says what of it is built.
 
 Read from `desktop/internal/app` (the MyGo client: 8,540 lines in 26 files, and 9,666 lines of tests) and `desktop/internal/nsgoclient` (about 5,000 lines with its tests) at `6d2ec7e`, on 2026-11-24, by a read-only agent. Nothing was built or run for this list. A phase checks its items again when it starts: this list orders the work, and is no record of a check. Both clients call the same rules in `desktop/internal/state`, so most items are a view over a rule that exists and has its test.
 
