@@ -83,6 +83,7 @@ Docs are split by the question they answer:
 - [0068 — Build a shared NSGo client beside the desktop client](adr/0068-build-a-shared-nsgo-client-beside-the-desktop-client.md)
 - [0069 — Browse a session's working folder](adr/0069-browse-a-sessions-working-folder.md)
 - [0070 — Ship NSGo as the default Linux client](adr/0070-ship-nsgo-as-the-default-linux-client.md)
+- [0071 — Make the NSGo client the only client](adr/0071-make-the-nsgo-client-the-only-client.md)
 
 ### Org-wide decisions
 
@@ -107,6 +108,7 @@ Docs are split by the question they answer:
 - [Roadmap](plans/roadmap.md)
 - [Shared owner merge service](plans/shared-merge-service.md)
 - [Phone and tablet client](plans/phone-client.md)
+- [NSGo as the only client](plans/nsgo-only-client.md)
 
 ### Surveys
 
