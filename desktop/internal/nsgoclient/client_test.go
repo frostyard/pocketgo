@@ -154,6 +154,36 @@ func TestRemoteTerminal(t *testing.T) {
 	app.WaitUntil(5*time.Second, func() bool { return len(s.Terminals()) == 0 })
 }
 
+// TestServerOutputCannotReachTheClipboard checks, in the running client,
+// that a shell on the service host neither writes this device's clipboard
+// nor reads it (OSC 52). The emulator's answer to a cursor report, which
+// follows each sequence, shows that it has read past the sequence.
+func TestServerOutputCannotReachTheClipboard(t *testing.T) {
+	s := pocketdtest.New()
+	app := signedInApp(t, s, 1230, 800)
+	app.Press("text:Terminal")
+	app.Press("text:New terminal")
+	app.WaitFor("id:remote-terminal-screen", 10*time.Second)
+	id := s.Terminals()[0].ID
+	app.Clipboard = "local-secret"
+	changes := app.ClipboardChangeCount
+	answered := func(n int) func() bool {
+		return func() bool { return strings.Count(s.TerminalKeys(id), "R") >= n }
+	}
+	const report = "\x1b[6n" // the emulator answers ESC [ row ; column R
+	s.PrintTerminal(id, "\x1b]52;c;ZnJvbS1zZXJ2ZXI=\x1b\\"+report)
+	app.WaitUntil(5*time.Second, answered(1))
+	if app.Clipboard != "local-secret" || app.ClipboardChangeCount != changes {
+		t.Errorf("the shell wrote the clipboard: %q, %d changes", app.Clipboard, app.ClipboardChangeCount-changes)
+	}
+	s.PrintTerminal(id, "\x1b]52;c;?\x07"+report)
+	app.WaitUntil(5*time.Second, answered(2))
+	// base64 of "local-secret", as an answer to the query would carry it.
+	if keys := s.TerminalKeys(id); strings.Contains(keys, "bG9jYWwtc2VjcmV0") || strings.Contains(keys, "]52") {
+		t.Errorf("the shell read the clipboard: the client sent %q", keys)
+	}
+}
+
 func TestSessionCreationAndApproval(t *testing.T) {
 	s := pocketdtest.New()
 	model := proto.ModelRef{Provider: "test", ID: "default"}
