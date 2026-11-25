@@ -268,6 +268,43 @@ func TestThreadsTextNamesPlansAndCountsPullRequests(t *testing.T) {
 	}
 }
 
+// The list groups the pull requests by thread once and writes only those
+// a line shows: a thread with many writes its first few, and each
+// thread's line names its own, whatever the board holds (Codex review of
+// #175, round 3).
+func TestThreadsTextWritesOnlyThePullRequestsItShows(t *testing.T) {
+	th := Threads{Now: inboxNow, Caller: 1, Board: boardWith(nil, nil, nil)}
+	id := int64(0)
+	for thread := int64(1); thread <= 40; thread++ {
+		state := proto.ThreadOpen
+		if thread%2 == 0 {
+			state = proto.ThreadClosed
+		}
+		th.Board.Threads[thread] = proto.Thread{ID: thread, Title: "t", Agent: "vera", State: state, Supervisor: 1, UpdatedAt: at(time.Hour)}
+		for range 30 {
+			id++
+			th.Board.Pulls = append(th.Board.Pulls, proto.PullRequest{ID: id, Thread: thread, Repository: "frostyard/example", Number: id, State: proto.PullOpen})
+		}
+	}
+	written := map[int64]int{}
+	pullBriefed = func(p proto.PullRequest) { written[p.Thread]++ }
+	defer func() { pullBriefed = nil }()
+	text := th.listText(1<<30, 1<<30)
+	for thread := int64(1); thread <= 40; thread++ {
+		if written[thread] != threadsLinePulls {
+			t.Errorf("T%d: %d pull requests written, want the %d shown", thread, written[thread], threadsLinePulls)
+		}
+	}
+	if !strings.Contains(text, "frostyard/example#1 (") || !strings.Contains(text, "frostyard/example#5 (") || strings.Contains(text, "frostyard/example#6 (") ||
+		!strings.Contains(text, "frostyard/example#31 (") || strings.Count(text, " and 25 more") != 40 {
+		t.Errorf("the lines:\n%s", text)
+	}
+	byThread := th.pullsByThread()
+	if len(byThread) != 40 || len(byThread[7]) != 30 || byThread[7][0].Number != 181 || byThread[7][29].Number != 210 {
+		t.Errorf("the pull requests by thread: %d threads, T7's %+v", len(byThread), byThread[7])
+	}
+}
+
 // A list longer than its bounds keeps the same number of first threads of
 // every group, the most that fit, and says so; one more each would not
 // have fitted.
@@ -380,7 +417,7 @@ func TestThreadTextReadsAThreadWhole(t *testing.T) {
 	other.Supervisor, other.Specialist, other.Worker, other.WorkerAsked, other.Plan = ThreadSession{ID: 9, Profile: "leto"}, ThreadSession{}, ThreadSession{}, proto.ModelRef{}, nil
 	text = ThreadText(th, other)
 	for _, want := range []string{"- Delegated by: session 9, of profile leto\n", "- Specialist's session: none yet; pocketd starts it\n",
-		"- Works in its specialist's home: /home/duncan\n", "- Worker: none yet\n", "next: the owner"} {
+		"- Working folder: /home/duncan\n", "- Worker: none yet\n", "next: the owner"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("another supervisor's thread lacks %q:\n%s", want, text)
 		}

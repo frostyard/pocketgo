@@ -376,6 +376,7 @@ func (t Threads) sorted() []proto.Thread {
 // later. A closed review is left out: its verdict shows on its pull
 // request.
 func (t Threads) lists(since time.Time) []inboxList {
+	pulls := t.pullsByThread()
 	movers := map[Mover][]string{}
 	var reviews, closed []string
 	for _, th := range t.sorted() {
@@ -386,11 +387,11 @@ func (t Threads) lists(since time.Time) []inboxList {
 		case review:
 		case th.State == proto.ThreadClosed:
 			if !th.UpdatedAt.Before(since) {
-				closed = append(closed, t.closedLine(th))
+				closed = append(closed, t.closedLine(th, pulls[th.ID]))
 			}
 		default:
 			m := t.Board.NextMover(th)
-			movers[m] = append(movers[m], t.openLine(th))
+			movers[m] = append(movers[m], t.openLine(th, pulls[th.ID]))
 		}
 	}
 	return []inboxList{
@@ -402,8 +403,9 @@ func (t Threads) lists(since time.Time) []inboxList {
 	}
 }
 
-// openLine is a thread not closed as the list shows it.
-func (t Threads) openLine(th proto.Thread) string {
+// openLine is a thread not closed, with its pull requests, as the list
+// shows it.
+func (t Threads) openLine(th proto.Thread, pulls []proto.PullRequest) string {
 	parts := []string{threadName(th), th.Agent, string(th.State)}
 	if plan := t.planPart(th); plan != "" {
 		parts = append(parts, plan)
@@ -418,8 +420,8 @@ func (t Threads) openLine(th proto.Thread) string {
 	default:
 		parts = append(parts, fmt.Sprintf("%d open asks", n))
 	}
-	if pulls := t.pullsPart(th.ID); pulls != "" {
-		parts = append(parts, pulls)
+	if part := t.pullsPart(pulls); part != "" {
+		parts = append(parts, part)
 	}
 	if th.Follows != 0 {
 		parts = append(parts, fmt.Sprintf("follows T%d", th.Follows))
@@ -435,11 +437,12 @@ func (t Threads) reviewLine(th proto.Thread) string {
 		"changed " + t.clock().rel(th.UpdatedAt)}, " · ")
 }
 
-// closedLine is a closed thread as the list shows it.
-func (t Threads) closedLine(th proto.Thread) string {
+// closedLine is a closed thread, with its pull requests, as the list
+// shows it.
+func (t Threads) closedLine(th proto.Thread, pulls []proto.PullRequest) string {
 	parts := []string{threadName(th), th.Agent, "closed"}
-	if pulls := t.pullsPart(th.ID); pulls != "" {
-		parts = append(parts, pulls)
+	if part := t.pullsPart(pulls); part != "" {
+		parts = append(parts, part)
 	}
 	if th.Successor != 0 {
 		parts = append(parts, fmt.Sprintf("carried on by T%d", th.Successor))
@@ -472,23 +475,38 @@ func shiftPart(sh *proto.Shift) string {
 	return part
 }
 
-// pullsPart names thread's pull requests on one line, at most
+// pullsPart names a thread's pull requests, pulls, on one line, at most
 // threadsLinePulls of them: "pull requests: frostyard/x#3 (open, CI
-// green, verdict ready, read 5m ago)"; "" for none.
-func (t Threads) pullsPart(thread int64) string {
-	var refs []string
-	for _, p := range t.Board.Pulls {
-		if p.Thread == thread {
-			refs = append(refs, t.pullBrief(p))
-		}
+// green, verdict ready, read 5m ago)"; "" for none. Only those shown are
+// written.
+func (t Threads) pullsPart(pulls []proto.PullRequest) string {
+	shown := pulls[:min(len(pulls), threadsLinePulls)]
+	refs := make([]string, len(shown))
+	for i, p := range shown {
+		refs[i] = t.pullBrief(p)
 	}
-	switch n := len(refs); {
+	switch n := len(pulls); {
 	case n == 0:
 		return ""
 	case n > threadsLinePulls:
-		return fmt.Sprintf("pull requests: %s and %d more", strings.Join(refs[:threadsLinePulls], ", "), n-threadsLinePulls)
+		return fmt.Sprintf("pull requests: %s and %d more", strings.Join(refs, ", "), n-threadsLinePulls)
 	}
 	return "pull requests: " + strings.Join(refs, ", ")
+}
+
+// pullBriefed, when a test sets it, sees each pull request a list's line
+// writes; nil otherwise.
+var pullBriefed func(proto.PullRequest)
+
+// pullsByThread are the board's pull requests by thread, each thread's in
+// the board's order: one pass, however many threads are listed (Codex
+// review of #175, round 3).
+func (t Threads) pullsByThread() map[int64][]proto.PullRequest {
+	out := map[int64][]proto.PullRequest{}
+	for _, p := range t.Board.Pulls {
+		out[p.Thread] = append(out[p.Thread], p)
+	}
+	return out
 }
 
 // pullBrief is p as a list's line names it: its reference, then its
@@ -496,6 +514,9 @@ func (t Threads) pullsPart(thread int64) string {
 // how long ago that read was: the thread's own age says nothing of it
 // (Codex review of #175, round 1).
 func (t Threads) pullBrief(p proto.PullRequest) string {
+	if pullBriefed != nil {
+		pullBriefed(p)
+	}
 	facts := []string{string(p.State)}
 	if p.Draft {
 		facts = append(facts, "draft")
@@ -635,7 +656,9 @@ func (t Threads) facts(w ThreadWhole) []string {
 	case th.Repository != "":
 		out = append(out, fmt.Sprintf("Repository: %s · branch %s · worktree %s", th.Repository, orNone(th.Branch), orNone(th.Cwd)))
 	case th.Cwd != "":
-		out = append(out, "Works in its specialist's home: "+th.Cwd)
+		// The profile's home or its workspace: the thread's record names
+		// the folder, not which (Codex review of #175, round 3).
+		out = append(out, "Working folder: "+th.Cwd)
 	}
 	if line := planLine(th, w.Plan); line != "" {
 		out = append(out, line)

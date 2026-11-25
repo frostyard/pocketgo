@@ -1061,14 +1061,17 @@ func answerNote(ctx context.Context, tx *sql.Tx, id, now int64, facts AnswerFact
 	}
 	open, err := queryRows(ctx, tx, func(scan func(...any) error) (int64, error) {
 		var n int64
-		return n, scan(&n)
+		// The scan first, then the id: Go does not order a variable's read
+		// and a call in one return (Codex review of #175, round 3).
+		err := scan(&n)
+		return n, err
 	}, `SELECT id FROM asks WHERE thread_id = ? AND state = ? ORDER BY id`, thread.ID, AskOpen)
 	if err != nil {
 		return err
 	}
 	closed := thread.State == ThreadClosed
 	a := team.Answered{Thread: thread.ID, Title: thread.Title, Agent: thread.Agent, Closed: closed,
-		ReopenHeld: closed && thread.WorkerStopDue && facts.ReopenHeld,
+		ReopenHeld: closed && facts.ReopenHeld,
 		Ask:        ask.ID, Question: ask.Question, Answer: ask.Answer, Open: open}
 	if thread.IsPlanThread() {
 		facts, err := loadPlanFacts(ctx, tx, thread.Plan)

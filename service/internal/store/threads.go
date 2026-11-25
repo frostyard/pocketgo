@@ -995,10 +995,13 @@ func (s *Store) AnswerAsk(ctx context.Context, key string, id int64, answer, by 
 // AnswerFacts are what the caller read of the asking thread before an
 // answer, under the outbox's lock it holds through the answer (ADR-0071).
 type AnswerFacts struct {
-	// ReopenHeld says a message already in the closed thread's
-	// specialist's transcript reopens it once the close's worker stop is
-	// done (ADR-0061): the answer's note says so, and sends the supervisor
-	// to no second message (Codex review of #175, round 2).
+	// ReopenHeld says the noting of a message already in the closed
+	// thread's specialist's transcript found its reopen held back by the
+	// close's worker stop (ErrWorkerStopping, ADR-0061): it reopens the
+	// thread at a later noting, so the answer's note says so, and sends the
+	// supervisor to no second message (Codex review of #175, rounds 2 and
+	// 3). The caller holds the outbox's lock from that noting through the
+	// answer, so no noting reopens the thread meanwhile.
 	ReopenHeld bool
 }
 

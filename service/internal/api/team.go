@@ -2266,6 +2266,28 @@ func (s *Server) asks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// noteSendsPlacedHeld is noteSendsPlaced that also says whether the
+// noting of a placed message found its reopen held back by the close's
+// worker stop (store.ErrWorkerStopping): that message reopens the thread
+// at a later noting, with no second message. outboxMu is held.
+func (s *Server) noteSendsPlacedHeld(ctx context.Context, thread int64) (held bool, err error) {
+	if _, err := s.noteOwner(ctx, thread, func(ctx context.Context, m store.OwnerMessage) error {
+		s.workMu.Lock()
+		defer s.workMu.Unlock()
+		err := s.ownerMessagePlaced(ctx, m)
+		held = held || errors.Is(err, store.ErrWorkerStopping)
+		return err
+	}); err != nil {
+		return false, err
+	}
+	err = s.noteSends(ctx, thread, func(ctx context.Context, row store.ReportRow) (store.ThreadRow, store.SendNoted, error) {
+		t, change, err := s.sendDelivered(ctx, row)
+		held = held || errors.Is(err, store.ErrWorkerStopping)
+		return t, change, err
+	})
+	return held, err
+}
+
 // noteBeforeAnswer notes, for a new answer to ask id that may file a note
 // to its thread's supervisor (an open ask of a thread whose delegating
 // session is neither none nor the asking one), the thread's messages
@@ -2275,8 +2297,9 @@ func (s *Server) asks(w http.ResponseWriter, r *http.Request) {
 // Codex review of #175, round 1). It then holds outboxMu, which the caller
 // releases after the answer's filing, and locked says so. A message placed
 // whose reopen waits for the close's worker stop is told
-// (AnswerFacts.ReopenHeld, as reportRefused tells its specialist; round
-// 2). An ask or thread that cannot be found is left to AnswerAsk.
+// (AnswerFacts.ReopenHeld, as reportRefused tells its specialist; rounds
+// 2 and 3), from the noting's own outcome (noteSendsPlacedHeld). An ask or
+// thread that cannot be found is left to AnswerAsk.
 func (s *Server) noteBeforeAnswer(ctx context.Context, id int64) (facts store.AnswerFacts, locked bool, err error) {
 	ask, err := s.store.Ask(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -2297,17 +2320,17 @@ func (s *Server) noteBeforeAnswer(ctx context.Context, id int64) (facts store.An
 		return facts, false, nil
 	}
 	s.outboxMu.Lock()
-	if err := s.noteSendsPlaced(ctx, thread.ID); err != nil {
+	// The noting's own outcome says whether a placed message's reopen waits
+	// for the close's worker stop (store.ErrWorkerStopping), never a second
+	// look at the thread's flag, which the worker's stop clears outside
+	// outboxMu; the reopen itself needs a noting, under outboxMu, which the
+	// filing holds (Codex review of #175, round 3).
+	held, err := s.noteSendsPlacedHeld(ctx, thread.ID)
+	if err != nil {
 		s.outboxMu.Unlock()
 		return facts, false, err
 	}
-	if thread, err = s.store.Thread(ctx, thread.ID); err != nil {
-		s.outboxMu.Unlock()
-		return facts, false, err
-	}
-	if thread.State == store.ThreadClosed && thread.WorkerStopDue {
-		facts.ReopenHeld = s.placedToReopen(ctx, thread.ID)
-	}
+	facts.ReopenHeld = held
 	return facts, true, nil
 }
 

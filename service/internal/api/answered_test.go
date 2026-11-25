@@ -162,3 +162,53 @@ func TestTheAnswersNoteTellsAReopenTheWorkerStopHolds(t *testing.T) {
 		t.Fatalf("the note %+v %v", note, err)
 	}
 }
+
+// The held reopen the answer's note tells is the noting's own outcome: a
+// worker's stop that finishes after the noting found the reopen held,
+// outside outboxMu and before the answer is filed, clears the thread's
+// flag but not the placed message's reopen, which the next noting brings
+// (Codex review of #175, round 3).
+func TestTheHeldReopenIsToldFromTheNotingsOwnOutcome(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}, team.Report{Message: "A question.", Status: team.StatusBlocked,
+		Asks: []team.Ask{{Question: "Squash?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	worker := startedWorker(t, h, thread)
+	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.queueOwner(thread.Session)
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "One more thing."}); err != nil {
+		t.Fatal(err)
+	}
+	h.placeQueued(requestKeyOf(h.harness, "o1"), thread.Session)
+	// The worker's stop finishes at the second look at PiG's records after
+	// the noting's: any look that rebuilt the held reopen from the flag
+	// would find it cleared.
+	looks := 0
+	h.engine.onPlaced = func(string) {
+		if looks++; looks == 2 {
+			if err := h.store.WorkerStopped(ctx, thread.ID, worker, 0); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "Yes."}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.onPlaced = nil
+	note, err := h.store.Note(ctx, team.AnsweredKey(thread.Owner, "team:"+fmt.Sprint(thread.Session)+":5:m1:ask:0", "Yes."))
+	if err != nil || !strings.Contains(note.Text, "T1 is closed, but a message already in vera's session reopens it once its worker has stopped") ||
+		strings.Contains(note.Text, "team_send") {
+		t.Fatalf("the note %+v %v", note, err)
+	}
+	// The next noting reopens it, with no second message.
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen || got.Reopened != 1 {
+		t.Fatalf("the thread after the next noting %+v", got)
+	}
+}
