@@ -139,3 +139,40 @@ func TestNoLiteralLooks(t *testing.T) {
 		}
 	}
 }
+
+// TestAConfirmationWaitsBehindTheOneShown checks the order of
+// confirmations: one asked while another shows does not take its place,
+// and shows once that one is answered or dismissed.
+func TestAConfirmationWaitsBehindTheOneShown(t *testing.T) {
+	first, second, third := &question{title: "first"}, &question{title: "second"}, &question{title: "third"}
+	var a asks
+	if got := a.add(first); got != first {
+		t.Fatalf("the first confirmation asked shows %v", got)
+	}
+	if got := a.add(second); got != first {
+		t.Fatalf("a second confirmation took the first's place: %v shows", got.title)
+	}
+	a.add(third)
+	// An answer to one that is not shown changes nothing.
+	if got := a.done(second); got != first {
+		t.Fatalf("ending a confirmation that waits changed the one shown to %v", got)
+	}
+	if got := a.done(first); got != second {
+		t.Fatalf("after the first, %v shows, want the second", got)
+	}
+	if got := a.done(first); got != second {
+		t.Fatalf("ending the first again changed the one shown to %v", got)
+	}
+	if got := a.done(second); got != third {
+		t.Fatalf("after the second, %v shows, want the third", got)
+	}
+	if got := a.done(third); got != nil {
+		t.Fatalf("after the last, %v still shows", got.title)
+	}
+	a.add(first)
+	a.add(second)
+	a.clear()
+	if got := a.add(third); got != third {
+		t.Fatalf("after a sign-out's clear, %v shows, want the one asked after it", got.title)
+	}
+}

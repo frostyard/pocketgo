@@ -49,8 +49,10 @@ type client struct {
 	noticeCard     *core.Signal[string]
 	drafts         map[int64]*core.Signal[string]
 	log            []string
-	// asking is the confirmation shown, nil with none.
+	// asking is the confirmation shown, nil with none; asks holds it and
+	// those that wait behind it.
 	asking *core.Signal[*question]
+	asks   asks
 }
 
 func Root(cx *core.Scope) core.Node { return buildClient(cx, transport(), true) }
@@ -153,6 +155,8 @@ func (c *client) reset() {
 	c.seek.Set(0)
 	c.resetHistory()
 	c.shiftEnd = ""
+	c.asks.clear()
+	c.asking.Set(nil)
 	c.noticeCard.Set("")
 	clear(c.reasons)
 	c.groups.Set(map[string]bool{})

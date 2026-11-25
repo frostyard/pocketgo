@@ -93,22 +93,60 @@ type question struct {
 	gen int
 }
 
+// asks holds the confirmations in the order they were asked. One shows at
+// a time. A confirmation asked while another shows waits behind it and
+// never takes its place: a merge's confirmation opens when its checks
+// end, at no press of the owner's, and a question that changed under the
+// pointer would be answered unread.
+type asks struct {
+	shown   *question
+	waiting []*question
+}
+
+// add asks q, and returns the confirmation to show.
+func (a *asks) add(q *question) *question {
+	if a.shown == nil {
+		a.shown = q
+	} else {
+		a.waiting = append(a.waiting, q)
+	}
+	return a.shown
+}
+
+// done ends q, which was answered or dismissed, and returns the
+// confirmation to show: the next that waited, when q was the one shown.
+func (a *asks) done(q *question) *question {
+	if a.shown != q {
+		return a.shown
+	}
+	a.shown = nil
+	if len(a.waiting) > 0 {
+		a.shown, a.waiting = a.waiting[0], a.waiting[1:]
+	}
+	return a.shown
+}
+
+func (a *asks) clear() { a.shown, a.waiting = nil, nil }
+
 // confirm asks before an action that sends or changes something, and
 // destroy before one that ends or removes it: NSGo's alert dialog on the
 // kit's panel, Cancel first and quiet, and a destroying action in the
 // danger variant. The keyboard starts on Cancel, so Return alone never
 // runs the action.
 func (c *client) confirm(title, body, action string, fn func()) {
-	c.asking.Set(&question{title: title, body: body, action: action, variant: ui.ButtonPrimary, fn: fn, gen: c.generation})
+	c.ask(&question{title: title, body: body, action: action, variant: ui.ButtonPrimary, fn: fn})
 }
 
 func (c *client) destroy(title, body, action string, fn func()) {
-	c.asking.Set(&question{title: title, body: body, action: action, variant: ui.ButtonDanger, fn: fn, gen: c.generation})
+	c.ask(&question{title: title, body: body, action: action, variant: ui.ButtonDanger, fn: fn})
 }
 
 // tell says something that needs no answer but Close.
-func (c *client) tell(title, body string) {
-	c.asking.Set(&question{title: title, body: body, gen: c.generation})
+func (c *client) tell(title, body string) { c.ask(&question{title: title, body: body}) }
+
+func (c *client) ask(q *question) {
+	q.gen = c.generation
+	c.asking.Set(c.asks.add(q))
 }
 
 // alert draws the confirmation shown.
@@ -117,11 +155,7 @@ func (c *client) alert(cx *core.Scope) core.Node {
 	if q == nil {
 		return nil
 	}
-	closed := func() {
-		if c.asking.GetUntracked() == q {
-			c.asking.Set(nil)
-		}
-	}
+	closed := func() { c.asking.Set(c.asks.done(q)) }
 	actions := []ui.AlertAction{{Text: "Close", Variant: ui.ButtonSecondary, Role: core.AlertCancel, Default: true}}
 	if q.action != "" {
 		actions = []ui.AlertAction{
