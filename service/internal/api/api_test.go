@@ -114,11 +114,11 @@ type fakeEngine struct {
 	// ownScheduleTool are the sessions SetScheduleTool gave the schedule
 	// tool (ADR-0060).
 	ownScheduleTool map[int64]bool
-	// watchTool are the sessions SetWatchTool gave team_watch (ADR-0072);
+	// watchTool are the sessions SetWatchTool gave team_watch (ADR-0073);
 	// watchLate those that had been sent a message when it was called.
 	watchTool map[int64]bool
 	watchLate map[int64]bool
-	// workTool are the sessions SetWorkTool gave team_work (ADR-0073).
+	// workTool are the sessions SetWorkTool gave team_work (ADR-0074).
 	workTool map[int64]bool
 	// onModels sees each Models call, before it answers.
 	onModels func()
@@ -1142,7 +1142,7 @@ type shiftWake struct {
 }
 
 // runWatchPasses runs the watch passes the server started, and those they
-// start, and says how many ran (ADR-0072).
+// start, and says how many ran (ADR-0073).
 func (h *harness) runWatchPasses() int {
 	n := 0
 	for {
@@ -1296,7 +1296,7 @@ func newHarness(t *testing.T) *harness {
 		defer h.shiftMu.Unlock()
 		h.shiftPasses = append(h.shiftPasses, f)
 	}
-	// A watch pass a pull round starts waits for the test too (ADR-0072).
+	// A watch pass a pull round starts waits for the test too (ADR-0073).
 	server.goWatch = func(f func()) {
 		h.shiftMu.Lock()
 		defer h.shiftMu.Unlock()

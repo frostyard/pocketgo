@@ -21,7 +21,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/api"
 )
 
-// The prompt cache keeper (ADR-0074), with its clock and timers driven by
+// The prompt cache keeper (ADR-0075), with its clock and timers driven by
 // hand and PiG's faux provider behind a shim that builds a payload as a
 // real provider does: no network, no wall clock, no sleep.
 

@@ -17,7 +17,7 @@ import (
 	"github.com/MichaelKinsy/PiG/durable/harness"
 )
 
-// The prompt cache keeper (ADR-0074), ported from pi-pocket's
+// The prompt cache keeper (ADR-0075), ported from pi-pocket's
 // cache-keeper.ts: while a run waits on a tool call, it sends the run's
 // last model request again with a one-token output cap just before its
 // prompt cache entry expires, when that costs less than the rewrite it
@@ -305,7 +305,7 @@ var errWarmDiffers = errors.New("the warm's payload differs from the cached requ
 var errWarmStale = errors.New("the warm's refresh went stale before it was sent")
 
 // cacheKeeper keeps the prompt cache entries of runs that wait on a tool
-// call warm (ADR-0074). It is safe for concurrent use.
+// call warm (ADR-0075). It is safe for concurrent use.
 type cacheKeeper struct {
 	log    *slog.Logger
 	clock  keeperClock

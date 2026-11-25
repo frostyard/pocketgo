@@ -275,7 +275,7 @@ func run(args []string) error {
 	instructionsFile := flags.String("instructions", defaultInstructions(), "the owner's global AGENTS.md, which every session's instructions hold; \"\" for none (serve)")
 	capFlag := flags.String("desk-cap", "", "the most threads not closed (serve; default $POCKETD_DESK_CAP, else 12)")
 	prEvery := flags.Duration("pr-every", 5*time.Minute, "how often open pull requests are read on GitHub again (serve; 0 for never)")
-	cacheKeeper := flags.Bool("cache-keeper", true, "keep a run's prompt cache warm while it waits on a tool call (serve; ADR-0074)")
+	cacheKeeper := flags.Bool("cache-keeper", true, "keep a run's prompt cache warm while it waits on a tool call (serve; ADR-0075)")
 	command, rest, err := parseCommand(flags, args)
 	if err != nil {
 		return err
@@ -675,7 +675,7 @@ const lockFile = "pocketd.lock"
 var newSandbox = pig.NewSandbox
 
 // serve runs pocketd. cacheKeeper keeps a run's prompt cache warm while it
-// waits on a tool call (ADR-0074).
+// waits on a tool call (ADR-0075).
 func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap int, prEvery time.Duration, cacheKeeper bool) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

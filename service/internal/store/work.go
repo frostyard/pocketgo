@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// An agent's work session (ADR-0073): team_work starts a session of the
+// An agent's work session (ADR-0074): team_work starts a session of the
 // caller's profile in a fresh worktree of one of its repositories. Its
 // record is kept by the call's work key before its worktree is made
 // (StartWork), names its session once that is recorded, in the same

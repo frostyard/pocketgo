@@ -12,7 +12,7 @@ import (
 // team_work is an agent's own session's: a profile that is no
 // supervisor's and not private, working as none of the roles and as no
 // work session, which is told to report to the session that started it
-// (ADR-0073).
+// (ADR-0074).
 func TestOnlyAnAgentsOwnSessionMayWork(t *testing.T) {
 	supervisor := &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor}
 	private := &profiles.Profile{ID: "chani", Role: profiles.RoleAgent, Private: true}
@@ -62,7 +62,7 @@ func TestOnlyAnAgentsOwnSessionMayWork(t *testing.T) {
 }
 
 // A team_work call's task is 1 to 6000 characters and its title at most
-// 120, both trimmed (ADR-0073).
+// 120, both trimmed (ADR-0074).
 func TestCheckWork(t *testing.T) {
 	for name, tc := range map[string]struct {
 		w    Work
@@ -83,7 +83,7 @@ func TestCheckWork(t *testing.T) {
 }
 
 // The repository is one the profile names, in any case; it may be left out
-// only when the profile names exactly one (ADR-0073).
+// only when the profile names exactly one (ADR-0074).
 func TestWorkRepository(t *testing.T) {
 	one := profiles.Profile{ID: "vera", Repositories: map[string]string{"frostyard/example": "/src/example"}}
 	two := profiles.Profile{ID: "duncan", Repositories: map[string]string{"frostyard/nsl": "/src/nsl", "frostyard/igloo": "/src/igloo"}}
@@ -114,7 +114,7 @@ func TestWorkRepository(t *testing.T) {
 // The work's title is the one given, else the task's first line; the
 // session's names the agent first, within the protocol's title bound; the
 // worktree is named as an owner's session worktree, from the work key
-// (ADR-0073, ADR-0027).
+// (ADR-0074, ADR-0027).
 func TestWorkTitlesAndWorktree(t *testing.T) {
 	if got := WorkTitle(Work{Task: "\n Fix the flaky test.\nIt times out."}); got != "Fix the flaky test." {
 		t.Errorf("from the task: %q", got)
@@ -143,7 +143,7 @@ func TestWorkTitlesAndWorktree(t *testing.T) {
 // The work session's brief says where it works and where its answers go;
 // an answer names its session and work, clipped; the tool's answer names
 // the session, its worktree and branch; the guide says where a repository
-// is changed (ADR-0073).
+// is changed (ADR-0074).
 func TestWorkTexts(t *testing.T) {
 	brief := WorkBrief(12, "frostyard/example", "/src/example--vera-x-abc123", "vera/x-abc123", "", "Fix it.\n")
 	for _, want := range []string{"/src/example--vera-x-abc123", "frostyard/example", "vera/x-abc123", "session 12", "goes back to that session", "AGENTS.md", "\n\nThe task:\nFix it."} {

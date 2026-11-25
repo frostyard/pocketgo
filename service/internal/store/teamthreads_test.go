@@ -38,7 +38,7 @@ func threadIDs(rows []ThreadRow) []int64 {
 // changed first, with their shifts, the open asks, their pull requests
 // with the verdict of each one's change set, the pull request a review
 // reviews, the plans of the plan threads not closed, and the desk's count
-// as its cap counts it (ADR-0071).
+// as its cap counts it (ADR-0072).
 func TestTeamThreadsReadsTheBoardAndTheWindow(t *testing.T) {
 	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -181,7 +181,7 @@ func TestTheBoardCountsTheOpenAsksOfItsThreads(t *testing.T) {
 
 // TeamThread reads one thread whole, every ask and pull request of it
 // with its verdict, its shift, its plan and its sessions, with the board,
-// in one snapshot; a thread that does not exist is ErrNotFound (ADR-0071).
+// in one snapshot; a thread that does not exist is ErrNotFound (ADR-0072).
 func TestTeamThreadReadsOneThreadWhole(t *testing.T) {
 	s, _ := open(t)
 	for _, row := range []SessionRow{{ID: 1, Profile: "odrade", Provider: "faux", Model: "faux-1"}, {ID: 14, Profile: "vera", Provider: "faux", Model: "faux-2"}} {

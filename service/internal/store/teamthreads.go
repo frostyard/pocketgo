@@ -9,7 +9,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// ThreadsRows are what team_threads reads (ADR-0071), from one read
+// ThreadsRows are what team_threads reads (ADR-0072), from one read
 // transaction: the board the desktop's work board draws, and the threads
 // closed in the window.
 type ThreadsRows struct {

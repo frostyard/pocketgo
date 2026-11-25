@@ -209,7 +209,7 @@ func TestStaleReasonIsOneBoundedUTF8Line(t *testing.T) {
 // AddNewKeepingBase hands its keep the new branch's base, why it starts
 // from HEAD included, before the folder is made or any step recorded; a
 // keep that fails makes nothing, so a retry decides the base again, and a
-// retry from a made worktree decides none (ADR-0073; Codex review of #174,
+// retry from a made worktree decides none (ADR-0074; Codex review of #174,
 // round 2).
 func TestAddNewKeepsTheBaseBeforeItMakesAnything(t *testing.T) {
 	checkout := repo(t)

@@ -479,8 +479,8 @@ func (s *Server) recordGate(_ context.Context, row store.PullRow, set func() (st
 // and team_github to each older plan lead's and open review's (ADR-0036,
 // ADR-0057), the schedule tool to each older private agent's session
 // but a standing one (ADR-0060), team_watch to each older session that
-// watches now but a standing one (ADR-0072), and team_work to each older
-// agent's own session but a standing one (ADR-0073). The service calls it once, after
+// watches now but a standing one (ADR-0073), and team_work to each older
+// agent's own session but a standing one (ADR-0074). The service calls it once, after
 // engine.Resume; a session it cannot change is logged, and keeps its
 // tools. The upgrades go apart: one that fails holds back no other, and
 // the schedule tools' is tried again by the schedules passes (Codex
@@ -512,11 +512,11 @@ func (s *Server) UpgradeTeamTools(ctx context.Context) error {
 		failures = append(failures, err)
 	}
 	// Every session that watches now, started before team_watch, gets it
-	// (ADR-0072).
+	// (ADR-0073).
 	if err := s.upgradeWatchTools(ctx); err != nil {
 		failures = append(failures, err)
 	}
-	// An agent's own session started before team_work gets it (ADR-0073).
+	// An agent's own session started before team_work gets it (ADR-0074).
 	if err := s.upgradeWorkTools(ctx); err != nil {
 		failures = append(failures, err)
 	}

@@ -10,7 +10,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
-// Only a supervisor reads the threads (ADR-0071).
+// Only a supervisor reads the threads (ADR-0072).
 func TestCheckThreadsCaller(t *testing.T) {
 	if err := CheckThreadsCaller(&profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor}); err != nil {
 		t.Fatalf("a supervisor: %v", err)
@@ -27,7 +27,7 @@ func TestCheckThreadsCaller(t *testing.T) {
 }
 
 // A list takes no thread, a read takes one, and nothing else is an
-// action (ADR-0071).
+// action (ADR-0072).
 func TestCheckThreadsCall(t *testing.T) {
 	for _, c := range []ThreadsCall{{Action: ThreadsList}, {Action: ThreadsRead, Thread: 5}} {
 		if err := CheckThreadsCall(c); err != nil {
@@ -63,7 +63,7 @@ func boardWith(threads []proto.Thread, asks []proto.Ask, pulls []proto.PullReque
 	return b
 }
 
-// NextMover mirrors the desktop's work board rule for rule (ADR-0071):
+// NextMover mirrors the desktop's work board rule for rule (ADR-0072):
 // each case here is a case of state's TestTheBoardGroupsThreadsByWhoMovesNext,
 // TestAPlanThreadOnTheBoard, TestAnApprovedPlansThreadMovesWithItsTasks or
 // TestAShiftsThreadIsMovedByWhoItWaitsFor, with the same answer. A change
@@ -272,7 +272,7 @@ func threadsFixture() Threads {
 // recently changed first, each with its state, shift, asks, pull requests
 // and delegating session; then the cross-reviews that run, apart; then
 // the threads closed in the window. An older closed thread and a closed
-// review are left out (ADR-0071).
+// review are left out (ADR-0072).
 func TestThreadsTextGroupsTheThreadsByWhoMovesNext(t *testing.T) {
 	text := ThreadsText(threadsFixture())
 	for _, want := range []string{
@@ -441,7 +441,7 @@ func wholeFixture() (Threads, ThreadWhole) {
 // sessions and models, its folder, plan, successor, worker and reopens,
 // its task and report, its shift with each round, every ask with its
 // answer or withdrawal, and every pull request with CI and verdict
-// (ADR-0071).
+// (ADR-0072).
 func TestThreadTextReadsAThreadWhole(t *testing.T) {
 	th, w := wholeFixture()
 	text := ThreadText(th, w)
@@ -571,7 +571,7 @@ func TestThreadTextBoundsAPlansGate(t *testing.T) {
 	}
 }
 
-// The supervisor's instructions name team_threads (ADR-0071).
+// The supervisor's instructions name team_threads (ADR-0072).
 func TestThreadsGuideNamesTheTool(t *testing.T) {
 	for _, want := range []string{"team_threads", "before you ask the owner or a specialist where a thread stands", "closed threads whose records changed in the last 7 days"} {
 		if !strings.Contains(strings.ToLower(ThreadsGuide), strings.ToLower(want)) {

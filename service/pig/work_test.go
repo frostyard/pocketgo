@@ -13,7 +13,7 @@ import (
 
 // An agent's team_work call reaches the team, keyed by its session, its
 // task and its call's id, with its arguments, and the team's text is its
-// result (ADR-0073).
+// result (ADR-0074).
 func TestTeamWorkCallsTheTeam(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels(toolTurn(toolWork, map[string]any{"repository": "frostyard/example", "task": "Fix the flaky test.", "title": "Flaky"}, "w1"), answer("ok")))
@@ -43,7 +43,7 @@ func TestTeamWorkCallsTheTeam(t *testing.T) {
 // An agent's own session at its home is told where it changes a
 // repository, after its identity; one the owner opened in a checkout or a
 // worktree, a work session, a thread's specialist, a supervisor and a
-// private agent are not (ADR-0073; Codex review of #174, round 3).
+// private agent are not (ADR-0074; Codex review of #174, round 3).
 func TestOnlyASessionThatStartsWorkGetsTheWorkGuide(t *testing.T) {
 	vera := &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent, Identity: "# Vera", Home: "/home/vera"}
 	for name, tc := range map[string]struct {
@@ -80,7 +80,7 @@ func TestOnlyASessionThatStartsWorkGetsTheWorkGuide(t *testing.T) {
 // An agent's session made before team_work gets it, in the place a new
 // session has it, before team_memory and team_watch, once; one with no
 // team extension gets the extension too, and team_work alone among its
-// team tools (ADR-0072, ADR-0073).
+// team tools (ADR-0073, ADR-0074).
 func TestSetWorkToolGivesItToAnOlderAgentSession(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
@@ -125,7 +125,7 @@ func TestSetWorkToolGivesItToAnOlderAgentSession(t *testing.T) {
 
 // An agent's standing session takes team_work, and the guide, with its
 // profile at its idle refresh, as it takes every tool its profile gives
-// (ADR-0026, ADR-0073).
+// (ADR-0026, ADR-0074).
 func TestAStandingAgentSessionTakesTeamWorkWithItsProfile(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(windowModels())

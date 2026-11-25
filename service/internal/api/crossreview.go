@@ -304,7 +304,7 @@ func (s *Server) runEnded(id int64) {
 	// (ADR-0021).
 	s.followWorker(id)
 	// A work session's run that ended brings its answer to the session
-	// that started it (ADR-0073).
+	// that started it (ADR-0074).
 	s.followWork(id)
 	// A shift's round may have ended (ADR-0024).
 	s.shiftSoon()

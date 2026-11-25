@@ -57,10 +57,10 @@ type Team interface {
 	TeamInbox(ctx context.Context, call api.TeamCall) (string, error)
 	TeamThreads(ctx context.Context, call api.TeamCall, c team.ThreadsCall) (string, error)
 	// TeamWatch keeps the calling session's watches of pull requests
-	// (ADR-0072).
+	// (ADR-0073).
 	TeamWatch(ctx context.Context, call api.TeamCall, c team.WatchCall) (string, error)
 	// TeamWork starts the calling agent's own work session in a fresh
-	// worktree of one of its repositories (ADR-0073).
+	// worktree of one of its repositories (ADR-0074).
 	TeamWork(ctx context.Context, call api.TeamCall, w team.Work) (string, error)
 	// Schedule keeps a private agent's own schedules, to the calling
 	// session, with team_schedule's engine (ADR-0060). It is no team
@@ -141,7 +141,7 @@ const workParameters = `{"type":"object","properties":{` +
 // inboxParameters are team_inbox's: none.
 const inboxParameters = `{"type":"object","properties":{},"additionalProperties":false}`
 
-// threadsParameters are team_threads' (ADR-0071).
+// threadsParameters are team_threads' (ADR-0072).
 var threadsParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["list","read"],"description":"list every thread not closed with who moves it next, and the closed threads whose records changed in the last ` +
 	strconv.Itoa(team.InboxDays) + ` days; or read one thread whole."},` +
@@ -484,7 +484,7 @@ func (e *Engine) teamExtension() *durable.Extension {
 			},
 			{
 				// After team_inbox, as roleTools and laterSupervisorTools order
-				// them (ADR-0071). The rule to read a thread before asking where
+				// them (ADR-0072). The rule to read a thread before asking where
 				// it stands is in its description too, for a supervisor started
 				// before the line in its instructions.
 				ToolSchema: schema(toolThreads, fmt.Sprintf("See the threads: list every thread not closed, grouped by who moves it next as the owner's work board "+
@@ -541,7 +541,7 @@ func (e *Engine) teamExtension() *durable.Extension {
 				// list's order (teamTools). An agent's own session's alone
 				// (roleTools, team.MayWork); the rule to change a repository
 				// from a work session is in its description too, which an
-				// older session reads from this registration (ADR-0073).
+				// older session reads from this registration (ADR-0074).
 				ToolSchema: schema(toolWork, "Start a work session of yours in a fresh git worktree of one of your repositories, on a new branch, with the task "+
 					"as its first message: that repository's own AGENTS.md and skills load there. In a session at your home, change a repository through a work session, "+
 					"never in your home; a session the owner opened in a repository works there. "+
@@ -570,7 +570,7 @@ func (e *Engine) teamExtension() *durable.Extension {
 			{
 				// After team_memory: a session given it later gets it last
 				// among its team tools (SetWatchTool), as a new one has it
-				// (ADR-0072). How to wait is in its description, which a
+				// (ADR-0073). How to wait is in its description, which a
 				// session started before the guide in its brief reads too.
 				ToolSchema: schema(toolWatch, "Have pocketd tell you when a pull request reaches a condition: its checks are done, it merged, or it closed. "+
 					"The call returns at once. Only an answer that starts with \"Watching W\" promises a message: end your run then. pocketd checks the pull "+
@@ -622,9 +622,9 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // cross-review read GitHub with GET alone, too (team_github, ADR-0036,
 // ADR-0057), and no other session does. A supervisor alone reads the
 // owner's Inbox (team_inbox, ADR-0046) and the threads (team_threads,
-// ADR-0071). Every session that keeps lessons but a shift's specialist
-// watches pull requests (team_watch, ADR-0072). An agent's own session
-// starts its work sessions (team_work, team.MayWork, ADR-0073). A private
+// ADR-0072). Every session that keeps lessons but a shift's specialist
+// watches pull requests (team_watch, ADR-0073). An agent's own session
+// starts its work sessions (team_work, team.MayWork, ADR-0074). A private
 // agent has no team tool at all (ADR-0042): it keeps its own schedules
 // with the schedule tool, which is none (toolsOf, ADR-0060).
 func roleTools(spec api.SessionSpec) []string {
@@ -659,7 +659,7 @@ func roleTools(spec api.SessionSpec) []string {
 		// A supervisor keeps its own reminders and repeats too (ADR-0030),
 		// sends to the threads it delegated (ADR-0032), gathers proposals
 		// and keeps their board (ADR-0033), launches them (ADR-0034), reads
-		// the owner's Inbox (ADR-0046) and reads the threads (ADR-0071).
+		// the owner's Inbox (ADR-0046) and reads the threads (ADR-0072).
 		out = append(out, toolDelegate, toolClose)
 		out = append(out, laterSupervisorTools...)
 	}
@@ -674,7 +674,7 @@ func roleTools(spec api.SessionSpec) []string {
 		out = append(out, toolMessage, toolWorker)
 	}
 	// An agent's own session starts work sessions in fresh worktrees of
-	// its repositories; a work session itself does not (ADR-0073).
+	// its repositories; a work session itself does not (ADR-0074).
 	if team.MayWork(spec.Profile, roleOf(spec)) {
 		out = append(out, toolWork)
 	}
@@ -683,7 +683,7 @@ func roleTools(spec api.SessionSpec) []string {
 	}
 	// Every session that keeps lessons watches pull requests too, but a
 	// shift's specialist, whose rounds read CI in code (team.MayWatch,
-	// ADR-0072).
+	// ADR-0073).
 	if team.MayWatch(spec.Profile, roleOf(spec)) {
 		out = append(out, toolWatch)
 	}
@@ -1401,13 +1401,13 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 // in roleTools' order, which a session started before them lacks:
 // team_schedule (ADR-0030), team_send (ADR-0032), team_gather and
 // team_board (ADR-0033), team_launch (ADR-0034), team_inbox (ADR-0046),
-// team_threads (ADR-0071).
+// team_threads (ADR-0072).
 var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads}
 
 // SetSupervisorTools gives a supervisor's session started before them the
 // supervisor's later team tools (laterSupervisorTools), in the order
 // roleTools places them, after its other tools, and says whether it did
-// (ADR-0030, ADR-0032, ADR-0033, ADR-0046, ADR-0071; Codex review of #51,
+// (ADR-0030, ADR-0032, ADR-0033, ADR-0046, ADR-0072; Codex review of #51,
 // round 1).
 // A session that has them all, or that has no team_delegate, is left as it
 // is.
@@ -1464,7 +1464,7 @@ func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 }
 
 // SetWatchTool gives team_watch, and the team's extension if the session
-// lacks it, to a session made before it (ADR-0072), in the place roleTools
+// lacks it, to a session made before it (ADR-0073), in the place roleTools
 // gives it among its team tools, after its other tools, and says whether
 // it did. Its caller decides which sessions get it (team.MayWatch): a
 // session made before team_memory, with other team tools or none, gets
@@ -1496,7 +1496,7 @@ func (e *Engine) SetWatchTool(ctx context.Context, id int64) (bool, error) {
 	return true, conversation.Configure(ctx, change)
 }
 
-// SetWorkTool gives team_work to session id made before it (ADR-0073),
+// SetWorkTool gives team_work to session id made before it (ADR-0074),
 // among its team tools in the order roleTools places it, after its other
 // tools, with the team extension when the session has none, and says
 // whether it did. Its caller decides which sessions get it

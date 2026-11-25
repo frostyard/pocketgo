@@ -94,11 +94,11 @@ type Options struct {
 	// SetMCPTools. It must not block.
 	OnMCPTools func(profile string)
 	// Log takes what the engine reports as it serves: an MCP server's
-	// state (ADR-0063), and the cache keeper's warms (ADR-0074). Nil logs
+	// state (ADR-0063), and the cache keeper's warms (ADR-0075). Nil logs
 	// nothing.
 	Log *slog.Logger
 	// CacheKeeper keeps the prompt cache warm while a run waits on a tool
-	// call (ADR-0074): pocketd serve sets it from -cache-keeper, on by
+	// call (ADR-0075): pocketd serve sets it from -cache-keeper, on by
 	// default. Off, no model request passes the keeper.
 	CacheKeeper bool
 }
@@ -128,7 +128,7 @@ type Engine struct {
 	mcp     *mcpHub
 	mcpNote string
 	// keeper keeps the prompt cache of a run that waits on a tool call
-	// warm (ADR-0074); nil when Options.CacheKeeper is off.
+	// warm (ADR-0075); nil when Options.CacheKeeper is off.
 	keeper    *cacheKeeper
 	mu        sync.Mutex
 	watches   map[int64]*watcher
@@ -333,7 +333,7 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 		}
 	}
 	// Every provider's requests pass the cache keeper, once the catalog is
-	// whole (ADR-0074).
+	// whole (ADR-0075).
 	if opts.CacheKeeper {
 		e.keeper = newCacheKeeper(opts.Log, newKeeperClock())
 		e.keeper.install(models)
@@ -463,7 +463,7 @@ func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api 
 // though the harness closes once.
 func (e *Engine) Close(ctx context.Context) error {
 	// No warm outlives the engine, and none starts as the harness stops
-	// (ADR-0074).
+	// (ADR-0075).
 	keeperErr := e.keeper.close(ctx)
 	var watchErr error
 	if e.stopShown != nil {
@@ -582,7 +582,7 @@ func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
 // the owner's global AGENTS.md, then, for a session started from a
 // profile, the agent's identity, and for a supervisor the roster it
 // delegates to, or for a session at the agent's home that starts work
-// sessions where it changes a repository (team.WorkGuideFor, ADR-0073),
+// sessions where it changes a repository (team.WorkGuideFor, ADR-0074),
 // then its folder's
 // AGENTS.md and the skills it may read,
 // then its lessons section (ADR-0043); loaded holds the files' parts. A
@@ -604,7 +604,7 @@ func sessionInstructions(spec api.SessionSpec, loaded team.Loaded) string {
 	identity := "You are " + spec.Profile.Name + ", the team's " + string(spec.Profile.Role) + ". Your profile follows.\n\n" + spec.Profile.Identity
 	// A session at the agent's home that starts work sessions is told
 	// where it changes a repository; one the owner opened in a repository
-	// is not (team.WorkGuideFor, ADR-0073).
+	// is not (team.WorkGuideFor, ADR-0074).
 	guide := team.WorkGuideFor(spec.Profile, roleOf(spec), spec.Cwd, spec.Repository)
 	// The lessons last: pocketd owns the instructions from their marker on
 	// (SetLessons).
@@ -1366,7 +1366,7 @@ type watcher struct {
 	stopped  bool
 	queue    queueCache // the queue as the last live state read it
 	// busy is whether the last live state read had a run: its end stops
-	// the session's warm (ADR-0074).
+	// the session's warm (ADR-0075).
 	busy bool
 }
 
@@ -1484,7 +1484,7 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 	live := e.liveOf(id, view, &w.queue)
 	// A run that ended or was aborted sends no request after its last
 	// tool call: its warm stops, unless a later run began since
-	// (ADR-0074).
+	// (ADR-0075).
 	if w.busy && !live.Busy {
 		e.noteRunEnded(ctx, id, view)
 	}

@@ -726,7 +726,7 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 		return err
 	}
 	// Its specialist's watches end with no note, whatever closed it
-	// (ADR-0072).
+	// (ADR-0073).
 	if err := endThreadWatches(ctx, tx, before.ID, now); err != nil {
 		return err
 	}
@@ -865,7 +865,7 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 		return err
 	}
 	// The lead's watches end with its thread, as any closed thread's
-	// (ADR-0072).
+	// (ADR-0073).
 	if err := endThreadWatches(ctx, tx, facts.Plan.ThreadID, now); err != nil {
 		return err
 	}
@@ -1004,7 +1004,7 @@ func freedPlace(ctx context.Context, tx *sql.Tx, before ThreadRow, now int64) er
 // that ask may go now (Codex review of #25, round 2). A plan in drafting
 // or review tells nobody: its lead goes on, and the owner approves it
 // later. The owner's answer that clears such a gate tells the supervisor
-// in the answer's own note (answerNote, ADR-0071).
+// in the answer's own note (answerNote, ADR-0072).
 func askCleared(ctx context.Context, tx *sql.Tx, id int64, now int64) error {
 	ask, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, id).Scan)
 	if err != nil {
@@ -1046,7 +1046,7 @@ func gateCleared(facts PlanFacts) (ready []team.Task, cleared bool) {
 }
 
 // answerNote tells the asking thread's supervisor, once, of the owner's
-// answer to ask id, in the transaction that records it (ADR-0071): a note
+// answer to ask id, in the transaction that records it (ADR-0072): a note
 // to the session that delegated the thread, keyed by the thread's owner,
 // the ask's key and a digest of the answer (team.AnsweredKey), which the
 // outbox places as it places every note. A thread with no such session,

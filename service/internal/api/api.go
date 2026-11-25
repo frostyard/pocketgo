@@ -68,7 +68,7 @@ type SessionSpec struct {
 	Lessons string
 	// Shift says the thread's specialist works in a shift's rounds
 	// (ADR-0024): it gets no team_watch, since the rounds read CI in code
-	// (ADR-0072).
+	// (ADR-0073).
 	Shift bool
 	// Review is a cross-review's session (ADR-0019): read-only tools,
 	// team_diff, team_verdict and team_github (ADR-0057), no other team
@@ -80,7 +80,7 @@ type SessionSpec struct {
 	Worker      bool
 	WorkerTools []string
 	// Work is an agent's work session, which team_work started
-	// (ADR-0073): a session of its caller's profile, with no team_work,
+	// (ADR-0074): a session of its caller's profile, with no team_work,
 	// whose answers go back to its caller.
 	Work bool
 	// Repository is the repository the owner opened the session on
@@ -189,7 +189,7 @@ type Engine interface {
 	// them the supervisor's later team tools it lacks (team_schedule,
 	// team_send, team_gather, team_board, team_launch, team_inbox,
 	// team_threads), and says whether it did (ADR-0030, ADR-0046,
-	// ADR-0071).
+	// ADR-0072).
 	SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	// SetGitHubTool gives team_github to a plan's lead, a consult or a
 	// cross-review whose session was made before it existed, and says
@@ -204,11 +204,11 @@ type Engine interface {
 	// sessions get it (team.MaySchedule).
 	SetScheduleTool(ctx context.Context, id int64) (bool, error)
 	// SetWatchTool gives team_watch to a session made before it that has
-	// the team's tools (team_memory), and says whether it did (ADR-0072):
+	// the team's tools (team_memory), and says whether it did (ADR-0073):
 	// the caller decides which sessions get it (team.MayWatch).
 	SetWatchTool(ctx context.Context, id int64) (bool, error)
 	// SetWorkTool gives team_work to a session made before it, among its
-	// team tools, and says whether it did (ADR-0073): the caller decides
+	// team tools, and says whether it did (ADR-0074): the caller decides
 	// which sessions get it (team.MayWork).
 	SetWorkTool(ctx context.Context, id int64) (bool, error)
 	// MCPProfiles are the profiles with an MCP server pocketd connects,
@@ -506,7 +506,7 @@ type Server struct {
 	workerStops keyLocks
 	// worksDue are the work sessions whose answers could not be read or
 	// kept, and workScanDue says the next delivery pass reads every work
-	// session, as the first after a start does (ADR-0073); workDueMu
+	// session, as the first after a start does (ADR-0074); workDueMu
 	// guards both. workFollows hold one work session each while its
 	// answers are read and kept (queueWorkReplies).
 	workDueMu   sync.Mutex
@@ -652,7 +652,7 @@ type Server struct {
 	// GitHub to its record: two reads of one never cross (ADR-0016). A
 	// wait for one ends with its context.
 	pullLocks ctxLocks
-	// watchMu runs the watches' passes one at a time (ADR-0072), and
+	// watchMu runs the watches' passes one at a time (ADR-0073), and
 	// guards watchBudget, the GitHub requests the passes may still make
 	// (team.ReadBudget), and watchNext, the watch the next pass starts at:
 	// the first one the last could not read for the budget, 0 for the
@@ -669,7 +669,7 @@ type Server struct {
 	// watchAdmitMu orders a watch's admission (its last check and its
 	// insert) with StartPulls(0), which sets watchesOff under it before it
 	// ends the live watches: an add commits before that sweep reads, or
-	// sees watchesOff and is refused (ADR-0072; Codex review of #173,
+	// sees watchesOff and is refused (ADR-0073; Codex review of #173,
 	// round 1). afterWatchRead, in tests, runs in an add between its
 	// reads of GitHub and its admission.
 	watchAdmitMu   sync.Mutex
@@ -827,7 +827,7 @@ type Server struct {
 	// (store.MarkWorktree); tests make it fail.
 	markWorktree func(ctx context.Context, key string, step int) error
 	// keepWorkStale keeps why a work's branch starts from its checkout's
-	// HEAD (store.KeepWorkStale; ADR-0073); tests make it fail.
+	// HEAD (store.KeepWorkStale; ADR-0074); tests make it fail.
 	keepWorkStale func(ctx context.Context, key, stale string) error
 	// sessionMu orders session events: each is read and published under
 	// it, so the last one carries every change made before it was read. It
@@ -1043,7 +1043,7 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 func (s *Server) runStarted(id int64) {
 	s.followWorker(id)
 	// And a work session's answers of the runs before go to the session
-	// that started it (ADR-0073).
+	// that started it (ADR-0074).
 	s.followWork(id)
 	if s.afterRunStarted != nil {
 		s.afterRunStarted(id)
@@ -2051,7 +2051,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Nor does an agent's work session before its task, which it works on
-	// first (ADR-0073).
+	// first (ADR-0074).
 	if waits, err := s.workTaskWaits(r.Context(), id); err != nil {
 		s.internal(w, "read the session's work", err)
 		return

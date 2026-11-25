@@ -381,7 +381,7 @@ func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []w
 // runReplies are the replies of the runs a transcript holds, read as
 // workerReplies reads a worker's, with who naming the session in the
 // replies pocketd writes for a run that ended with none: a worker's, or an
-// agent's work session's (ADR-0073). consumed is the last entry of the
+// agent's work session's (ADR-0074). consumed is the last entry of the
 // last run that ended, or after: the entry before the message that began
 // the next run, or the transcript's last once it is idle, never one of a
 // run still at work. A work session reads on from there, so no entry of a

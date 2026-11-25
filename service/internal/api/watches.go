@@ -13,7 +13,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
-// Watches (ADR-0072): team_watch keeps a session's watch of a pull
+// Watches (ADR-0073): team_watch keeps a session's watch of a pull
 // request, and pocketd checks it in code in each pull round
 // (Server.watchPass), reading the pull request, and CI at its head for
 // checks, on GitHub through Engine.GH in the sandbox. A watch's end files

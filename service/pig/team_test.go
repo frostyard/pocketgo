@@ -65,7 +65,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
 		// An agent's own session starts work sessions; a work session of
 		// its profile does not, and watches as any session that keeps
-		// lessons (ADR-0072, ADR-0073).
+		// lessons (ADR-0073, ADR-0074).
 		"an agent":       {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolWork, toolMemory, toolWatch}},
 		"a work session": {api.SessionSpec{Profile: vera, Work: true}, []string{"read", "bash", toolMemory, toolWatch}},
 		"a supervisor":   {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolWatch, toolQuestion}},
@@ -75,7 +75,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		// and no team tool (ADR-0021).
 		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolWorker, toolMemory, toolWatch}},
 		// A shift's specialist watches nothing: its rounds read CI in code
-		// (ADR-0072).
+		// (ADR-0073).
 		"a shift's specialist":  {api.SessionSpec{Profile: vera, Thread: 3, Shift: true}, []string{"read", "bash", toolMessage, toolWorker, toolMemory}},
 		"a worker":              {api.SessionSpec{Thread: 3, Worker: true, WorkerTools: []string{"read", "bash", toolMessage}}, []string{"read", "bash"}},
 		"a worker of all tools": {api.SessionSpec{Thread: 3, Worker: true}, []string{"read", "write", "edit", "bash"}},
@@ -160,7 +160,7 @@ type fakeTeam struct {
 	readResult string
 	// launches are the team_launch calls, in order.
 	launches []team.LaunchCall
-	// works are the team_work calls, in order (ADR-0073).
+	// works are the team_work calls, in order (ADR-0074).
 	works []team.Work
 	// inboxes are the team_inbox calls, in order; inboxResult is what
 	// TeamInbox answers, "inbox" when empty.
@@ -170,7 +170,7 @@ type fakeTeam struct {
 	// TeamThreads answers, "threads" when empty.
 	threads       []team.ThreadsCall
 	threadsResult string
-	// watches are the team_watch calls, in order (ADR-0072).
+	// watches are the team_watch calls, in order (ADR-0073).
 	watches []team.WatchCall
 	fail    error
 	// diff is what TeamDiff answers, a short patch when "".

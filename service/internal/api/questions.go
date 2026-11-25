@@ -148,7 +148,7 @@ func (s *Server) sessionRole(ctx context.Context, session int64) (team.SessionRo
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return role, err
 	}
-	// An agent's work session (ADR-0073).
+	// An agent's work session (ADR-0074).
 	if _, err := s.store.WorkOfSession(ctx, session); err == nil {
 		role.Work = true
 	} else if !errors.Is(err, store.ErrNotFound) {

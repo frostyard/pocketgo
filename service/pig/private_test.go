@@ -338,7 +338,7 @@ func TestAPrivateProfileEndToEndOverHTTP(t *testing.T) {
 	// pocketd's next start refreshes every session's lessons: the private
 	// agent's older session loses its section and keeps its identity, as
 	// it was written when the session was a team agent's, team_work's
-	// guide included (ADR-0073), whose tool every call refuses now.
+	// guide included (ADR-0074), whose tool every call refuses now.
 	server.RefreshAllLessons()
 	if err := server.DeliverPending(ctx); err != nil {
 		t.Fatal(err)

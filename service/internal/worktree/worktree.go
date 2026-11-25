@@ -534,7 +534,7 @@ func AddNew(ctx context.Context, t Tools, checkout, path, branch, token string, 
 // base (Start: its commit, and why it starts from HEAD) once it is decided,
 // before the folder is made or any step recorded: a caller keeps it where a
 // retry finds it, since a retry that finds the worktree made checks it and
-// decides no base again (ADR-0073; Codex review of #174, round 2). A keep
+// decides no base again (ADR-0074; Codex review of #174, round 2). A keep
 // that fails makes nothing, and answers its error.
 func AddNewKeepingBase(ctx context.Context, t Tools, checkout, path, branch, token string, from Step, keep func(Start) error, record func(Step) error) (Start, error) {
 	switch from {

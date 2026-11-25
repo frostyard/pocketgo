@@ -1,4 +1,4 @@
-# 0074 — Keep the prompt cache warm between a run's requests, in code
+# 0075 — Keep the prompt cache warm between a run's requests, in code
 
 - **Status:** Accepted
 - **Date:** 2026-11-24

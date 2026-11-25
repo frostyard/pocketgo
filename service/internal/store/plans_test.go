@@ -814,7 +814,7 @@ func TestATaskCloseBehindAnOpenAskWaitsForTheAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The answer's own note to the supervisor names every ready task, and
-	// no second note is filed for it (ADR-0071).
+	// no second note is filed for it (ADR-0072).
 	note, err := s.Note(ctx, team.AnsweredKey(facts.Thread.Owner, asks[0].Key, "No."))
 	if err != nil || note.SessionID != 1 || !strings.Contains(note.Text, "has no open question now: its ready tasks may go") ||
 		!strings.Contains(note.Text, "- t2 · Sign") || !strings.Contains(note.Text, "- t3 · Docs") {
