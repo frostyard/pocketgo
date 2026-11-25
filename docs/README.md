@@ -108,6 +108,10 @@ Docs are split by the question they answer:
 - [Shared owner merge service](plans/shared-merge-service.md)
 - [Phone and tablet client](plans/phone-client.md)
 
+### Surveys
+
+- [Migration gaps: what the old setup did that pocketgo does not, and unfinished plans](gaps.md)
+
 ## Conventions
 
 - **New docs start from their category's `TEMPLATE.md`** (in each directory).
