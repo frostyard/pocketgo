@@ -180,7 +180,11 @@ func (h *held) Resume()  { h.resumes++ }
 // sign-in's refresh is held while iOS has the app in the background, and
 // let go as it comes back (ADR-0041); a desktop holds nothing.
 func TestAPhoneHoldsTheGitHubRefreshInTheBackground(t *testing.T) {
-	headlessOnly(t)
+	// The test moves the app to the background through its environment,
+	// which only the headless host takes from a test.
+	if nsgotest.Target() != "" {
+		t.Skip("the app's lifecycle is the platform's on a target")
+	}
 	for _, tc := range []struct {
 		name string
 		env  core.Environment
