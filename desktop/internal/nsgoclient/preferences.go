@@ -81,11 +81,30 @@ func (c *client) notificationSettings(cx *core.Scope) []ui.SettingsGroup {
 	}
 	return []ui.SettingsGroup{{Items: items}, {Title: "Notify me about", Items: kinds}}
 }
+
+// openNotice opens what the clicked notification id is about: its
+// session, or the Inbox at its card. One of another service than the one
+// signed in to opens nothing. One clicked while the kept sign-in still
+// starts opens once it is connected (restore), in place of the session
+// shown last (ADR-0049).
 func (c *client) openNotice(id string) {
 	server, target, ok := state.ParseNoticeID(id)
-	if !ok || server != c.store.Conn.Server {
+	if !ok {
 		return
 	}
+	if !c.store.SignedIn() {
+		if kept, _ := c.cx.Storage().GetItem("connected-server"); server == kept {
+			c.pendingNotice = &target
+		}
+		return
+	}
+	if server != c.store.Conn.Server {
+		return
+	}
+	c.openTarget(target)
+}
+
+func (c *client) openTarget(target state.NoticeTarget) {
 	if target.Session != 0 {
 		c.openSession(target.Session)
 	} else {

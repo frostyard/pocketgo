@@ -45,7 +45,12 @@ func (c *client) restore() {
 			}
 			if err == nil && secret != "" {
 				err = c.store.Connect(server, secret)
-				if err == nil && c.prefs.LastSession != 0 {
+				switch t := c.pendingNotice; {
+				case err == nil && t != nil:
+					// A notification clicked as the app started.
+					c.pendingNotice = nil
+					c.openTarget(*t)
+				case err == nil && c.prefs.LastSession != 0:
 					c.openSession(c.prefs.LastSession)
 				}
 			}

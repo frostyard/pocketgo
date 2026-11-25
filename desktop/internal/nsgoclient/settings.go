@@ -55,7 +55,7 @@ func (c *client) generalSettings(cx *core.Scope) []ui.SettingsItem {
 		}
 	}}
 	return append(rows, ui.SettingsItem{ID: "theme", Title: "Theme", Description: "Choose light or dark, or follow the system.", Keywords: []string{"appearance"}, Control: theme},
-		ui.SettingsItem{ID: "zoom", Title: "Zoom", Description: "Adjust the size of text and controls.", Keywords: []string{"display", "scale"}, Control: zoom})
+		ui.SettingsItem{ID: "zoom", Title: "Zoom", Description: zoomNote(c.zoom.Get(), c.shownZoom()), Keywords: []string{"display", "scale"}, Control: zoom})
 }
 
 func (c *client) connectionSettings() core.Node {
@@ -101,4 +101,14 @@ func (c *client) providerSettings(cx *core.Scope) core.Node {
 		return body("No provider accounts available.")
 	}
 	return workspaceui.Stack(out...)
+}
+
+// zoomNote is what Settings says of the zoom: that a window too narrow
+// for the zoom saved shows a smaller one.
+func zoomNote(saved, shown float32) string {
+	note := "Adjust the size of text and controls."
+	if shown < saved {
+		note += " Shown at " + state.ZoomLabel(shown) + ": the window is too narrow for more."
+	}
+	return note
 }
