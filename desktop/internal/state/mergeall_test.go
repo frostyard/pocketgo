@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/frostyard/frostui/frostuitest"
-
 	"github.com/frostyard/pocketgo/desktop/internal/github"
 	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 	"github.com/frostyard/pocketgo/proto"
@@ -468,7 +466,7 @@ func TestMergeAllEndsWithPocketdsSignIn(t *testing.T) {
 // The store says each time its sign-in changes: a new one, a sign-out, and
 // a token pocketd refused (Codex review of #53, round 1).
 func TestTheStoreSaysWhenItsSignInChanges(t *testing.T) {
-	h := &harness{srv: pocketdtest.New(), loop: frostuitest.NewLoop(), clock: &fakeClock{}}
+	h := &harness{srv: pocketdtest.New(), loop: newTestLoop(), clock: &fakeClock{}}
 	changes := 0
 	h.store = New(Options{Post: h.loop.Post, After: h.clock.After, Transport: h.srv.Transport(),
 		SignedOut: func(_, reason string) { h.signedOut = reason }, SignInChanged: func() { changes++ }})

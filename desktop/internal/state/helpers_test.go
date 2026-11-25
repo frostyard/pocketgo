@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/frostyard/frostui/frostuitest"
-
 	"github.com/frostyard/pocketgo/desktop/internal/pocketdtest"
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -57,7 +55,7 @@ func (c *fakeClock) Fire() {
 // the store's clock (Options.Now), which moves only when a test moves it.
 type harness struct {
 	srv       *pocketdtest.Server
-	loop      *frostuitest.Loop
+	loop      *testLoop
 	clock     *fakeClock
 	now       time.Time
 	store     *Store
@@ -67,7 +65,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	h := &harness{srv: pocketdtest.New(), loop: frostuitest.NewLoop(), clock: &fakeClock{}, now: pocketdtest.Now}
+	h := &harness{srv: pocketdtest.New(), loop: newTestLoop(), clock: &fakeClock{}, now: pocketdtest.Now}
 	h.srv.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}, Name: "Claude Opus 5.5", Reasoning: true,
 		ThinkingLevels: []string{"off", "minimal", "low", "medium", "high", "xhigh"}})
 	h.store = h.newStore(t, h.srv.Transport())
