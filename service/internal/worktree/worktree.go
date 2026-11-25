@@ -527,6 +527,16 @@ const MarkPrefix = "pocketgo-request-"
 //
 // Every worktree it hands over is finished, as Add's is.
 func AddNew(ctx context.Context, t Tools, checkout, path, branch, token string, from Step, record func(Step) error) (Start, error) {
+	return AddNewKeepingBase(ctx, t, checkout, path, branch, token, from, nil, record)
+}
+
+// AddNewKeepingBase is AddNew, and hands keep, when set, the new branch's
+// base (Start: its commit, and why it starts from HEAD) once it is decided,
+// before the folder is made or any step recorded: a caller keeps it where a
+// retry finds it, since a retry that finds the worktree made checks it and
+// decides no base again (ADR-0073; Codex review of #174, round 2). A keep
+// that fails makes nothing, and answers its error.
+func AddNewKeepingBase(ctx context.Context, t Tools, checkout, path, branch, token string, from Step, keep func(Start) error, record func(Step) error) (Start, error) {
 	switch from {
 	case StepRefused:
 		return Start{}, fmt.Errorf("%s %w: an earlier try found it not provably its own", path, ErrTaken)
@@ -565,6 +575,11 @@ func AddNew(ctx context.Context, t Tools, checkout, path, branch, token string, 
 	start, err := freshBase(ctx, t, checkout)
 	if err != nil {
 		return Start{}, err
+	}
+	if keep != nil {
+		if err := keep(start); err != nil {
+			return Start{}, err
+		}
 	}
 	made, err := t.MakeDir(ctx, path)
 	if err != nil {

@@ -509,12 +509,11 @@ func TestAStoppedCallStartsNoWorkSession(t *testing.T) {
 
 // A task not placed yet is submitted only while its worktree is the one
 // its work made: one removed before the task went is dropped, and the
-// caller hears so once; a task placed already is not checked again
-// (Codex review of #174, round 1).
+// caller hears so once, by the delivery pass the drop wakes; a task placed
+// already is not checked again (Codex review of #174, rounds 1 and 2).
 func TestADelayedTaskChecksItsWorktreeFirst(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
-	h.server.retry = func(func()) func() { return func() {} }
 	h.engine.onCreate = func(spec SessionSpec) {
 		if spec.Work {
 			h.engine.mu.Lock()
@@ -528,11 +527,19 @@ func TestADelayedTaskChecksItsWorktreeFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.failTo(0)
-	for range 2 {
-		if _, err := h.server.deliverAll(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// The pass the failed task asked for drops it, with nothing else asked
+	// for since, and nothing else owed to the caller (the work session's
+	// transcript is empty, so it has no answer); the notice is another
+	// session's note, which that pass read its list of sessions before:
+	// only the drop's wake brings it.
+	h.engine.mu.Lock()
+	h.engine.transcripts = map[int64][]proto.Entry{row.Session: {}}
+	h.engine.mu.Unlock()
+	h.server.sessionMu.Lock()
+	h.server.again = false
+	h.server.sessionMu.Unlock()
+	h.runScheduled(1)
+	h.runScheduled(10)
 	h.engine.mu.Lock()
 	_, sent := h.engine.texts[workTaskKey(row.Key)]
 	notice, to := h.engine.texts[row.Key+workDroppedSuffix], h.engine.to[row.Key+workDroppedSuffix]
@@ -750,5 +757,80 @@ func TestAWorkReplayAnswersWithItsCreatedModel(t *testing.T) {
 	again, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."})
 	if err != nil || again != first || strings.Contains(again, "faux-2") {
 		t.Fatalf("a run again %q, %v; the first %q", again, err, first)
+	}
+}
+
+// Why a work's branch starts from the checkout's HEAD is kept before its
+// worktree is made: a keep that fails makes nothing, and the call run
+// again decides the base again, so its task says to fetch and compare;
+// never a made worktree whose replay decides no base (Codex review of
+// #174, round 2).
+func TestAWorkKeepsItsBaseBeforeItsWorktree(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	keep := h.server.keepWorkStale
+	failed := false
+	h.server.keepWorkStale = func(ctx context.Context, key, stale string) error {
+		if !failed {
+			failed = true
+			return errors.New("the work database refused the write")
+		}
+		return keep(ctx, key, stale)
+	}
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil || !strings.Contains(err.Error(), "the work database refused the write") {
+		t.Fatalf("a base that could not be kept: %v", err)
+	}
+	row, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(row.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the worktree was made before its base was kept: %v", err)
+	}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err != nil {
+		t.Fatal(err)
+	}
+	if row, err = h.store.WorkByKey(ctx, workKey(call)); err != nil || row.Stale == "" {
+		t.Fatalf("the work %+v, %v: no stale base kept", row, err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if task := h.engine.texts[workTaskKey(row.Key)]; !strings.Contains(task, team.StaleBase(row.Stale)) {
+		t.Fatalf("the task of the run again:\n%s", task)
+	}
+}
+
+// A call that started its work session answers from what it created the
+// session with: a lookup of the creation record that fails once the task
+// went reports no failed start of work that runs (Codex review of #174,
+// round 2).
+func TestAFreshWorkAnswersWithoutLookingItsSessionUp(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	h.engine.onWatch = func(id int64) {
+		if id != agnes.ID {
+			h.engine.mu.Lock()
+			h.engine.createdErr = errors.New("the durable store is busy")
+			h.engine.mu.Unlock()
+		}
+	}
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	answer, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."})
+	h.engine.onWatch = nil
+	h.engine.mu.Lock()
+	h.engine.createdErr = nil
+	h.engine.mu.Unlock()
+	if err != nil {
+		t.Fatalf("a call whose task went: %v", err)
+	}
+	row, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil || row.Session == 0 || !strings.Contains(answer, "work session "+strconv.FormatInt(row.Session, 10)) || !strings.Contains(answer, "faux/faux-1") {
+		t.Fatalf("the answer %q; the work %+v, %v", answer, row, err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if h.engine.to[workTaskKey(row.Key)] != row.Session {
+		t.Fatal("the task did not go")
 	}
 }

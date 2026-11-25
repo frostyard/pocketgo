@@ -120,9 +120,14 @@ func (s *Store) KeepWorkStale(ctx context.Context, key, stale string) error {
 	return nil
 }
 
-// WorkSessions are the work records whose session started, oldest first.
-func (s *Store) WorkSessions(ctx context.Context) ([]WorkRow, error) {
-	return queryRows(ctx, s.db, scanWork, `SELECT `+workColumns+` FROM work_sessions WHERE session != 0 ORDER BY created_at, key`)
+// WorkSessionIDs are the sessions of the works whose session started,
+// oldest first: a scan of every work reads no task's text (Codex review of
+// #174, round 2).
+func (s *Store) WorkSessionIDs(ctx context.Context) ([]int64, error) {
+	return queryRows(ctx, s.db, func(scan func(...any) error) (int64, error) {
+		var id int64
+		return id, scan(&id)
+	}, `SELECT session FROM work_sessions WHERE session != 0 ORDER BY created_at, key`)
 }
 
 // RecordWorkSession records the work session the engine made for the

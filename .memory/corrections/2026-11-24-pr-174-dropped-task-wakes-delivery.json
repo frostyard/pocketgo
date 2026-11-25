@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A dropped work task's notice to its caller is another session's note, which the delivery pass under way may have read its list of sessions before: dropWorkTask asks for another pass (Server.deliverLater) once the drop commits.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 2: [P2] Wake delivery after queuing a dropped-task notice",
+  "promoted_to": "service/internal/api/work_test.go"
+}

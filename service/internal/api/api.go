@@ -775,6 +775,9 @@ type Server struct {
 	// markWorktree records a step of a session's worktree
 	// (store.MarkWorktree); tests make it fail.
 	markWorktree func(ctx context.Context, key string, step int) error
+	// keepWorkStale keeps why a work's branch starts from its checkout's
+	// HEAD (store.KeepWorkStale; ADR-0073); tests make it fail.
+	keepWorkStale func(ctx context.Context, key, stale string) error
 	// sessionMu orders session events: each is read and published under
 	// it, so the last one carries every change made before it was read. It
 	// also guards retries, untouched and stopped.
@@ -854,7 +857,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal, launchStarting: map[int64]bool{}, launchSettle: map[int64]string{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, workScanDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
+		standingDue: true, workScanDue: true, markWorktree: s.MarkWorktree, keepWorkStale: s.KeepWorkStale, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.changesSlots = make(chan struct{}, maxChangesReads)
 	server.filesSlots = make(chan struct{}, proto.MaxFileReads)

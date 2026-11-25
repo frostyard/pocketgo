@@ -31,7 +31,7 @@ func TestAWorkSessionIsRecordedOnceWithItsTask(t *testing.T) {
 	if _, err := s.WorkOfSession(ctx, 21); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a session no work names: %v", err)
 	}
-	if _, err := s.WorkSessions(ctx); err != nil {
+	if _, err := s.WorkSessionIDs(ctx); err != nil {
 		t.Fatal(err)
 	}
 	session := SessionRow{ID: 21, Title: "Vera: Fix", Cwd: "/real/src/example--vera-fix-abc123", Provider: "faux", Model: "faux-1", Profile: "vera", Route: "profile", CreatedBy: "team"}
@@ -72,7 +72,7 @@ func TestAWorkSessionIsRecordedOnceWithItsTask(t *testing.T) {
 	if got, err := reopened.WorkOfSession(ctx, 21); err != nil || got.Key != "work:team:3:7:c1" || got.Caller != 3 {
 		t.Fatalf("after a reopen %+v, %v", got, err)
 	}
-	if all, err := reopened.WorkSessions(ctx); err != nil || len(all) != 1 || all[0].Session != 21 {
+	if all, err := reopened.WorkSessionIDs(ctx); err != nil || len(all) != 1 || all[0] != 21 {
 		t.Fatalf("the work sessions %+v, %v", all, err)
 	}
 }
