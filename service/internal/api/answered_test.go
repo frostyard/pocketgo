@@ -164,10 +164,12 @@ func TestTheAnswersNoteTellsAReopenTheWorkerStopHolds(t *testing.T) {
 }
 
 // The held reopen the answer's note tells is the noting's own outcome: a
-// worker's stop that finishes after the noting found the reopen held,
-// outside outboxMu and before the answer is filed, clears the thread's
-// flag but not the placed message's reopen, which the next noting brings
-// (Codex review of #175, round 3).
+// worker's stop that finishes during the noting, after a placed message's
+// reopen was found held and before the answer is filed, clears the
+// thread's flag but not that message's reopen, which the next noting
+// brings. A second message, still queued, is looked up after the first:
+// its look finishes the stop, so any second read of the flag would find
+// it cleared (Codex review of #175, rounds 3 and 4).
 func TestTheHeldReopenIsToldFromTheNotingsOwnOutcome(t *testing.T) {
 	h, thread := workerHarness(t)
 	ctx := context.Background()
@@ -180,16 +182,18 @@ func TestTheHeldReopenIsToldFromTheNotingsOwnOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.queueOwner(thread.Session)
-	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "One more thing."}); err != nil {
-		t.Fatal(err)
+	for _, m := range []struct{ id, text string }{{"o1", "One more thing."}, {"o2", "And another."}} {
+		if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: m.id, Text: m.text}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	// o1 is in the transcript, its reopen held by the worker's stop; o2
+	// waits in the queue.
 	h.placeQueued(requestKeyOf(h.harness, "o1"), thread.Session)
-	// The worker's stop finishes at the second look at PiG's records after
-	// the noting's: any look that rebuilt the held reopen from the flag
-	// would find it cleared.
-	looks := 0
-	h.engine.onPlaced = func(string) {
-		if looks++; looks == 2 {
+	stopped := false
+	h.engine.onPlaced = func(key string) {
+		if key == requestKeyOf(h.harness, "o2") && !stopped {
+			stopped = true
 			if err := h.store.WorkerStopped(ctx, thread.ID, worker, 0); err != nil {
 				t.Error(err)
 			}
@@ -197,6 +201,9 @@ func TestTheHeldReopenIsToldFromTheNotingsOwnOutcome(t *testing.T) {
 	}
 	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "Yes."}); err != nil {
 		t.Fatal(err)
+	}
+	if !stopped {
+		t.Fatal("the noting never looked up the queued message")
 	}
 	h.engine.onPlaced = nil
 	note, err := h.store.Note(ctx, team.AnsweredKey(thread.Owner, "team:"+fmt.Sprint(thread.Session)+":5:m1:ask:0", "Yes."))

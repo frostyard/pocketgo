@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "An answer's note names at most team.MaxAnsweredOpenAsks of the thread's other open asks, the oldest, and counts the rest, and answerNote reads no more ids than that: MaxAsks bounds one report, not a thread, so a backlog's notes would name a quadratic number of asks.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 4: P2, service/internal/team/answered.go: the note listed every other open ask of the thread, unbounded",
+  "promoted_to": "service/internal/store/answered_test.go"
+}

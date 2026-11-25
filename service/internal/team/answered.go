@@ -25,6 +25,12 @@ const (
 	answeredAnswer   = 500
 )
 
+// MaxAnsweredOpenAsks is the most of a thread's other open asks an
+// answer's note names; it counts the rest. MaxAsks bounds one report, not
+// a thread, so a backlog's notes would otherwise name a quadratic number
+// of asks (Codex review of #175, round 4).
+const MaxAnsweredOpenAsks = 10
+
 // AnsweredKey is the key of the note that tells a thread's supervisor of
 // the owner's answer to an ask: the thread's random owner, the ask's own
 // key and a digest of the answer, never a row number, which a restored
@@ -51,8 +57,10 @@ type Answered struct {
 	// Question and Answer are the ask's, whole: the note cuts them short.
 	Question, Answer string
 	// Open are the thread's other asks that still wait for the owner, by
-	// id, oldest first.
-	Open []int64
+	// id, oldest first, at most MaxAnsweredOpenAsks of them, and MoreOpen
+	// counts the rest.
+	Open     []int64
+	MoreOpen int
 	// Plan is the plan the thread leads, nil for none.
 	Plan *AnsweredPlan
 }
@@ -102,15 +110,23 @@ func (a Answered) next() string {
 		return fmt.Sprintf("%s is closed, so %s files no report on it: if the answer needs more work, team_send reopens %s where pocketd allows it, or delegate a thread that follows %s.",
 			thread, a.Agent, thread, thread)
 	case len(a.Open) > 0:
-		ids := make([]string, len(a.Open))
-		for i, id := range a.Open {
+		shown, more := a.Open, a.MoreOpen
+		if len(shown) > MaxAnsweredOpenAsks {
+			shown, more = shown[:MaxAnsweredOpenAsks], more+len(shown)-MaxAnsweredOpenAsks
+		}
+		ids := make([]string, len(shown))
+		for i, id := range shown {
 			ids[i] = "A" + strconv.FormatInt(id, 10)
 		}
+		names := joinAnd(ids)
+		if more > 0 {
+			names = fmt.Sprintf("%s and %d more", strings.Join(ids, ", "), more)
+		}
 		verb := "waits"
-		if len(ids) > 1 {
+		if len(ids)+more > 1 {
 			verb = "wait"
 		}
-		return fmt.Sprintf("%s of %s still %s for the owner.", joinAnd(ids), thread, verb)
+		return fmt.Sprintf("%s of %s still %s for the owner.", names, thread, verb)
 	case p != nil && p.State == PlanDrafting:
 		return fmt.Sprintf("%s writes the answer into plan P%d with team_plan; the plan goes to the owner for approval once nothing in it is open.", a.Agent, p.ID)
 	case p != nil && p.Cleared && len(p.Ready) > 0:

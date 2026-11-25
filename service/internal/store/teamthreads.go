@@ -84,8 +84,11 @@ func (s *Store) TeamThreads(ctx context.Context, since time.Time) (ThreadsRows, 
 // TeamThread reads thread id whole in one read transaction: its asks,
 // pull requests, plan, shift with its rounds and sessions, and only what
 // its mover reads, never the rest of the board (Codex review of #175,
-// round 2). ErrNotFound says there is no thread id.
-func (s *Store) TeamThread(ctx context.Context, id int64) (ThreadWholeRows, error) {
+// round 2). needsTasks says, from those rows, whether its mover reads its
+// plan's delivered tasks' threads (team.Board.ReachesTaskMover): only
+// then are they read, in the same transaction (round 4). ErrNotFound says
+// there is no thread id.
+func (s *Store) TeamThread(ctx context.Context, id int64, needsTasks func(ThreadWholeRows) bool) (ThreadWholeRows, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return ThreadWholeRows{}, err
@@ -145,8 +148,11 @@ func (s *Store) TeamThread(ctx context.Context, id int64) (ThreadWholeRows, erro
 		}
 		w.Sessions[session] = row
 	}
-	if err := taskThreadsIn(ctx, tx, &w); err != nil {
-		return ThreadWholeRows{}, err
+	w.TaskShifts = map[int64]ShiftRow{}
+	if needsTasks != nil && needsTasks(w) {
+		if err := taskThreadsIn(ctx, tx, &w); err != nil {
+			return ThreadWholeRows{}, err
+		}
 	}
 	return w, nil
 }
@@ -157,7 +163,6 @@ func (s *Store) TeamThread(ctx context.Context, id int64) (ThreadWholeRows, erro
 // team.Board.NextMover reads of them (state.Data.taskMover). Any other
 // thread needs none of them.
 func taskThreadsIn(ctx context.Context, tx *sql.Tx, w *ThreadWholeRows) error {
-	w.TaskShifts = map[int64]ShiftRow{}
 	f := w.Plan
 	if w.Thread.State == ThreadClosed || !w.Thread.IsPlanThread() || f == nil || f.Graph == nil ||
 		(f.Plan.State != team.PlanApproved && f.Plan.State != team.PlanBuilding) {

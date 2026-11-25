@@ -128,7 +128,43 @@ type Board struct {
 	Asks    []proto.Ask
 	Pulls   []proto.PullRequest
 	Plans   map[int64]proto.Plan
+	// index, once Indexed made it, holds by thread whether one of its pull
+	// requests waits for review and how many of its asks are open, read in
+	// one pass over Pulls and Asks: a list's movers read it, never a scan
+	// of the board for each thread (Codex review of #175, round 4). nil
+	// for a board not indexed, whose readers scan.
+	index *boardIndex
 }
+
+// boardIndex is a board's facts by thread (Board.Indexed).
+type boardIndex struct {
+	pullWaits map[int64]bool
+	openAsks  map[int64]int
+}
+
+// Indexed is b with its facts by thread read in one pass: whether a pull
+// request of each waits for review (PullWaits, which only an open one
+// does, and an open one shows whatever its thread, as state.Data.PullsOf
+// lists it) and how many of its asks are open.
+func (b Board) Indexed() Board {
+	ix := &boardIndex{pullWaits: map[int64]bool{}, openAsks: map[int64]int{}}
+	for _, p := range b.Pulls {
+		if PullWaits(p) {
+			ix.pullWaits[p.Thread] = true
+		}
+	}
+	for _, a := range b.Asks {
+		if a.State == proto.AskOpen {
+			ix.openAsks[a.Thread]++
+		}
+	}
+	b.index = ix
+	return b
+}
+
+// boardScanned, when a test sets it, sees each scan of a board not
+// indexed; nil otherwise.
+var boardScanned func()
 
 // NextMover is who moves t next. It mirrors the desktop's work board,
 // state.Data.NextMover in desktop/internal/state/board.go, rule for rule:
@@ -165,10 +201,8 @@ func (b Board) NextMover(t proto.Thread) Mover {
 			return b.taskMover(p)
 		}
 	}
-	for _, p := range b.pullsOf(t.ID) {
-		if PullWaits(p) {
-			return MoverOwner
-		}
+	if b.pullWaiting(t.ID) {
+		return MoverOwner
 	}
 	if sh := t.Shift; sh != nil {
 		switch sh.State {
@@ -208,12 +242,16 @@ func (b Board) taskMover(p proto.Plan) Mover {
 }
 
 // hasOpenAsk says an ask of thread waits for the owner (state.Data.AsksOf).
-func (b Board) hasOpenAsk(thread int64) bool {
-	return slices.ContainsFunc(b.Asks, func(a proto.Ask) bool { return a.Thread == thread && a.State == proto.AskOpen })
-}
+func (b Board) hasOpenAsk(thread int64) bool { return b.openAsks(thread) > 0 }
 
 // openAsks counts thread's open asks.
 func (b Board) openAsks(thread int64) int {
+	if b.index != nil {
+		return b.index.openAsks[thread]
+	}
+	if boardScanned != nil {
+		boardScanned()
+	}
 	n := 0
 	for _, a := range b.Asks {
 		if a.Thread == thread && a.State == proto.AskOpen {
@@ -223,21 +261,35 @@ func (b Board) openAsks(thread int64) int {
 	return n
 }
 
-// pullsOf are thread's pull requests that the board shows, oldest first,
-// as state.Data.PullsOf has them: each open one, and every one of a
-// thread not closed.
-func (b Board) pullsOf(thread int64) []proto.PullRequest {
-	var out []proto.PullRequest
-	for _, p := range b.Pulls {
-		if p.Thread != thread {
-			continue
-		}
-		if t, ok := b.Threads[thread]; p.State == proto.PullOpen || !ok || t.State != proto.ThreadClosed {
-			out = append(out, p)
-		}
+// pullWaiting says a pull request of thread waits for the owner's review,
+// as the work board finds it among the thread's pull requests it shows
+// (state.Data.PullsOf, ToReview): PullWaits holds only of an open one,
+// and the board shows an open one whatever its thread.
+func (b Board) pullWaiting(thread int64) bool {
+	if b.index != nil {
+		return b.index.pullWaits[thread]
 	}
-	slices.SortStableFunc(out, func(x, y proto.PullRequest) int { return cmp.Compare(x.ID, y.ID) })
-	return out
+	if boardScanned != nil {
+		boardScanned()
+	}
+	return slices.ContainsFunc(b.Pulls, func(p proto.PullRequest) bool { return p.Thread == thread && PullWaits(p) })
+}
+
+// ReachesTaskMover says NextMover of t, on b, decides by its plan's
+// delivered tasks' threads (taskMover), as NextMover's precedence reaches
+// it: a plan's own thread not closed, with no open ask, whose approved or
+// building plan waits for no open ask and has no task ready. Only then
+// does it read those threads, and a read of t loads them only then (Codex
+// review of #175, round 4).
+func (b Board) ReachesTaskMover(t proto.Thread) bool {
+	if t.State == proto.ThreadClosed || b.hasOpenAsk(t.ID) || !planOwnThread(t) {
+		return false
+	}
+	p, ok := b.Plans[t.Plan]
+	if !ok || PlanWaits(p) || len(gateAsks(p)) > 0 {
+		return false
+	}
+	return (p.State == proto.PlanApproved || p.State == proto.PlanBuilding) && len(planReady(p)) == 0
 }
 
 // planOwnThread says t is a plan's own thread, whose specialist plans
@@ -376,6 +428,7 @@ func (t Threads) sorted() []proto.Thread {
 // later. A closed review is left out: its verdict shows on its pull
 // request.
 func (t Threads) lists(since time.Time) []inboxList {
+	t.Board = t.Board.Indexed()
 	pulls := t.pullsByThread()
 	movers := map[Mover][]string{}
 	var reviews, closed []string

@@ -172,6 +172,68 @@ func TestNextMoverMirrorsTheWorkBoard(t *testing.T) {
 	}
 }
 
+// A list's movers read the board's facts by thread, indexed once, never a
+// scan of every pull request and ask for each thread; an indexed board
+// moves each thread as a scanned one does (Codex review of #175, round
+// 4).
+func TestTheListsMoversReadTheBoardsIndex(t *testing.T) {
+	scans := 0
+	boardScanned = func() { scans++ }
+	defer func() { boardScanned = nil }()
+	_ = ThreadsText(threadsFixture())
+	if scans != 0 {
+		t.Fatalf("the list scanned the board %d times", scans)
+	}
+	th := threadsFixture()
+	indexed := th.Board.Indexed()
+	for id, want := range map[int64]Mover{5: MoverSpecialist, 6: MoverOwner, 7: MoverSupervisor, 3: MoverNobody} {
+		if got := indexed.NextMover(th.Board.Threads[id]); got != want || got != th.Board.NextMover(th.Board.Threads[id]) {
+			t.Errorf("T%d: indexed %v, scanned %v, want %v", id, got, th.Board.NextMover(th.Board.Threads[id]), want)
+		}
+	}
+	// A pull request to review moves its thread to the owner from the index.
+	waiting := boardWith([]proto.Thread{boardThread(1, proto.ThreadDone)}, nil, []proto.PullRequest{{ID: 1, Thread: 1, State: proto.PullOpen}}).Indexed()
+	waiting.Pulls = nil
+	if got := waiting.NextMover(waiting.Threads[1]); got != MoverOwner {
+		t.Errorf("a pull request to review, from the index: %v", got)
+	}
+}
+
+// ReachesTaskMover holds exactly where NextMover decides by a plan lead's
+// tasks' threads: an open ask, a gate that waits, a ready task or a plan
+// not approved decides first, and a read loads the tasks' threads only
+// when it holds (Codex review of #175, round 4).
+func TestReachesTaskMover(t *testing.T) {
+	lead := proto.Thread{ID: 11, Agent: "duncan", State: proto.ThreadOpen, Plan: 1}
+	plan := func(state proto.PlanState, task proto.TaskState, waiting ...string) proto.Plan {
+		return proto.Plan{ID: 1, Thread: 11, State: state, Waiting: waiting,
+			Graph: &proto.PlanGraph{Version: 1, Approved: state == proto.PlanApproved || state == proto.PlanBuilding, Tasks: []proto.PlanTask{{ID: "t1", State: task, Thread: 12}}}}
+	}
+	for name, tc := range map[string]struct {
+		board Board
+		th    proto.Thread
+		want  bool
+	}{
+		"its tasks work":  {boardWith([]proto.Thread{lead}, nil, nil, plan(proto.PlanBuilding, proto.TaskDelegated)), lead, true},
+		"a task is ready": {boardWith([]proto.Thread{lead}, nil, nil, plan(proto.PlanBuilding, proto.TaskReady)), lead, false},
+		"its gate waits":  {boardWith([]proto.Thread{lead}, nil, nil, plan(proto.PlanBuilding, proto.TaskDelegated, "A3 open")), lead, false},
+		"an open ask":     {boardWith([]proto.Thread{lead}, []proto.Ask{{ID: 3, Thread: 11, State: proto.AskOpen}}, nil, plan(proto.PlanBuilding, proto.TaskDelegated)), lead, false},
+		"drafting":        {boardWith([]proto.Thread{lead}, nil, nil, plan(proto.PlanDrafting, proto.TaskWaiting)), lead, false},
+		"no plan read":    {boardWith([]proto.Thread{lead}, nil, nil), lead, false},
+		"closed":          {boardWith(nil, nil, nil, plan(proto.PlanBuilding, proto.TaskDelegated)), proto.Thread{ID: 11, State: proto.ThreadClosed, Plan: 1}, false},
+		"a task's thread": {boardWith(nil, nil, nil, plan(proto.PlanBuilding, proto.TaskDelegated)), proto.Thread{ID: 12, State: proto.ThreadOpen, Plan: 1, PlanTask: "t1"}, false},
+	} {
+		if got := tc.board.ReachesTaskMover(tc.th); got != tc.want {
+			t.Errorf("%s: %v, want %v", name, got, tc.want)
+		}
+		// Where it holds, the mover follows the tasks' threads: with none
+		// read, their specialists.
+		if tc.want && tc.board.NextMover(tc.th) != MoverSpecialist {
+			t.Errorf("%s: NextMover %v", name, tc.board.NextMover(tc.th))
+		}
+	}
+}
+
 // threadsFixture is a desk of threads read at inboxNow by session 1: one
 // each mover moves, a review, and closed ones on both sides of the
 // window's edge.

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A test of the held reopen finishes the worker's stop during the noting, at the look-up of a second, still queued message after the first reopen was found held and before noteBeforeAnswer returns: a stop that finishes after the note is filed tells the fix from no second flag read.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 4: P2, service/internal/api/answered_test.go: the held-reopen test cleared the flag at the answer's own delivery, after the note committed, so the code it guarded passed it too",
+  "promoted_to": "service/internal/api/answered_test.go"
+}

@@ -1065,14 +1065,21 @@ func answerNote(ctx context.Context, tx *sql.Tx, id, now int64, facts AnswerFact
 		// and a call in one return (Codex review of #175, round 3).
 		err := scan(&n)
 		return n, err
-	}, `SELECT id FROM asks WHERE thread_id = ? AND state = ? ORDER BY id`, thread.ID, AskOpen)
+	}, `SELECT id FROM asks WHERE thread_id = ? AND state = ? ORDER BY id LIMIT ?`, thread.ID, AskOpen, team.MaxAnsweredOpenAsks)
 	if err != nil {
+		return err
+	}
+	// The note names the first few of the thread's other open asks, and
+	// counts the rest (team.MaxAnsweredOpenAsks; Codex review of #175,
+	// round 4).
+	var total int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM asks WHERE thread_id = ? AND state = ?`, thread.ID, AskOpen).Scan(&total); err != nil {
 		return err
 	}
 	closed := thread.State == ThreadClosed
 	a := team.Answered{Thread: thread.ID, Title: thread.Title, Agent: thread.Agent, Closed: closed,
 		ReopenHeld: closed && facts.ReopenHeld,
-		Ask:        ask.ID, Question: ask.Question, Answer: ask.Answer, Open: open}
+		Ask:        ask.ID, Question: ask.Question, Answer: ask.Answer, Open: open, MoreOpen: max(total-len(open), 0)}
 	if thread.IsPlanThread() {
 		facts, err := loadPlanFacts(ctx, tx, thread.Plan)
 		if err != nil && !errors.Is(err, ErrNotFound) {

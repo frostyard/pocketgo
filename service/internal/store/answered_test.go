@@ -113,4 +113,48 @@ func TestAnAnswerTellsTheSupervisorOnce(t *testing.T) {
 	}
 }
 
+// An answer's note names at most team.MaxAnsweredOpenAsks of the thread's
+// other open asks, the oldest, and counts the rest: a backlog of asks
+// never makes each note longer than the bound (Codex review of #175,
+// round 4).
+func TestAnAnswersNoteNamesABoundedPrefixOfTheOpenAsks(t *testing.T) {
+	s, _ := open(t)
+	thread, _, err := s.CreateThread(ctx, ThreadRow{Key: "t", Title: "Backlog", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asks []AskRow
+	for r := range 4 {
+		var rows []AskRow
+		for i := range team.MaxAsks {
+			key := "r" + itoa(int64(r)) + ":ask:" + itoa(int64(i))
+			rows = append(rows, AskRow{Key: key, SessionID: 9, Question: "Question " + key + "?"})
+		}
+		_, filed, _, err := s.FileReport(ctx, "r"+itoa(int64(r)), thread.ID, ThreadBlocked, "Questions.", rows, reportText)
+		if err != nil {
+			t.Fatal(err)
+		}
+		asks = append(asks, filed...)
+	}
+	if len(asks) != 4*team.MaxAsks {
+		t.Fatalf("%d asks", len(asks))
+	}
+	if _, _, err := s.AnswerAsk(ctx, "a", asks[0].ID, "Yes.", "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	note, err := s.Note(ctx, team.AnsweredKey(thread.Owner, asks[0].Key, "Yes."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named []string
+	for _, a := range asks[1 : 1+team.MaxAnsweredOpenAsks] {
+		named = append(named, "A"+itoa(a.ID))
+	}
+	more := len(asks) - 1 - team.MaxAnsweredOpenAsks
+	want := strings.Join(named, ", ") + " and " + strconv.Itoa(more) + " more of T" + itoa(thread.ID) + " still wait for the owner."
+	if !strings.Contains(note.Text, want) || strings.Contains(note.Text, "A"+itoa(asks[1+team.MaxAnsweredOpenAsks].ID)+" ") {
+		t.Fatalf("the note %q, want it to end %q", note.Text, want)
+	}
+}
+
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }

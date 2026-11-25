@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -40,17 +39,20 @@ func (s *Server) TeamThreads(ctx context.Context, call TeamCall, c team.ThreadsC
 		}
 		return team.ThreadsText(s.threadsOf(rows, now, call.Session)), nil
 	}
-	whole, err := s.store.TeamThread(ctx, c.Thread)
+	// Its plan's delivered tasks' threads are read only when its mover reads
+	// them (team.Board.ReachesTaskMover; Codex review of #175, round 4).
+	whole, err := s.store.TeamThread(ctx, c.Thread, func(rows store.ThreadWholeRows) bool {
+		thread, board := readBoard(rows)
+		return board.ReachesTaskMover(thread)
+	})
 	if errors.Is(err, store.ErrNotFound) {
 		return "", fmt.Errorf("there is no thread T%d", c.Thread)
 	} else if err != nil {
 		return "", err
 	}
 	view := s.threadsView(now, call.Session)
-	thread := wireThread(whole.Thread)
-	if whole.Shift != nil {
-		thread.Shift = wireShift(*whole.Shift)
-	}
+	thread, board := readBoard(whole)
+	view.Board = board
 	if whole.Thread.ReviewPull != 0 {
 		pulls := map[int64]store.PullRow{}
 		if whole.ReviewPull != nil {
@@ -70,32 +72,43 @@ func (s *Server) TeamThreads(ctx context.Context, call TeamCall, c team.ThreadsC
 		plan := wirePlan(*whole.Plan)
 		w.Plan = &plan
 	}
-	// Who moves it next reads the thread, its open asks, its pull requests
-	// and plan, and a plan lead's tasks' threads alone (store.TeamThread).
-	view.Board.Threads[thread.ID] = thread
-	for _, a := range w.Asks {
-		if a.State == proto.AskOpen {
-			view.Board.Asks = append(view.Board.Asks, a.Ask)
+	return team.ThreadText(view, w), nil
+}
+
+// readBoard is one thread read whole as the protocol has it, with its
+// shift, and the board its mover reads: the thread, its open asks, its
+// pull requests and its plan, and the delivered tasks' threads read with
+// it (store.TeamThread), with their open asks and pull requests.
+func readBoard(rows store.ThreadWholeRows) (proto.Thread, team.Board) {
+	thread := wireThread(rows.Thread)
+	if rows.Shift != nil {
+		thread.Shift = wireShift(*rows.Shift)
+	}
+	board := team.Board{Threads: map[int64]proto.Thread{thread.ID: thread}, Plans: map[int64]proto.Plan{}}
+	for _, row := range rows.Asks {
+		if row.State == store.AskOpen {
+			board.Asks = append(board.Asks, wireAsk(row))
 		}
 	}
-	view.Board.Pulls = slices.Clone(w.Pulls)
-	if w.Plan != nil {
-		view.Board.Plans[w.Plan.ID] = *w.Plan
+	board.Pulls = withReviews(rows.Pulls, rows.Reviews)
+	if rows.Plan != nil {
+		plan := wirePlan(*rows.Plan)
+		board.Plans[plan.ID] = plan
 	}
-	for _, row := range whole.TaskThreads {
+	for _, row := range rows.TaskThreads {
 		task := wireThread(row)
-		if sh, ok := whole.TaskShifts[row.ID]; ok {
+		if sh, ok := rows.TaskShifts[row.ID]; ok {
 			task.Shift = wireShift(sh)
 		}
-		view.Board.Threads[row.ID] = task
+		board.Threads[row.ID] = task
 	}
-	for _, row := range whole.TaskAsks {
-		view.Board.Asks = append(view.Board.Asks, wireAsk(row))
+	for _, row := range rows.TaskAsks {
+		board.Asks = append(board.Asks, wireAsk(row))
 	}
-	for _, row := range whole.TaskPulls {
-		view.Board.Pulls = append(view.Board.Pulls, wireRow(row))
+	for _, row := range rows.TaskPulls {
+		board.Pulls = append(board.Pulls, wireRow(row))
 	}
-	return team.ThreadText(view, w), nil
+	return thread, board
 }
 
 // threadsView is an empty team_threads view, read at now for the calling

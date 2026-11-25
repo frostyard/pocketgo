@@ -296,3 +296,49 @@ func TestAPlanLeadsReadMovesWithItsTasks(t *testing.T) {
 		t.Fatalf("a lead whose task waits for the owner:\n%s", text)
 	}
 }
+
+// A read of a plan's lead reads its tasks' threads only when its mover
+// does: with a task ready, its supervisor moves it whatever the delivered
+// task's thread holds, so a row of that thread no read could scan breaks
+// nothing; with an open ask of its own, the owner does (Codex review of
+// #175, round 4).
+func TestAPlanLeadsReadSkipsItsTasksWhenItsMoverIsKnown(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	call := TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"}
+	if _, err := h.server.TeamDelegate(ctx, call, team.Delegation{Agent: "vera", Task: "Build it.", Repository: "frostyard/example", Plan: &team.PlanRef{ID: h.plan, Task: "t1"}}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := h.store.ThreadByKey(ctx, call.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := h.store.FileReportWithPulls(ctx, "pulls", task.ID, store.ThreadOpen, "A pull request.", nil,
+		[]store.PullRow{inboxPull(h.teamHarness, task, 3, "Keys", false)}, func([]int64, []store.PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", h.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(ctx, `UPDATE pull_requests SET checked_at = 'not a time' WHERE thread_id = ?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	read := func() (string, error) {
+		return h.threadsCall(h.super.ID, team.ThreadsCall{Action: team.ThreadsRead, Thread: h.thread.ID})
+	}
+	// t3 is ready: the supervisor moves the plan, and t1's thread is not read.
+	if text, err := read(); err != nil || !strings.Contains(text, `T1 "Signing" · duncan · open · next: its supervisor`) {
+		t.Fatalf("a lead with a ready task: %v\n%s", err, text)
+	}
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: h.thread.Session, Task: 6, CallID: "q1"}, team.Report{Message: "A question.", Status: team.StatusWorking,
+		Asks: []team.Ask{{Question: "Which curve?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if text, err := read(); err != nil || !strings.Contains(text, `T1 "Signing" · duncan · open · next: the owner`) {
+		t.Fatalf("a lead with an open ask: %v\n%s", err, text)
+	}
+}

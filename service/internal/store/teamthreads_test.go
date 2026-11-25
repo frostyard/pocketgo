@@ -147,7 +147,7 @@ func TestTeamThreadReadsOneThreadWhole(t *testing.T) {
 	if _, _, err := s.AnswerAsk(ctx, "a", asks[0].ID, "yes", "laptop"); err != nil {
 		t.Fatal(err)
 	}
-	whole, err := s.TeamThread(ctx, thread.ID)
+	whole, err := s.TeamThread(ctx, thread.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestTeamThreadReadsOneThreadWhole(t *testing.T) {
 	if whole.Sessions[1].Profile != "odrade" || whole.Sessions[14].Model != "faux-2" || len(whole.Sessions) != 2 {
 		t.Fatalf("sessions %+v", whole.Sessions)
 	}
-	if _, err := s.TeamThread(ctx, 999); !errors.Is(err, ErrNotFound) {
+	if _, err := s.TeamThread(ctx, 999, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("no thread: %v", err)
 	}
 }
@@ -207,7 +207,7 @@ func TestTheBoardReadsOnlyItsThreadsShifts(t *testing.T) {
 	if _, ok := rows.Shifts[old.ID]; ok || len(rows.Shifts) != 2 || len(rows.Shifts[listed.ID].Rounds) != 0 || len(rows.Shifts[read.ID].Rounds) != 0 {
 		t.Fatalf("the board's shifts %+v", rows.Shifts)
 	}
-	whole, err := s.TeamThread(ctx, read.ID)
+	whole, err := s.TeamThread(ctx, read.ID, nil)
 	if err != nil {
 		t.Fatalf("a read of another thread: %v", err)
 	}
@@ -242,20 +242,26 @@ func TestAReadReadsOnlyItsThreadAndWhatItsMoverReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	whole, err := s.TeamThread(ctx, planThread.ID)
+	// The caller's rule says whether its mover reads them; told no, the read
+	// loads none.
+	if whole, err := s.TeamThread(ctx, planThread.ID, func(ThreadWholeRows) bool { return false }); err != nil || len(whole.TaskThreads) != 0 {
+		t.Fatalf("a lead whose mover reads no task: %+v, %v", whole.TaskThreads, err)
+	}
+	always := func(ThreadWholeRows) bool { return true }
+	whole, err := s.TeamThread(ctx, planThread.ID, always)
 	if err != nil {
 		t.Fatalf("a read of the plan's thread read another thread's pull request: %v", err)
 	}
 	if len(whole.TaskThreads) != 1 || whole.TaskThreads[0].ID != t1.ID || len(whole.TaskAsks) != 1 || whole.TaskAsks[0].ID != ask.ID || len(whole.TaskPulls) != 0 {
 		t.Fatalf("the lead's tasks %+v, asks %+v, pulls %+v", whole.TaskThreads, whole.TaskAsks, whole.TaskPulls)
 	}
-	if whole, err = s.TeamThread(ctx, t1.ID); err != nil || len(whole.TaskThreads) != 0 {
+	if whole, err = s.TeamThread(ctx, t1.ID, always); err != nil || len(whole.TaskThreads) != 0 {
 		t.Fatalf("a task's thread read %+v, %v", whole.TaskThreads, err)
 	}
 	if _, err := s.CloseThread(ctx, planThread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if whole, err = s.TeamThread(ctx, planThread.ID); err != nil || len(whole.TaskThreads) != 0 {
+	if whole, err = s.TeamThread(ctx, planThread.ID, always); err != nil || len(whole.TaskThreads) != 0 {
 		t.Fatalf("a closed lead read %+v, %v", whole.TaskThreads, err)
 	}
 }

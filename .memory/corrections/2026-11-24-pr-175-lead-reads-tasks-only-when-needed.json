@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A read of a plan's lead reads its delivered tasks' threads only when its mover reads them (team.Board.ReachesTaskMover, the needsTasks rule store.TeamThread takes), in the same transaction: an open ask of the lead, a gate that waits or a ready task decides its mover first.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 4: P2, service/internal/store/teamthreads.go: taskThreadsIn read every delegated task's thread, shift, asks and pull requests even when a ready task or an open ask already decided the mover",
+  "promoted_to": "service/internal/api/threads_test.go"
+}
