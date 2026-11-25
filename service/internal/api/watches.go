@@ -272,13 +272,15 @@ func (s *Server) watchPass(ctx context.Context) error {
 	cis := map[string]watchCI{}
 	var failures []error
 	// held says the budget held back a watch's read: no later watch of the
-	// pass reads, so the budget builds up for that whole read, which the
-	// next pass starts with (Codex review of #173, round 3).
+	// pass makes a request, so the budget builds up for that whole read,
+	// which the next pass starts with (Codex review of #173, round 3). A
+	// watch the pass's reads answer whole still decides from them (round
+	// 4).
 	held := false
 	for _, w := range rows {
 		ref := strings.ToLower(w.Ref())
 		r, done := reads[ref]
-		if need := s.watchReadNeed(w, r, done, cis); held || need > 0 && !s.watchBudget.Has(s.now(), need) {
+		if need := s.watchReadNeed(w, r, done, cis); need > 0 && (held || !s.watchBudget.Has(s.now(), need)) {
 			held, done, r = true, true, watchRead{err: errWatchReadsSpent}
 		}
 		if !done {
@@ -350,6 +352,47 @@ func (s *Server) watchPass(ctx context.Context) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// watchSoon runs a watch pass on its own goroutine (goWatch), one at a
+// time: a pass asked for while one runs runs once after it. A pull round
+// starts it after its reads and never waits for it, so slow reads of
+// watched pull requests never put off the next round (Codex review of
+// #173, round 4). A pass counts for Stop once it runs.
+func (s *Server) watchSoon() {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.stopped {
+		return
+	}
+	if s.watching {
+		s.watchAgain = true
+		return
+	}
+	s.watching = true
+	s.goWatch(func() {
+		for {
+			s.sessionMu.Lock()
+			if s.stopped {
+				s.watching = false
+				s.sessionMu.Unlock()
+				return
+			}
+			s.passes.Add(1)
+			s.sessionMu.Unlock()
+			if err := s.watchPass(s.passCtx); err != nil {
+				s.log.Warn("check watches", "err", err)
+			}
+			s.passes.Done()
+			s.sessionMu.Lock()
+			again := s.watchAgain && !s.stopped
+			s.watchAgain, s.watching = false, again
+			s.sessionMu.Unlock()
+			if !again {
+				return
+			}
+		}
+	})
 }
 
 // watchReadNeed is how many GitHub requests w's whole read may still take

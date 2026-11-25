@@ -48,7 +48,7 @@ func TestTeamWatchSaysHowToWait(t *testing.T) {
 		if tool.Name != toolWatch {
 			continue
 		}
-		for _, want := range []string{"returns at once", "end your run", "one message", "Never sleep or poll", "Only an answer that starts \"Watching W\" promises a message", "comes with no message: act on it now"} {
+		for _, want := range []string{"returns at once", "end your run", "one message", "Never sleep or poll", "Only an answer that starts with \"Watching W\" promises a message", "comes with no message: act on it now"} {
 			if !strings.Contains(tool.Description, want) {
 				t.Errorf("the description lacks %q: %s", want, tool.Description)
 			}
@@ -59,9 +59,7 @@ func TestTeamWatchSaysHowToWait(t *testing.T) {
 }
 
 // A session made before team_watch that gets it now gets it in the place
-// a new session has it, once, every other tool where it is; a session
-// with no team_memory, as a consult or a plain session, is left as it is
-// (ADR-0072).
+// a new session has it, once, every other tool where it is (ADR-0072).
 func TestSetWatchToolUpgradesAnOlderSession(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
@@ -93,22 +91,58 @@ func TestSetWatchToolUpgradesAnOlderSession(t *testing.T) {
 			t.Fatalf("%s: again %v %v", name, changed, err)
 		}
 	}
+}
+
+// A session made before team_memory, with team_delegate or team_message
+// and no team_memory, gets team_watch when its caller says it may: the
+// caller decides, not the tools it has (protocol rule 34; Codex review of
+// #173, round 4). One with no team tool at all gets the team's extension
+// and team_watch alone, never the extension's other tools.
+func TestSetWatchToolUpgradesASessionFromBeforeTeamMemory(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	ctx := context.Background()
 	for name, spec := range map[string]api.SessionSpec{
-		"a consult":       {Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: 2},
-		"a plain session": {},
-		"a review":        {Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent}, Thread: 7, Review: true},
+		"a supervisor":          {Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor, Tools: []string{"read"}}, Roster: "Delegate to vera."},
+		"a thread's specialist": {Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent, Tools: []string{"read", "bash"}}, Thread: 3},
 	} {
 		spec.Cwd, spec.Model = f.work, fauxRef
 		id, err := e.CreateSession(ctx, name, spec)
 		if err != nil {
 			t.Fatal(err)
 		}
-		before := agentTools(t, e, id)
-		if changed, err := e.SetWatchTool(ctx, id); err != nil || changed {
-			t.Fatalf("%s: %v %v", name, changed, err)
+		withoutTool(t, e, id, toolWatch)
+		withoutTool(t, e, id, toolMemory)
+		older := agentTools(t, e, id)
+		if slices.Contains(older, toolMemory) || !slices.Contains(older, toolDelegate) && !slices.Contains(older, toolMessage) {
+			t.Fatalf("%s: the older session's tools %q", name, older)
 		}
-		if got := agentTools(t, e, id); !slices.Equal(got, before) || slices.Contains(got, toolWatch) {
-			t.Fatalf("%s: tools %q", name, got)
+		if changed, err := e.SetWatchTool(ctx, id); err != nil || !changed {
+			t.Fatalf("%s: the upgrade %v %v", name, changed, err)
 		}
+		// After its team tools, before the question tool, as a new session
+		// has it.
+		at := slices.Index(older, toolQuestion)
+		if at < 0 {
+			at = len(older)
+		}
+		want := slices.Concat(older[:at], []string{toolWatch}, older[at:])
+		if got := agentTools(t, e, id); !slices.Equal(got, want) {
+			t.Fatalf("%s: tools after the upgrade %q, want %q", name, got, want)
+		}
+	}
+	plain, err := e.CreateSession(ctx, "plain", api.SessionSpec{Cwd: f.work, Model: fauxRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := e.SetWatchTool(ctx, plain); err != nil || !changed {
+		t.Fatalf("a session with no team tool: %v %v", changed, err)
+	}
+	if got := agentTools(t, e, plain); !slices.Equal(got, []string{"read", "write", "edit", "bash", toolWatch}) {
+		t.Fatalf("a session with no team tool got %q", got)
+	}
+	if changed, err := e.SetWatchTool(ctx, plain); err != nil || changed {
+		t.Fatalf("again: %v %v", changed, err)
 	}
 }

@@ -453,9 +453,14 @@ func (s *Server) StartPulls(every time.Duration) {
 		s.watchAdmitMu.Lock()
 		s.watchesOff = true
 		s.watchAdmitMu.Unlock()
-		// A sweep that fails runs again until it ends them (Codex review
-		// of #173, round 2).
-		s.uncheckedPass()
+		// The sweep runs off the start path, as its retries do: serving
+		// waits for none of it (Codex review of #173, round 4), and one
+		// that fails runs again until it ends them (round 2).
+		s.sessionMu.Lock()
+		if !s.stopped {
+			s.retry(s.uncheckedPass)
+		}
+		s.sessionMu.Unlock()
 	}
 	// Reviews start, and settle, whether or not pull requests are read in
 	// rounds (ADR-0019; Codex review of #26, round 6).
@@ -497,10 +502,10 @@ func (s *Server) pullRound() {
 	// Each round starts, follows and ends the cross-reviews, after the
 	// heads were read, starting reviews only of those read (ADR-0019).
 	s.reviewPassOf(s.passCtx, reviewWork{fresh: fresh, read: map[int64]bool{}})
-	// Each round checks the watches, after its reads (ADR-0072).
-	if err := s.watchPass(s.passCtx); err != nil {
-		s.log.Warn("check watches", "err", err)
-	}
+	// Each round checks the watches, after its reads (ADR-0072), in a pass
+	// of their own the next round never waits for (Codex review of #173,
+	// round 4).
+	s.watchSoon()
 	// A shift whose done waits on CI reads it again (ADR-0024).
 	s.shiftSoon()
 	s.sessionMu.Lock()

@@ -513,7 +513,7 @@ func (e *Engine) teamExtension() *durable.Extension {
 				// (ADR-0072). How to wait is in its description, which a
 				// session started before the guide in its brief reads too.
 				ToolSchema: schema(toolWatch, "Have pocketd tell you when a pull request reaches a condition: its checks are done, it merged, or it closed. "+
-					"The call returns at once. Only an answer that starts \"Watching W\" promises a message: end your run then. pocketd checks the pull "+
+					"The call returns at once. Only an answer that starts with \"Watching W\" promises a message: end your run then. pocketd checks the pull "+
 					"request on GitHub itself, in each of its rounds, and sends this session one message when the condition holds, when it no longer can, "+
 					"or when the time is up, which starts your next run. Any other answer (the pull request is there already, or a refusal) comes with "+
 					"no message: act on it now. Never sleep or poll for CI or a merge: watch it. list shows your watches, and cancel ends one.", watchParameters),
@@ -1394,12 +1394,14 @@ func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
-// SetWatchTool gives team_watch to a session made before it (ADR-0072),
-// in the place roleTools gives it among its team tools, after its other
-// tools, and says whether it did. Its caller decides which sessions get
-// it (team.MayWatch); a session with no team_memory, which has none of
-// the team's tools of a profile's session, or with team_watch already, is
-// left as it is.
+// SetWatchTool gives team_watch, and the team's extension if the session
+// lacks it, to a session made before it (ADR-0072), in the place roleTools
+// gives it among its team tools, after its other tools, and says whether
+// it did. Its caller decides which sessions get it (team.MayWatch): a
+// session made before team_memory, with other team tools or none, gets
+// it too (Codex review of #173, round 4). Its tools become an exact list
+// of the ones it is offered and team_watch, so a new extension offers no
+// other team tool. A session that has it is left as it is.
 func (e *Engine) SetWatchTool(ctx context.Context, id int64) (bool, error) {
 	conversation, err := e.conversation(ctx, id)
 	if err != nil {
@@ -1409,12 +1411,20 @@ func (e *Engine) SetWatchTool(ctx context.Context, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	own, team, tail := e.splitTools(agent.Tools)
-	if !slices.Contains(team, toolMemory) || slices.Contains(team, toolWatch) {
+	hasExt := slices.Contains(extensionNames(agent.Extensions), e.teamExt.Name)
+	hasTool := slices.Contains(toolNames(agent.Tools), toolWatch)
+	if hasExt && hasTool {
 		return false, nil
 	}
-	list := append(append(own, e.teamTools(append(team, toolWatch))...), tail...)
-	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
+	change := harness.AgentChange{}
+	if !hasExt {
+		change.Extensions = harness.SetTo(harness.ExtensionChange{List: append(slices.Clone(agent.Extensions), e.teamExt)})
+	}
+	if !hasTool {
+		own, team, tail := e.splitTools(agent.Tools)
+		change.Tools = harness.SetTo(harness.ToolChange{List: slices.Concat(own, e.teamTools(append(team, toolWatch)), tail)})
+	}
+	return true, conversation.Configure(ctx, change)
 }
 
 // splitTools splits a session's tools into its own (the coding tools),

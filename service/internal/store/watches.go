@@ -117,7 +117,7 @@ func (s *Store) AddWatch(ctx context.Context, row WatchRow, perSession, total in
 		// them in its own transaction, which this one comes before or
 		// after (Codex review of #173, round 1).
 		var thread int64
-		err := tx.QueryRowContext(ctx, `SELECT id FROM threads WHERE session = ? AND state = ? LIMIT 1`, row.SessionID, ThreadClosed).Scan(&thread)
+		err := tx.QueryRowContext(ctx, `SELECT id FROM threads WHERE session = ? AND session != 0 AND state = ? LIMIT 1`, row.SessionID, ThreadClosed).Scan(&thread)
 		if err == nil {
 			return WatchRow{}, false, fmt.Errorf("%w: this session's thread T%d is closed, so it keeps no watch", ErrConflict, thread)
 		} else if !errors.Is(err, sql.ErrNoRows) {

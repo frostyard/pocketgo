@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "Engine.SetWatchTool gives team_watch, and the team's extension if missing, to any session its caller found eligible (team.MayWatch), a session made before team_memory included, with an exact tool list so no other team tool comes with the extension.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 4: [P2] Upgrade eligible sessions that predate team_memory",
+  "promoted_to": "service/pig/watch_test.go"
+}

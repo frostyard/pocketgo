@@ -56,6 +56,8 @@ func TestAFailedSweepOfUncheckedWatchesRunsAgain(t *testing.T) {
 	}
 	h.runScheduled(100)
 	h.server.StartPulls(0)
+	// The sweep, and the retries of one that fails, wait for the test.
+	h.runScheduled(5)
 	if w := h.watchOf(call); w.State != store.WatchLive {
 		t.Fatalf("a failed sweep ended %+v", w)
 	}

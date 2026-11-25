@@ -498,6 +498,7 @@ func TestNoPullRoundsKeepNoWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.server.StartPulls(0)
+	h.runScheduled(100)
 	w := h.watchOf(call)
 	if note, err := h.store.Note(ctx, w.NoteKey()); w.Outcome != team.WatchUnchecked || err != nil || !strings.Contains(note.Text, "(-pr-every 0)") {
 		t.Fatalf("the watch %+v, its note %q %v", w, note.Text, err)
@@ -525,6 +526,7 @@ func TestAPullRoundChecksTheWatches(t *testing.T) {
 	}
 	g.set(func(g *fakeGitHub) { g.state, g.merged = "closed", true })
 	rounds[0]()
+	h.runWatchPasses()
 	if w := h.watchOf(call); w.Outcome != team.WatchMet {
 		t.Fatalf("the round left %+v", w)
 	}

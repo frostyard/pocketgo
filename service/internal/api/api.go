@@ -626,6 +626,12 @@ type Server struct {
 	watchMu     sync.Mutex
 	watchBudget team.ReadBudget
 	watchNext   int64
+	// goWatch runs a watch pass's goroutine (watchSoon), which a pull
+	// round starts and never waits for; tests run it when they choose.
+	// watching says a pass runs, watchAgain that one was asked for
+	// meanwhile; sessionMu guards both.
+	goWatch              func(f func())
+	watching, watchAgain bool
 	// watchAdmitMu orders a watch's admission (its last check and its
 	// insert) with StartPulls(0), which sets watchesOff under it before it
 	// ends the live watches: an add commits before that sweep reads, or
@@ -858,7 +864,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		launchTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goLaunch:      func(f func()) { go f() },
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
-		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
+		goShift: func(f func()) { go f() }, goWatch: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal, launchStarting: map[int64]bool{}, launchSettle: map[int64]string{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,

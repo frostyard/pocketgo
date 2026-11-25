@@ -346,13 +346,34 @@ func ciText(seen WatchSeen) string {
 		text = "CI at " + head + " ran nothing"
 	}
 	if len(seen.Failing) > 0 {
-		names := make([]string, len(seen.Failing))
-		for i, name := range seen.Failing {
-			names[i] = flat(name, 100)
-		}
-		text += ": " + strings.Join(names, ", ")
+		text += ": " + failingText(seen.Failing)
 	}
 	return text
+}
+
+// MaxWatchFailingBytes bounds the failing checks' names a watch's text
+// lists, all together: a CI matrix may fail hundreds of checks, and the
+// text keeps room for its outcome and the line that ends it, whatever
+// carries it, a tool's answer or the note that starts a run (Codex review
+// of #173, round 4).
+const MaxWatchFailingBytes = 1500
+
+// failingText is the failing checks' names, each cut to 100 characters,
+// as many as fit in MaxWatchFailingBytes, and how many were left out.
+func failingText(failing []string) string {
+	var b strings.Builder
+	for i, name := range failing {
+		name = flat(name, 100)
+		if i > 0 && b.Len()+len(", ")+len(name) > MaxWatchFailingBytes {
+			fmt.Fprintf(&b, " and %d more", len(failing)-i)
+			break
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(name)
+	}
+	return b.String()
 }
 
 // WatchAddedText is team_watch's answer to an add that keeps a watch.
@@ -519,11 +540,12 @@ const WatchGuide = "To wait for CI, open the pull request and call team_watch wi
 
 // WatchRoster tells a supervisor it may watch a merge, in its roster
 // (ADR-0072).
-const WatchRoster = "When work should follow a pull request's merge, watch it with team_watch until merged; once the answer says Watching, end your run: " +
-	"pocketd tells you once it merges, or that it closed without merging, and you delegate the follow-up then. Any other answer comes with no message: act on it now. "
+const WatchRoster = "When work should follow a pull request's merge, watch it with team_watch until merged. Only an answer that starts with \"Watching W\" " +
+	"promises a message: end your run then, and pocketd tells you once it merges, or that it closed without merging, and you delegate the follow-up then. " +
+	"Any other answer comes with no message: act on it now. "
 
 // WatchReceipt tells an agent which answer of team_watch's add promises a
 // message: only a live watch's, which starts "Watching W". An answer that
 // the pull request is there already, or a refusal, promises none.
-const WatchReceipt = "Only an answer that starts \"Watching W\" promises a message: end your run then, and pocketd's one message, when CI is done, " +
+const WatchReceipt = "Only an answer that starts with \"Watching W\" promises a message: end your run then, and pocketd's one message, when CI is done, " +
 	"green or failing, with the failing checks' names, starts your next one. Any other answer (CI done already, or a refusal) comes with no message: act on it now."

@@ -1,6 +1,7 @@
 package team
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -330,9 +331,54 @@ func TestReadBudget(t *testing.T) {
 	}
 }
 
-// The specialist's brief and the supervisor's roster carry the guides.
+// The specialist's brief and the supervisor's roster carry the guides,
+// which name the live answer by its exact start: an answer at once about
+// a repository named Watching starts with that word too (Codex review of
+// #173, round 4).
 func TestTheRosterNamesTeamWatch(t *testing.T) {
-	if roster := Roster(nil, func(profiles.Profile) error { return nil }, 3); !strings.Contains(roster, WatchRoster) {
+	roster := Roster(nil, func(profiles.Profile) error { return nil }, 3)
+	if !strings.Contains(roster, WatchRoster) {
 		t.Fatalf("the roster:\n%s", roster)
+	}
+	for name, text := range map[string]string{"the roster": roster, "the brief's guide": WatchGuide} {
+		if !strings.Contains(text, `Only an answer that starts with "Watching W" promises a message`) {
+			t.Errorf("%s does not name the live answer's exact start:\n%s", name, text)
+		}
+	}
+	if at := WatchAtOnceText("Watching/example#1", UntilMerged, WatchMet, WatchSeen{Merged: true}); strings.HasPrefix(at, "Watching W") {
+		t.Fatalf("an answer at once starts as a live one: %s", at)
+	}
+}
+
+// The failing checks' names a watch's text lists are bounded all
+// together, say how many were left out, and leave the outcome and the
+// line that ends the text whole, in an answer at once and in a note
+// (Codex review of #173, round 4).
+func TestAWatchsTextBoundsItsFailingChecks(t *testing.T) {
+	failing := make([]string, 600)
+	for i := range failing {
+		failing[i] = fmt.Sprintf("job-%03d-", i) + strings.Repeat("x", 120)
+	}
+	seen := WatchSeen{Open: true, Title: "Fix CI", Head: strings.Repeat("a", 40), CIRead: true, CI: "failing", CIDone: true, Failing: failing}
+	listed := failingText(failing)
+	if len(listed) > MaxWatchFailingBytes+len(" and 600 more") || !strings.HasPrefix(listed, "job-000-") {
+		t.Fatalf("the list has %d bytes: %.200s", len(listed), listed)
+	}
+	shown := strings.Count(listed, "job-")
+	if want := fmt.Sprintf(" and %d more", 600-shown); !strings.HasSuffix(listed, want) {
+		t.Fatalf("the list does not end with %q: …%s", want, listed[len(listed)-60:])
+	}
+	at := WatchAtOnceText("a/b#1", UntilChecks, WatchMet, seen)
+	note := WatchNoteText(3, "a/b#1", UntilChecks, WatchMet, &seen, "", time.Hour)
+	for name, tc := range map[string]struct{ text, end string }{
+		"an answer at once": {at, "No watch was kept, and no message follows."},
+		"a note":            {note, "The watch ended; add another with team_watch to go on waiting."},
+	} {
+		if len(tc.text) > 2*MaxWatchFailingBytes || !strings.HasSuffix(tc.text, tc.end) || !strings.Contains(tc.text, "failing: job-000-") {
+			t.Errorf("%s has %d bytes: %.120s … %s", name, len(tc.text), tc.text, tc.text[max(0, len(tc.text)-120):])
+		}
+	}
+	if got := failingText([]string{"lint", "verify"}); got != "lint, verify" {
+		t.Errorf("a short list %q", got)
 	}
 }
