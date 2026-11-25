@@ -118,7 +118,7 @@ func TestASessionWithoutTheFilesIsAsBefore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := sessionInstructionsOf(t, e, id), instructions(f.work)+"\n\nYou are Vera, the team's agent. Your profile follows.\n\n"+vera().Identity+section; got != want {
+	if got, want := sessionInstructionsOf(t, e, id), instructions(f.work)+"\n\nYou are Vera, the team's agent. Your profile follows.\n\n"+vera().Identity+"\n\n"+team.WorkGuide+section; got != want {
 		t.Fatalf("instructions:\n%s", got)
 	}
 	plain, err := e.CreateSession(context.Background(), "plain", api.SessionSpec{Cwd: f.work, Model: fauxRef})

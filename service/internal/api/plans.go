@@ -1067,6 +1067,17 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 		}
 		check = gatherCheck
 	}
+	if isWorkTask(row.Key) {
+		// A work session's task goes only to a watched session, so the end
+		// of each of its runs reaches pocketd and its answer its caller
+		// (ADR-0073); a watch that fails holds it until one works.
+		check = func(ctx context.Context) error {
+			if err := s.engine.Watch(ctx, row.SessionID); err != nil {
+				return fmt.Errorf("watch the work session: %w", err)
+			}
+			return nil
+		}
+	}
 	if strings.HasPrefix(row.Key, store.ScheduleNotePrefix) {
 		// An owner's scheduled message is the owner's word: a standing
 		// session takes what its profile says now before it, and one whose

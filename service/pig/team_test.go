@@ -63,8 +63,11 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		want []string
 	}{
 		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
-		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
-		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory, toolQuestion}},
+		// An agent's own session starts work sessions; a work session of
+		// its profile does not (ADR-0073).
+		"an agent":       {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolWork, toolMemory}},
+		"a work session": {api.SessionSpec{Profile: vera, Work: true}, []string{"read", "bash", toolMemory}},
+		"a supervisor":   {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory, toolQuestion}},
 		// Only a cross-review pocketd started files a verdict, with read-only
 		// tools, whatever its profile allows (ADR-0019).
 		// A thread's specialist has a worker, which has its coding tools
@@ -153,6 +156,8 @@ type fakeTeam struct {
 	readResult string
 	// launches are the team_launch calls, in order.
 	launches []team.LaunchCall
+	// works are the team_work calls, in order (ADR-0073).
+	works []team.Work
 	// inboxes are the team_inbox calls, in order; inboxResult is what
 	// TeamInbox answers, "inbox" when empty.
 	inboxes     []api.TeamCall
@@ -254,6 +259,12 @@ func (f *fakeTeam) TeamInbox(_ context.Context, call api.TeamCall) (string, erro
 		return f.inboxResult, f.fail
 	}
 	return "inbox", f.fail
+}
+
+func (f *fakeTeam) TeamWork(_ context.Context, call api.TeamCall, w team.Work) (string, error) {
+	f.calls = append(f.calls, call)
+	f.works = append(f.works, w)
+	return "Started work session 9.", f.fail
 }
 
 func (f *fakeTeam) TeamPropose(_ context.Context, call api.TeamCall, c team.ProposeCall) (string, error) {

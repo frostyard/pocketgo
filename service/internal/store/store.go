@@ -646,6 +646,28 @@ var migrations = []string{
 		AND thread_id IN (SELECT id FROM threads WHERE state = 'closed')
 		AND (substr(key, 1, 13) = 'worker-reply:' OR substr(key, 1, 11) = 'worker-msg:' OR substr(key, 1, 12) = 'shift-round:'
 			OR substr(key, 1, 14) = 'shift-summary:' OR substr(key, 1, 10) = 'team-send:');`,
+	// Version 26: the work sessions agents start with team_work
+	// (ADR-0073), one a team call, by its work key, which keys its
+	// worktree's claim and its session too: the session that called it,
+	// which takes its answers, the profile and repository it works on, its
+	// checkout, worktree and branch, its title and task, the session once
+	// it started (0 before), and the entry that began the last of its runs
+	// whose answer was kept.
+	`CREATE TABLE work_sessions (
+		key TEXT PRIMARY KEY,
+		caller INTEGER NOT NULL,
+		agent TEXT NOT NULL,
+		repository TEXT NOT NULL,
+		checkout TEXT NOT NULL,
+		path TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		title TEXT NOT NULL,
+		task TEXT NOT NULL,
+		session INTEGER NOT NULL DEFAULT 0,
+		cursor INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL
+	);
+	CREATE UNIQUE INDEX work_sessions_session ON work_sessions (session) WHERE session != 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

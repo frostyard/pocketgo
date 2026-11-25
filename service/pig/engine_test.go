@@ -1489,16 +1489,18 @@ func TestASessionFromAProfileHasItsIdentityAndTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An agent's own session is told where it changes a repository, after
+	// its identity (ADR-0073).
 	if agent.Instructions == nil || !strings.HasPrefix(*agent.Instructions, instructions(f.work)) ||
-		!strings.Contains(*agent.Instructions, "You are Vera, the team's agent.") || !strings.HasSuffix(*agent.Instructions, "She tidies the example repository.") {
+		!strings.Contains(*agent.Instructions, "You are Vera, the team's agent.") || !strings.HasSuffix(*agent.Instructions, "She tidies the example repository.\n\n"+team.WorkGuide) {
 		t.Errorf("instructions %v", agent.Instructions)
 	}
 	var tools []string
 	for _, tool := range agent.Tools {
 		tools = append(tools, tool.Name)
 	}
-	if !slices.Equal(tools, []string{"read", "bash", toolMemory}) {
-		t.Errorf("tools %q, want read and bash, and team_memory by its role", tools)
+	if !slices.Equal(tools, []string{"read", "bash", toolWork, toolMemory}) {
+		t.Errorf("tools %q, want read and bash, and team_work and team_memory by its role", tools)
 	}
 	if !slices.Equal(e.Tools(), []string{"read", "write", "edit", "bash"}) {
 		t.Errorf("the engine's tools %q", e.Tools())
@@ -1530,13 +1532,14 @@ func TestAProfileWithNoToolsGetsNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No coding tool: only the team tool every profile's session gets,
-	// by its role, not by its tools (ADR-0015).
+	// No coding tool: only the team tools of its role, not by its tools:
+	// team_work, an agent's own session's (ADR-0073), and team_memory,
+	// every profile's session's (ADR-0015).
 	var names []string
 	for _, tool := range agent.Tools {
 		names = append(names, tool.Name)
 	}
-	if !slices.Equal(names, []string{toolMemory}) {
+	if !slices.Equal(names, []string{toolWork, toolMemory}) {
 		t.Fatalf("a profile with no tools got %q", names)
 	}
 	// The engine keeps what the session was created from, for a retry.

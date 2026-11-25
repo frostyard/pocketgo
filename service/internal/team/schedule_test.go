@@ -36,6 +36,7 @@ func TestOnlyAPrivateAgentGetsTheScheduleTool(t *testing.T) {
 		"a worker":                      {nil, SessionRole{Worker: true}, false, false},
 		"a private consult":             {private, SessionRole{Consult: true}, false, false},
 		"a private gather's session":    {private, SessionRole{Gather: true}, false, false},
+		"a private work session":        {private, SessionRole{Work: true}, false, false},
 	} {
 		if got := MaySchedule(tc.p, tc.role); got != tc.gets {
 			t.Errorf("%s: MaySchedule %v, want %v", name, got, tc.gets)

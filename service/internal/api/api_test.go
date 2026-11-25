@@ -114,6 +114,8 @@ type fakeEngine struct {
 	// ownScheduleTool are the sessions SetScheduleTool gave the schedule
 	// tool (ADR-0060).
 	ownScheduleTool map[int64]bool
+	// workTool are the sessions SetWorkTool gave team_work (ADR-0073).
+	workTool map[int64]bool
 	// mcpProfiles are the profiles MCPProfiles names; mcpConnects counts
 	// ConnectMCP's calls, and mcpTools are the profiles SetMCPTools gave
 	// each session, in order (ADR-0063).
@@ -538,6 +540,20 @@ func (f *fakeEngine) SetScheduleTool(_ context.Context, id int64) (bool, error) 
 		return false, nil
 	}
 	f.ownScheduleTool[id] = true
+	return true, nil
+}
+
+// SetWorkTool records the sessions given team_work, each once.
+func (f *fakeEngine) SetWorkTool(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.workTool == nil {
+		f.workTool = map[int64]bool{}
+	}
+	if f.workTool[id] {
+		return false, nil
+	}
+	f.workTool[id] = true
 	return true, nil
 }
 
