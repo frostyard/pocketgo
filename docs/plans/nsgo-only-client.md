@@ -16,8 +16,8 @@ Built and merged on 2026-11-24 and 2026-11-25, each with its tests in `desktop/i
 | 8. The sidebar | #181: the counts, the search offer, a group's role and problem, the New mark; a row's menu with Pinned and Rename… (#195) | a session's tag and its dimming |
 | 9. A session | #186 | a failed copy's note (NSGo reports none); the unfolded service messages kept |
 | 10. The Terminal place | #186 | a refused `file:` link's toast (NSGo treats it as no link); the terminal's zoom zooming the window |
-| 11. Approve and merge | | all of it: its files are the client's auth files |
-| 12. Sign-ins and the sign-in screen | #184: pocketd's sign-ins | the sign-in screen's texts |
+| 11. Approve and merge | #199: why it is off, each phase of a card, Check again, the results' texts, the single confirmation's text, Merge All's card, confirmation, progress, end and rebase wait | a Sign In button on the card (it points to Settings); the names of the pull requests Merge All leaves out (a count, as MyGo); the Merge All list in a dialog that does not scroll, not tried with a long list; nothing run against the real GitHub or a real keyring |
+| 12. Sign-ins and the sign-in screen | #184: pocketd's sign-ins; #198: the sign-in screen's texts, on the screen in place of toasts, its guide, the plain-HTTP question's warning, and Return from either field | the GitHub Save Again banner on the sign-in screen; MyGo also ends an earlier automatic sign-in when the keyring will not keep the token, and the NSGo client does not (the owner's decision); nothing run with a real keyring or a real pocketd |
 | 13. Search | #180, #184 | the opened entry's highlight |
 | 14. Zoom that fits | #182 | |
 | 15. A notification clicked at start | #182 | it runs headless only: a press did not reach the client in the real window |
