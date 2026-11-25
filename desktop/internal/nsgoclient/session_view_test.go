@@ -23,8 +23,6 @@ import (
 
 var opus = proto.ModelRef{Provider: "anthropic", ID: "claude-opus-5-5"}
 
-func at(d time.Duration) time.Time { return pocketdtest.Now.Add(d) }
-
 // questionOf is a question Odrade's session 1 puts to the owner from its
 // call q1 (ADR-0048).
 func questionOf(id, text string, options ...string) proto.Question {
