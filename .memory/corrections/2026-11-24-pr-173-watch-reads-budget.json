@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "Every GitHub request of the watch passes, each page of CI included, takes one from team.ReadBudget (a burst of team.WatchReadsBurst refilled at team.WatchReadsPerHour, at most team.WatchReadBudget in any hour); a read it refuses waits, and the next pass starts at the first watch it could not read.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 2: [P2] Account for paginated CI reads in the watch request budget",
+  "promoted_to": "service/internal/api/watches_round2_test.go"
+}

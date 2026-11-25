@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/frostyard/pocketgo/service/internal/github"
@@ -91,14 +92,14 @@ func (s *Server) addWatch(ctx context.Context, call TeamCall, c team.WatchCall) 
 	if s.watchesStopped() {
 		return "", errors.New(team.WatchesOff)
 	}
-	p, err := s.readWatched(ctx, plan.Repository, plan.Number)
+	p, err := s.readWatched(ctx, s.engine.GH, plan.Repository, plan.Number)
 	if err != nil {
 		return "", fmt.Errorf("pocketd cannot read %s#%d on GitHub, so it cannot watch it: %w", plan.Repository, plan.Number, err)
 	}
 	seen := watchSeen(p)
 	if team.WatchNeedsCI(plan.Until, seen.Open) {
 		// CI that cannot be read now leaves the watch to its rounds.
-		ci := s.readWatchedCI(ctx, p.Repository, seen.Head)
+		ci := s.readWatchedCI(ctx, s.engine.GH, p.Repository, seen.Head)
 		ci.apply(&seen)
 	}
 	// A call stopped while it read keeps no watch: CI its abort cut short
@@ -127,7 +128,13 @@ func (s *Server) addWatch(ctx context.Context, call TeamCall, c team.WatchCall) 
 	if s.watchesOff {
 		return "", errors.New(team.WatchesOff)
 	}
-	made, _, err := s.store.AddWatch(context.WithoutCancel(ctx), row, team.MaxWatchesPerSession, team.MaxWatches, func(w store.WatchRow) string {
+	// A call stopped while it waited for the admission keeps no watch
+	// either, and its transaction takes the call's context: one stopped
+	// before it commits keeps nothing (Codex review of #173, round 2).
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("the watch was stopped: %w", err)
+	}
+	made, _, err := s.store.AddWatch(ctx, row, team.MaxWatchesPerSession, team.MaxWatches, func(w store.WatchRow) string {
 		if outcome != "" {
 			return team.WatchAtOnceText(w.Ref(), w.Until, outcome, seen)
 		}
@@ -149,19 +156,21 @@ func (s *Server) watchesStopped() bool {
 	return s.watchesOff
 }
 
-// readWatched reads pull request number of repository on GitHub, bound by
-// pullTimeout.
-func (s *Server) readWatched(ctx context.Context, repository string, number int64) (github.Pull, error) {
+// readWatched reads pull request number of repository on GitHub with gh,
+// bound by pullTimeout.
+func (s *Server) readWatched(ctx context.Context, gh github.GH, repository string, number int64) (github.Pull, error) {
 	read, cancel := s.withTimeout(ctx, pullTimeout)
 	defer cancel()
-	return github.Read(read, s.engine.GH, repository, number)
+	return github.Read(read, gh, repository, number)
 }
 
-// watchCI is CI at one commit as a watch reads it: read says it was.
+// watchCI is CI at one commit as a watch reads it: read says it was, and
+// err why it was not.
 type watchCI struct {
 	read    bool
 	state   string
 	failing []string
+	err     string
 }
 
 // apply puts ci into seen, which keeps its own pull request's state and
@@ -169,20 +178,40 @@ type watchCI struct {
 func (ci watchCI) apply(seen *team.WatchSeen) {
 	if ci.read {
 		seen.CIRead, seen.CI, seen.CIDone, seen.Failing = true, ci.state, ci.state != github.CIPending, ci.failing
+		return
 	}
+	seen.CIError = ci.err
 }
 
-// readWatchedCI reads CI at commit head of repository, bound by
-// pullTimeout; one it cannot read is not read.
-func (s *Server) readWatchedCI(ctx context.Context, repository, head string) watchCI {
+// readWatchedCI reads CI at commit head of repository with gh, bound by
+// pullTimeout; one it cannot read is not read, and says why.
+func (s *Server) readWatchedCI(ctx context.Context, gh github.GH, repository, head string) watchCI {
 	read, cancel := s.withTimeout(ctx, pullTimeout)
 	defer cancel()
-	state, failing, err := github.CIChecks(read, s.engine.GH, repository, head)
+	state, failing, err := github.CIChecks(read, gh, repository, head)
 	if err != nil {
-		s.log.Warn("read a watched pull request's CI", "repository", repository, "head", head, "err", err)
-		return watchCI{}
+		if !errors.Is(err, errWatchReadsSpent) {
+			s.log.Warn("read a watched pull request's CI", "repository", repository, "head", head, "err", err)
+		}
+		return watchCI{err: err.Error()}
 	}
 	return watchCI{read: true, state: state, failing: failing}
+}
+
+// errWatchReadsSpent refuses a watch pass's GitHub request once the
+// watches' budget is spent (team.ReadBudget).
+var errWatchReadsSpent = errors.New(team.WatchReadsSpent)
+
+// budgetedGH is gh for a watch pass: each request takes one from the
+// watches' budget, and one it has none for is refused before gh runs.
+// watchMu is held.
+func (s *Server) budgetedGH() github.GH {
+	return func(ctx context.Context, args ...string) (string, error) {
+		if !s.watchBudget.Take(s.now()) {
+			return "", errWatchReadsSpent
+		}
+		return s.engine.GH(ctx, args...)
+	}
 }
 
 // watchSeen is what a read of p says to a watch, before its CI.
@@ -205,6 +234,13 @@ type watchRead struct {
 // transaction that ends it (store.EndWatch); a delivery pass places it. A
 // read that fails leaves the watch for the next pass, until its time is
 // up. Each pull round runs it after its reads (pullRound).
+//
+// Its GitHub requests come from the watches' budget (team.ReadBudget),
+// however many pages CI has (Codex review of #173, round 2): once it is
+// spent, the rest wait for a later pass, which starts at the first watch
+// this one could not read, so none waits behind the others for good. A
+// note filed wakes the delivery pass at once, never after the reads still
+// to come.
 func (s *Server) watchPass(ctx context.Context) error {
 	s.watchMu.Lock()
 	defer s.watchMu.Unlock()
@@ -212,17 +248,23 @@ func (s *Server) watchPass(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// From the watch the last pass could not read on, then the others.
+	if at := slices.IndexFunc(rows, func(w store.WatchRow) bool { return w.ID >= s.watchNext }); at > 0 {
+		rows = slices.Concat(rows[at:], rows[:at])
+	}
+	s.watchNext = 0
+	gh := s.budgetedGH()
 	reads := map[string]watchRead{}
 	cis := map[string]watchCI{}
-	filed := false
 	var failures []error
 	for _, w := range rows {
 		ref := strings.ToLower(w.Ref())
 		r, done := reads[ref]
 		if !done {
-			r.pull, r.err = s.readWatched(ctx, w.Repository, w.Number)
+			r.pull, r.err = s.readWatched(ctx, gh, w.Repository, w.Number)
 			reads[ref] = r
 		}
+		spent := errors.Is(r.err, errWatchReadsSpent)
 		// GitHub's answer is this watch's only for the pull request the add
 		// read, by its id: a repository's name reused answers another one
 		// (Codex review of #173, round 1).
@@ -240,10 +282,11 @@ func (s *Server) watchPass(ctx context.Context) error {
 				at := strings.ToLower(r.pull.Repository) + "@" + got.Head
 				ci, done := cis[at]
 				if !done {
-					ci = s.readWatchedCI(ctx, r.pull.Repository, got.Head)
+					ci = s.readWatchedCI(ctx, gh, r.pull.Repository, got.Head)
 					cis[at] = ci
 				}
 				ci.apply(&got)
+				spent = spent || (!ci.read && strings.Contains(ci.err, team.WatchReadsSpent))
 			}
 			seen, outcome = &got, team.WatchDecide(w.Until, got)
 		}
@@ -253,11 +296,15 @@ func (s *Server) watchPass(ctx context.Context) error {
 			failures = append(failures, err)
 			break
 		}
+		if spent && s.watchNext == 0 {
+			s.watchNext = w.ID
+		}
 		if outcome == "" && !s.now().Before(w.Deadline) {
 			outcome = team.WatchExpired
 		}
 		if outcome == "" {
-			if readErr != nil {
+			// A read the budget held back is no failure: the watch waits.
+			if readErr != nil && !spent {
 				failures = append(failures, fmt.Errorf("watch %s: %w", team.WatchID(w.ID), readErr))
 			}
 			continue
@@ -275,12 +322,38 @@ func (s *Server) watchPass(ctx context.Context) error {
 			failures = append(failures, fmt.Errorf("end watch %s: %w", team.WatchID(w.ID), err))
 			continue
 		}
-		filed = filed || ended
-	}
-	if filed {
-		s.deliverLater()
+		// Its note goes now, not after the reads still to come (Codex
+		// review of #173, round 2): deliverLater runs one pass at a time.
+		if ended {
+			s.deliverLater()
+		}
 	}
 	return errors.Join(failures...)
+}
+
+// uncheckedPass ends the live watches no round checks
+// (endUncheckedWatches), and runs again after retryDelay until it has: a
+// store that failed leaves no watch live for good, and admissions stay
+// closed (Codex review of #173, round 2). Stop ends its retries.
+func (s *Server) uncheckedPass() {
+	s.sessionMu.Lock()
+	if s.stopped {
+		s.sessionMu.Unlock()
+		return
+	}
+	s.passes.Add(1)
+	s.sessionMu.Unlock()
+	defer s.passes.Done()
+	err := s.endUncheckedWatches(s.passCtx)
+	if err == nil {
+		return
+	}
+	s.log.Warn("end the watches no round checks", "err", err)
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if !s.stopped {
+		s.retry(s.uncheckedPass)
+	}
 }
 
 // endUncheckedWatches ends every live watch with its note when pocketd

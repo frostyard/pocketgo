@@ -453,9 +453,9 @@ func (s *Server) StartPulls(every time.Duration) {
 		s.watchAdmitMu.Lock()
 		s.watchesOff = true
 		s.watchAdmitMu.Unlock()
-		if err := s.endUncheckedWatches(s.passCtx); err != nil {
-			s.log.Warn("end the watches no round checks", "err", err)
-		}
+		// A sweep that fails runs again until it ends them (Codex review
+		// of #173, round 2).
+		s.uncheckedPass()
 	}
 	// Reviews start, and settle, whether or not pull requests are read in
 	// rounds (ADR-0019; Codex review of #26, round 6).

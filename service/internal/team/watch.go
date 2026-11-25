@@ -57,8 +57,10 @@ const (
 )
 
 // The watches' bounds. They guard pocketd's reads of GitHub, which every
-// live watch costs in each round: at most MaxWatches pull requests, each
-// read with CI in a round, stay far under GitHub's hourly limit.
+// live watch costs in each round: a pull request's read, and for checks
+// up to 10 pages each of check runs and statuses. The reads' budget
+// (ReadBudget) bounds what the passes spend in any hour, however many
+// pages CI has; the counts bound the rows.
 const (
 	// DefaultWatchHours is how long a watch waits when the call names no
 	// hours; MaxWatchHours the most it may name.
@@ -71,7 +73,46 @@ const (
 	// MaxWatchesListed is how many ended watches list shows, the newest
 	// first, after the live ones.
 	MaxWatchesListed = 10
+	// WatchReadsBurst is the most GitHub requests the watches' passes
+	// spend at once, and WatchReadsPerHour how many more they may spend
+	// an hour: no hour sees more than WatchReadBudget of them, under a
+	// third of GitHub's 5,000 an hour for the service user's sign-in,
+	// which the pull rounds and the agents share.
+	WatchReadsBurst   = 400
+	WatchReadsPerHour = 1200
+	WatchReadBudget   = WatchReadsBurst + WatchReadsPerHour
 )
+
+// ReadBudget is the watches' GitHub requests left to spend, a bucket of
+// at most WatchReadsBurst refilled at WatchReadsPerHour by the clock: any
+// hour spends at most what it held at its start and what it gained in it,
+// WatchReadBudget. Its zero value is full.
+type ReadBudget struct {
+	started bool
+	left    float64
+	at      time.Time
+}
+
+// Take spends one request at now, and says whether one was left. A clock
+// that went back refills nothing.
+func (b *ReadBudget) Take(now time.Time) bool {
+	if !b.started {
+		b.started, b.left, b.at = true, WatchReadsBurst, now
+	}
+	if now.After(b.at) {
+		b.left = math.Min(WatchReadsBurst, b.left+now.Sub(b.at).Hours()*WatchReadsPerHour)
+		b.at = now
+	}
+	if b.left < 1 {
+		return false
+	}
+	b.left--
+	return true
+}
+
+// WatchReadsSpent is the refusal of a watch's read once the budget is
+// spent: the watch waits for a later pass.
+const WatchReadsSpent = "pocketd spent the GitHub reads its watches may make for now; it reads this one again in a later round"
 
 // WatchCall is a team_watch call's arguments.
 type WatchCall struct {
@@ -209,12 +250,14 @@ type WatchSeen struct {
 	Title        string
 	// Head is the commit at its head. CIRead says CI there was read, CI
 	// its state as github.CIChecks names it, CIDone that it is not
-	// pending, and Failing the checks that failed.
+	// pending, and Failing the checks that failed; CIError is why CI could
+	// not be read, "" when it was or was not tried.
 	Head    string
 	CIRead  bool
 	CI      string
 	CIDone  bool
 	Failing []string
+	CIError string
 }
 
 // WatchNeedsCI says whether a watch until until reads CI at a pull
@@ -276,6 +319,8 @@ func WatchSeenText(seen WatchSeen) string {
 		return "merged"
 	case !seen.Open:
 		return "closed without merging"
+	case !seen.CIRead && seen.CIError != "":
+		return "open, CI unread: " + strings.TrimSuffix(flat(seen.CIError, 200), ".")
 	case !seen.CIRead:
 		return "open"
 	}
@@ -461,10 +506,16 @@ const WatchesOff = "pocketd reads no pull requests in rounds (-pr-every 0), so n
 
 // WatchGuide tells a thread's specialist how to wait for CI, in its brief
 // (ADR-0072).
-const WatchGuide = "To wait for CI, open the pull request, call team_watch with action add, the pull request and until checks, then end your run: " +
-	"pocketd reads CI itself and sends you one message when it is done, green or failing, with the failing checks' names. Never sleep or poll for it."
+const WatchGuide = "To wait for CI, open the pull request and call team_watch with action add, the pull request and until checks. " +
+	WatchReceipt + " Never sleep or poll for it."
 
 // WatchRoster tells a supervisor it may watch a merge, in its roster
 // (ADR-0072).
-const WatchRoster = "When work should follow a pull request's merge, watch it with team_watch until merged and end your run: pocketd tells you once it merges, " +
-	"or that it closed without merging, and you delegate the follow-up then. "
+const WatchRoster = "When work should follow a pull request's merge, watch it with team_watch until merged; once the answer says Watching, end your run: " +
+	"pocketd tells you once it merges, or that it closed without merging, and you delegate the follow-up then. Any other answer comes with no message: act on it now. "
+
+// WatchReceipt tells an agent which answer of team_watch's add promises a
+// message: only a live watch's, which starts "Watching W". An answer that
+// the pull request is there already, or a refusal, promises none.
+const WatchReceipt = "Only an answer that starts \"Watching W\" promises a message: end your run then, and pocketd's one message, when CI is done, " +
+	"green or failing, with the failing checks' names, starts your next one. Any other answer (CI done already, or a refusal) comes with no message: act on it now."

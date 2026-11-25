@@ -618,8 +618,14 @@ type Server struct {
 	// GitHub to its record: two reads of one never cross (ADR-0016). A
 	// wait for one ends with its context.
 	pullLocks ctxLocks
-	// watchMu runs the watches' passes one at a time (ADR-0072).
-	watchMu sync.Mutex
+	// watchMu runs the watches' passes one at a time (ADR-0072), and
+	// guards watchBudget, the GitHub requests the passes may still make
+	// (team.ReadBudget), and watchNext, the watch the next pass starts at:
+	// the first one the last could not read for the budget, 0 for the
+	// first.
+	watchMu     sync.Mutex
+	watchBudget team.ReadBudget
+	watchNext   int64
 	// watchAdmitMu orders a watch's admission (its last check and its
 	// insert) with StartPulls(0), which sets watchesOff under it before it
 	// ends the live watches: an add commits before that sweep reads, or

@@ -243,18 +243,74 @@ func TestWatchTexts(t *testing.T) {
 	if !strings.Contains(WatchGuide, "until checks") || !strings.Contains(WatchRoster, "until merged") {
 		t.Error("the guides name the wrong conditions")
 	}
+	// Only the live watch's answer promises a message: the guides say to
+	// end the run on "Watching W…" alone, and an answer at once says no
+	// message follows (Codex review of #173, round 2).
+	for _, guide := range []string{WatchGuide, WatchRoster} {
+		if !strings.Contains(guide, "Watching") || !strings.Contains(guide, "act on it now") {
+			t.Errorf("a guide does not tell the live answer from the others: %s", guide)
+		}
+	}
+	if !strings.HasPrefix(added, "Watching W") || strings.HasPrefix(WatchAtOnceText("a/b#1", UntilMerged, WatchMet, merged), "Watching") {
+		t.Error("the live answer and the answer at once are not told apart by their start")
+	}
+	// CI pocketd could not read says why, bounded, in what it saw.
+	unread := WatchSeen{Open: true, CIError: "read the checks: gh: HTTP 403: Resource not accessible. " + strings.Repeat("x", 500)}
+	if got := WatchSeenText(unread); !strings.HasPrefix(got, "open, CI unread: read the checks: gh: HTTP 403") || len(got) > 260 {
+		t.Errorf("unread CI: %q", got)
+	}
+	if got := WatchNoteText(3, "a/b#1", UntilChecks, WatchExpired, &unread, "", time.Hour); !strings.Contains(got, "it is still open, CI unread: read the checks: gh: HTTP 403") {
+		t.Errorf("an expiry with unread CI: %s", got)
+	}
 }
 
-// The bounds guard pocketd's reads: every live watch reads its pull
-// request and CI in each round.
+// The bounds are in order, and the reads' budget stays under a third of
+// GitHub's 5,000 requests an hour, however many pages CI has (Codex review
+// of #173, round 2).
 func TestWatchBounds(t *testing.T) {
 	if DefaultWatchHours <= 0 || DefaultWatchHours > MaxWatchHours || MaxWatchesPerSession > MaxWatches || MaxWatchesListed <= 0 {
 		t.Fatal("the bounds are out of order")
 	}
-	// At most MaxWatches pull requests, each read once with two pages of
-	// CI, every 5 minutes: under half of GitHub's 5,000 calls an hour.
-	if calls := MaxWatches * 3 * 12; calls > 2500 {
-		t.Fatalf("%d calls an hour", calls)
+	if WatchReadBudget != WatchReadsBurst+WatchReadsPerHour || WatchReadBudget*3 > 5000 {
+		t.Fatalf("a budget of %d an hour", WatchReadBudget)
+	}
+}
+
+// The reads' budget spends at most its burst at once, refills at its rate
+// by the clock, and spends no more than WatchReadBudget in any hour,
+// whatever the passes ask; a clock that goes back refills nothing (Codex
+// review of #173, round 2).
+func TestReadBudget(t *testing.T) {
+	start := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+	var b ReadBudget
+	n := 0
+	for b.Take(start) {
+		n++
+	}
+	if n != WatchReadsBurst {
+		t.Fatalf("a burst of %d", n)
+	}
+	if b.Take(start.Add(-time.Hour)) {
+		t.Fatal("a clock that went back refilled the budget")
+	}
+	// Every second for three hours, as many as it gives: each hour's
+	// spending stays within the budget.
+	spent := map[int]int{}
+	at := start
+	for i := 0; i < 3*3600; i++ {
+		at = at.Add(time.Second)
+		for b.Take(at) {
+			spent[i/3600]++
+		}
+	}
+	for hour, n := range spent {
+		if n > WatchReadBudget || n < WatchReadsPerHour-1 {
+			t.Errorf("hour %d spent %d", hour, n)
+		}
+	}
+	// Any hour, not only those on the hour: the first hour with its burst.
+	if n+spent[0] > WatchReadBudget+1 {
+		t.Errorf("the first hour spent %d", n+spent[0])
 	}
 }
 

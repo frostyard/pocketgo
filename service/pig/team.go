@@ -513,9 +513,10 @@ func (e *Engine) teamExtension() *durable.Extension {
 				// (ADR-0072). How to wait is in its description, which a
 				// session started before the guide in its brief reads too.
 				ToolSchema: schema(toolWatch, "Have pocketd tell you when a pull request reaches a condition: its checks are done, it merged, or it closed. "+
-					"The call returns at once; end your run then. pocketd checks the pull request on GitHub itself, in each of its rounds, and sends this "+
-					"session one message when the condition holds, when it no longer can, or when the time is up, which starts your next run. "+
-					"Never sleep or poll for CI or a merge: watch it. list shows your watches, and cancel ends one.", watchParameters),
+					"The call returns at once. Only an answer that starts \"Watching W\" promises a message: end your run then. pocketd checks the pull "+
+					"request on GitHub itself, in each of its rounds, and sends this session one message when the condition holds, when it no longer can, "+
+					"or when the time is up, which starts your next run. Any other answer (the pull request is there already, or a refusal) comes with "+
+					"no message: act on it now. Never sleep or poll for CI or a merge: watch it. list shows your watches, and cancel ends one.", watchParameters),
 				Replay: durable.ReplaySafe,
 				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
 					c, err := durable.FromJsonValue[team.WatchCall](args)

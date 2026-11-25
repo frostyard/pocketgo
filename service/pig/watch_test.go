@@ -48,7 +48,7 @@ func TestTeamWatchSaysHowToWait(t *testing.T) {
 		if tool.Name != toolWatch {
 			continue
 		}
-		for _, want := range []string{"returns at once", "end your run", "one message", "Never sleep or poll"} {
+		for _, want := range []string{"returns at once", "end your run", "one message", "Never sleep or poll", "Only an answer that starts \"Watching W\" promises a message", "comes with no message: act on it now"} {
 			if !strings.Contains(tool.Description, want) {
 				t.Errorf("the description lacks %q: %s", want, tool.Description)
 			}
