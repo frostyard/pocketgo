@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The answer's note tells a held reopen from the noting's own outcome (Server.noteSendsPlacedHeld: a placed message whose noting returned store.ErrWorkerStopping), never from a second look at the thread's WorkerStopDue flag, which the worker's stop clears outside outboxMu; the reopen itself needs a noting under outboxMu, which the answer's filing holds.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 3: P2, service/internal/api/team.go: the held reopen was rebuilt from WorkerStopDue and placedToReopen, which a worker stop finishing in between left telling the supervisor to send again or delegate a successor",
+  "promoted_to": "service/internal/api/answered_test.go"
+}

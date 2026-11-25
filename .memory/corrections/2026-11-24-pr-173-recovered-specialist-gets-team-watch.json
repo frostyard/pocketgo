@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A specialist session an earlier run made before the work database recorded it gets team_watch, when team.MayWatch allows it, before the brief that names the tool goes (attachBriefOpen, Server.recoveredWatchTool).",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 1: [P2] Upgrade a recovered specialist before sending its watch brief",
+  "promoted_to": "service/internal/api/watches_round1_test.go"
+}

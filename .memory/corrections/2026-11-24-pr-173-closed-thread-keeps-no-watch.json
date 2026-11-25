@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "store.AddWatch refuses a live watch for a session whose thread is closed, checked in the transaction that keeps it, ordered with the close that ends the session's watches.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 1: [P2] Reject a live watch if its thread closed during the add",
+  "promoted_to": "service/internal/store/watches_round1_test.go"
+}

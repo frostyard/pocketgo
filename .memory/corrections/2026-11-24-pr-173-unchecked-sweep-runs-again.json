@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "With -pr-every 0, a sweep of the live watches that fails (Server.uncheckedPass) runs again after retryDelay until it ends them with their notes, and admissions stay closed meanwhile.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 2: [P2] Retry unfinished watch cleanup when pull rounds are disabled",
+  "promoted_to": "service/internal/api/watches_round2_test.go"
+}

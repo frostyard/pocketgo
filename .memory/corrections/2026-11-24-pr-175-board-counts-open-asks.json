@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "team_threads' list reads the open asks as counts by thread for the threads not closed (store.TeamThreads, team.Board.OpenAsks), in its transaction, never every open ask in the database: a closed thread's asks stay open, and neither its line nor its mover reads them.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 5: P2, service/internal/store/teamthreads.go: openAsksIn loaded every open ask, closed threads' included, with its question and options",
+  "promoted_to": "service/internal/store/teamthreads_test.go"
+}

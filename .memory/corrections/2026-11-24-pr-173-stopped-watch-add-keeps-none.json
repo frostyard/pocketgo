@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A team_watch add checks its call's context after its reads and before it keeps the watch: CI an abort cut short is no unreadable CI, and a stopped call keeps no watch.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 1: [P2] Honor a cancelled watch call before persisting its add",
+  "promoted_to": "service/internal/api/watches_round1_test.go"
+}

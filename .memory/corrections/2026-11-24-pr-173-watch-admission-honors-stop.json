@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A team_watch add checks its call's context again once it holds watchAdmitMu, and runs store.AddWatch with the call's context: a call stopped while it waited for its admission keeps no watch.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 2: [P2] Honor cancellation through watch admission",
+  "promoted_to": "service/internal/api/watches_round2_test.go"
+}

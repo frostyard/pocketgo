@@ -76,7 +76,7 @@ func TestAPrivateProfilesSessionHasNoTeam(t *testing.T) {
 	if got := sessionInstructionsOf(t, e, teamID); got != instructions(f.work)+"\n\nYou are Vera, the team's agent. Your profile follows.\n\n"+vera.Identity+section {
 		t.Fatalf("a team agent's instructions:\n%s", got)
 	}
-	if got := agentTools(t, e, teamID); !slices.Equal(got, []string{"read", "bash", toolWork, toolMemory}) {
+	if got := agentTools(t, e, teamID); !slices.Equal(got, []string{"read", "bash", toolWork, toolMemory, toolWatch}) {
 		t.Fatalf("a team agent's tools %q", got)
 	}
 	// A private supervisor, or a private profile with every tool, has no

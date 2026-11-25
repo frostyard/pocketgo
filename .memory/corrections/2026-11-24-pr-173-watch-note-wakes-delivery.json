@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The watch pass asks for a delivery pass as soon as store.EndWatch files a note, never after the GitHub reads still to come.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 2: [P2] Wake delivery when a watch note commits",
+  "promoted_to": "service/internal/api/watches_round2_test.go"
+}

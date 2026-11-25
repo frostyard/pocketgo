@@ -740,6 +740,8 @@ func TestSenderOfNamesTheOwnerTheSupervisorAndTheService(t *testing.T) {
 		{ptr("team:5:3:c1:report"), &proto.Sender{Kind: proto.SenderService}},
 		{ptr("plan:abc:done"), &proto.Sender{Kind: proto.SenderService}},
 		{ptr("team:5:3:c1:ask:0:answer:abcd"), &proto.Sender{Kind: proto.SenderService}},
+		// The note that tells the supervisor of an answer (ADR-0071).
+		{ptr(team.AnsweredKey("abc", "team:5:3:c1:ask:0", "Yes.")), &proto.Sender{Kind: proto.SenderService}},
 	} {
 		got := senderOf(tc.key)
 		if (got == nil) != (tc.want == nil) || (got != nil && tc.want != nil && *got != *tc.want) {
@@ -1499,8 +1501,8 @@ func TestASessionFromAProfileHasItsIdentityAndTools(t *testing.T) {
 	for _, tool := range agent.Tools {
 		tools = append(tools, tool.Name)
 	}
-	if !slices.Equal(tools, []string{"read", "bash", toolWork, toolMemory}) {
-		t.Errorf("tools %q, want read and bash, and team_work and team_memory by its role", tools)
+	if !slices.Equal(tools, []string{"read", "bash", toolWork, toolMemory, toolWatch}) {
+		t.Errorf("tools %q, want read and bash, and team_work, team_memory and team_watch by its role", tools)
 	}
 	if !slices.Equal(e.Tools(), []string{"read", "write", "edit", "bash"}) {
 		t.Errorf("the engine's tools %q", e.Tools())
@@ -1539,7 +1541,7 @@ func TestAProfileWithNoToolsGetsNone(t *testing.T) {
 	for _, tool := range agent.Tools {
 		names = append(names, tool.Name)
 	}
-	if !slices.Equal(names, []string{toolWork, toolMemory}) {
+	if !slices.Equal(names, []string{toolWork, toolMemory, toolWatch}) {
 		t.Fatalf("a profile with no tools got %q", names)
 	}
 	// The engine keeps what the session was created from, for a retry.

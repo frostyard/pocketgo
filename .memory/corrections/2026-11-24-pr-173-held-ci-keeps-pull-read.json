@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "When the budget holds back only a watch's CI, the pass's read of its pull request still answers it, checked by its GitHub id: an expiry keeps its title and open state, with its CI unread for the budget.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 5: [P2] Preserve a cached pull when only the CI read is blocked",
+  "promoted_to": "service/internal/api/watches_round5_test.go"
+}

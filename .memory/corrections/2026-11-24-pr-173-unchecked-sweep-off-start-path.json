@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "With -pr-every 0, StartPulls closes watch admissions at once and schedules the first sweep of the live watches as its retries are scheduled (Server.retry with Server.uncheckedPass), so serving waits for none of it.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 4: [P2] Run the disabled-watch sweep off the service startup path",
+  "promoted_to": "service/internal/api/watches_round4_test.go"
+}

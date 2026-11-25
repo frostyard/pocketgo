@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "team_threads' list groups the board's pull requests by thread in one pass (Threads.pullsByThread) and writes only the few a line shows (pullsPart), never a scan of every pull request for each listed thread that formats every match.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 3: P2, service/internal/team/threads.go: pullsPart scanned every pull request for each listed thread and formatted every match before keeping five, quadratic in the week's closed threads",
+  "promoted_to": "service/internal/team/threads_test.go"
+}

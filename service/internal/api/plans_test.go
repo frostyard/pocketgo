@@ -1076,7 +1076,9 @@ func TestThePlanRoutesRefuseAWrongMethod(t *testing.T) {
 
 // An answer that clears the last open ask of an approved plan tells the
 // supervisor, once, that its ready tasks may go: the gate refused them
-// for that ask (Codex review of #25, round 2).
+// for that ask (Codex review of #25, round 2). The answer's own note says
+// it, and no other message tells the same answer (ADR-0071); an answer
+// that leaves an ask open says that one still waits.
 func TestAnAnswerThatClearsTheGateTellsTheSupervisor(t *testing.T) {
 	h := newPlanHarness(t)
 	ctx := context.Background()
@@ -1096,7 +1098,8 @@ func TestAnAnswerThatClearsTheGateTellsTheSupervisor(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.runScheduled(20)
-	if got := h.sentTo(h.super.ID); countWith(got, "answered]") != 0 {
+	if got := h.sentTo(h.super.ID); countWith(got, "has no open question now") != 0 || countWith(got, "[T1 · A1 answered]") != 1 ||
+		countWith(got, "A2 of T1 still waits for the owner.") != 1 {
 		t.Fatalf("an answer that left an ask open told the supervisor %q", got)
 	}
 	if _, err := h.client.AnswerAsk(ctx, 2, proto.AnswerAsk{RequestID: "answer2", Answer: "No."}); err != nil {
@@ -1105,7 +1108,8 @@ func TestAnAnswerThatClearsTheGateTellsTheSupervisor(t *testing.T) {
 	h.runScheduled(20)
 	_ = h.server.DeliverPending(ctx)
 	got := h.sentTo(h.super.ID)
-	if countWith(got, "[P1 · A2 answered] Plan P1 has no open question now") != 1 || countWith(got, "- t1 · Keys: agent vera, repository frostyard/example") != 2 {
+	if countWith(got, "[T1 · A2 answered]") != 1 || countWith(got, "Plan P1 has no open question now: its ready tasks may go") != 1 ||
+		countWith(got, "- t1 · Keys: agent vera, repository frostyard/example") != 2 || countWith(got, "answered]") != 2 {
 		t.Fatalf("the supervisor got %q", got)
 	}
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "team_threads' read names the first few entries of a plan's gate and counts the rest: MaxAsks bounds a report, not a plan, and a gate joined whole into one line could push the plan, task, report and asks out of the bounded answer.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 5: P2, service/internal/team/threads.go: the plan line joined every gate entry, which fitLists cannot shorten",
+  "promoted_to": "service/internal/team/threads_test.go"
+}
