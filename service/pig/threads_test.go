@@ -80,7 +80,7 @@ func TestAStandingSupervisorStartedBeforeTeamThreadsGetsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"read", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolQuestion}
+	want := []string{"read", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolWatch, toolQuestion}
 	if got := agentTools(t, e, id); !slices.Equal(got, want) {
 		t.Fatalf("a new standing session's tools %q, want %q", got, want)
 	}
