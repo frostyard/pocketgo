@@ -119,8 +119,10 @@ func (c *client) pull(p proto.PullRequest) core.Node {
 	if len(meta) > 0 {
 		out = append(out, workspaceui.Row(meta...))
 	}
-	if valid && c.gh != nil && c.gh.On() && c.gh.Status().SignedIn {
-		out = append(out, c.pullMergeActions(p, ref))
+	// Its approve and merge, or why they are off: the controls show only
+	// where the GitHub sign-in holds (pullMerge).
+	if valid && c.gh != nil {
+		out = append(out, c.pullMerge(p, ref))
 	}
 	return workspaceui.Card{Children: out}
 }
