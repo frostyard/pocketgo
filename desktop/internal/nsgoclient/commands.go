@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/nsgo-dev/nsgo/base"
 	"github.com/nsgo-dev/nsgo/core"
@@ -30,7 +31,7 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 		case "zoom-reset":
 			c.setZoom(1)
 		case "about":
-			cx.ShowAlert(core.AlertConfig{Title: "PocketGo", Message: fmt.Sprintf("NSGo client · %s/%s", runtime.GOOS, runtime.GOARCH), Actions: []core.AlertAction{{Label: "Close"}}}, nil)
+			c.tell("PocketGo", fmt.Sprintf("NSGo client · %s/%s", runtime.GOOS, runtime.GOARCH))
 		case "abort":
 			if o := c.store.Data.Open(); c.page.Get() == "Session" && o != nil && o.Live.Busy {
 				c.store.Abort(o.ID)
@@ -52,7 +53,7 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 	cx.OnKey("mod+k", show)
 	cx.OnKey("mod+.", func() { run("abort") })
 	cx.OnBackPress(func() bool { return c.move(-1) })
-	return ui.CommandDialog{Open: open.Get, OnOpenChange: func(b bool, _ base.Reason) { open.Set(b) }, Command: ui.Command{Label: "Workspace commands", SearchLabel: "Find command", Items: func() []base.CommandItem {
+	return ui.CommandDialog{Style: core.Style{Background: workspaceui.ColorsOf(cx).Panel()}, Open: open.Get, OnOpenChange: func(b bool, _ base.Reason) { open.Set(b) }, Command: ui.Command{Label: "Workspace commands", SearchLabel: "Find command", Items: func() []base.CommandItem {
 		c.revision.Get()
 		out := append([]base.CommandItem(nil), commands...)
 		if o := c.store.Data.Open(); c.page.Get() == "Session" && o != nil && o.Live.Busy {

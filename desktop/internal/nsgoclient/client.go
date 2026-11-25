@@ -49,6 +49,8 @@ type client struct {
 	noticeCard     *core.Signal[string]
 	drafts         map[int64]*core.Signal[string]
 	log            []string
+	// asking is the confirmation shown, nil with none.
+	asking *core.Signal[*question]
 }
 
 func Root(cx *core.Scope) core.Node { return buildClient(cx, transport(), true) }
@@ -64,6 +66,7 @@ func buildClient(cx *core.Scope, transport http.RoundTripper, production bool) c
 	c := &client{cx: cx, revision: core.NewSignal(cx, 0), page: core.NewSignal(cx, "Inbox"),
 		session: core.NewSignal(cx, int64(0)), notices: core.NewSignal(cx, (*workspaceui.Notice)(nil)), filter: core.NewSignal(cx, ""), drafts: map[int64]*core.Signal[string]{}}
 	c.seek = core.NewSignal(cx, int64(0))
+	c.asking = core.NewSignal(cx, (*question)(nil))
 	if fontErr != nil {
 		c.log = append(c.log, "Register the Inter font: "+fontErr.Error())
 	}
@@ -126,6 +129,7 @@ func buildClient(cx *core.Scope, transport http.RoundTripper, production bool) c
 			}
 			return nil
 		}),
+		core.Dynamic(c.alert),
 	}})
 }
 
@@ -208,16 +212,20 @@ func (c *client) discloseGroup(id string) bool {
 
 func (c *client) sections() []ui.SidebarSection {
 	c.revision.Get()
+	// A place's row is the kit's: its icon, its name, and for the Inbox how
+	// much waits there.
+	place := func(id string, icon func() *core.SVG) ui.SidebarItem {
+		return ui.SidebarItem{ID: id, Text: id, Content: workspaceui.NavLabel{Icon: icon, Text: id}}
+	}
 	items := []ui.SidebarItem{
-		{ID: "Inbox", Text: "Inbox", Icon: lucide.Inbox}, {ID: "Work board", Text: "Work board", Icon: lucide.Columns3},
-		{ID: "Search", Text: "Search", Icon: lucide.Search}, {ID: "Files", Text: "Files", Icon: lucide.FolderOpen},
-		{ID: "Terminal", Text: "Terminal", Icon: lucide.Terminal}, {ID: "Activity", Text: "Activity", Icon: lucide.Activity},
+		place("Inbox", lucide.Inbox), place("Work board", lucide.Columns3), place("Search", lucide.Search),
+		place("Files", lucide.FolderOpen), place("Terminal", lucide.Terminal), place("Activity", lucide.Activity),
 	}
-	if badge := state.InboxBadge(c.store.Data.Inbox()); badge != "" {
-		items[0].Text = "Inbox, " + state.InboxNote(c.store.Data.Inbox())
-		items[0].Content = workspaceui.ChildLabel{Text: "Inbox", Icon: lucide.Inbox, Trailing: ui.Badge{Text: badge, Variant: ui.BadgeWarn}}
+	if inbox := c.store.Data.Inbox(); state.InboxBadge(inbox) != "" {
+		items[0].Text = "Inbox, " + state.InboxNote(inbox)
+		items[0].Content = workspaceui.NavLabel{Icon: lucide.Inbox, Text: "Inbox", Count: state.InboxCount(inbox), Unread: true}
 	}
-	items = append(items, ui.SidebarItem{ID: "New session", Text: "New session", Icon: lucide.SquarePen})
+	items = append(items, place("New session", lucide.SquarePen))
 	sections := []ui.SidebarSection{{Title: "Workspace", Items: items}}
 	tree := c.store.Data.Sidebar(state.SidebarOptions{Seen: c.prefs.Seen, Pinned: c.prefs.Pinned, Filter: c.filter.Get(), Now: time.Now()})
 	var add func(*ui.SidebarSection, state.SidebarKey, int, bool)
@@ -304,21 +312,9 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 				return fmt.Sprintf("session/%d", c.session.Get())
 			}
 			return c.page.Get()
-		}, SidebarHeader: []core.Node{core.View{Class: "p-2", Children: []core.Node{ui.Input{Label: "Filter sessions", Placeholder: "Filter sessions", Value: c.filter.Get, OnChange: c.filter.Set}}}},
-		SidebarFooter: []core.Node{core.Text{Style: ui.TypeCaption, MaxLines: 1, ContentFunc: func() string {
-			c.revision.Get()
-			link := c.store.Conn
-			switch {
-			case link.Stopped:
-				return "Connection stopped · " + link.Server
-			case link.State == state.Reconnecting:
-				return "Reconnecting · " + link.Server
-			case link.State == state.Connecting:
-				return "Connecting · " + link.Server
-			default:
-				return link.Server
-			}
-		}}},
+		}, SidebarHeader: []core.Node{core.View{Style: core.Style{Padding: core.All(workspaceui.SpaceS)}, Children: []core.Node{
+			workspaceui.SearchField{Placeholder: "Filter sessions", Value: c.filter.Get, OnChange: c.filter.Set}}}},
+		SidebarFooter: []core.Node{c.sidebarFoot(showSettings)},
 		Header: []core.Node{core.Text{MaxLines: 1, Style: ui.TypeTitle, ContentFunc: func() string {
 			if c.page.Get() == "Session" {
 				c.revision.Get()
@@ -327,19 +323,7 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 			}
 			return c.page.Get()
 		}}},
-		Actions: []core.Node{
-			ui.IconButton{Icon: lucide.ArrowLeft, Label: "Back", Disabled: func() bool { return !c.canMove(-1) }, OnPress: func() { c.move(-1) }},
-			ui.IconButton{Icon: lucide.ArrowRight, Label: "Forward", Disabled: func() bool { return !c.canMove(1) }, OnPress: func() { c.move(1) }},
-			ui.IconButton{Icon: lucide.Settings, Label: "Settings", OnPress: showSettings},
-			ui.IconButton{Icon: lucide.Command, Label: "Commands", OnPress: launch},
-			ui.IconButton{Icon: lucide.RefreshCw, Label: "Refresh", OnPress: func() {
-				c.store.Refresh()
-				c.fileRefresh.Update(func(i int) int { return i + 1 })
-				if c.page.Get() == "Files" {
-					c.store.LoadFileRoots()
-				}
-				c.changed()
-			}}},
+		Actions: []core.Node{c.toolbar(cx, launch)},
 		Content: []core.Node{core.Dynamic(func(cx *core.Scope) core.Node {
 			switch c.page.Get() {
 			case "Session":
@@ -379,14 +363,4 @@ func (c *client) showError(message string) {
 		title, message = "Couldn’t open file", detail
 	}
 	c.showNotice(ui.ToastError, title, message)
-}
-
-func (c *client) confirm(title, body, action string, fn func()) {
-	gen := c.generation
-	c.cx.ShowAlert(core.AlertConfig{Title: title, Message: body, Cancelable: true, Actions: []core.AlertAction{{Label: "Cancel"}, {Label: action}}}, func(i int) {
-		if i == 1 && gen == c.generation {
-			fn()
-			c.changed()
-		}
-	})
 }

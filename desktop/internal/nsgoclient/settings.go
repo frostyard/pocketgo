@@ -66,7 +66,7 @@ func (c *client) connectionSettings() core.Node {
 	}},
 		workspaceui.Row(c.button("Reconnect", c.store.RetryNow), c.button("Disconnect", func() {
 			server := c.store.Conn.Server
-			c.confirm("Disconnect?", server, "Disconnect", func() { c.forget(server); c.store.SignOut(); c.reset() })
+			c.destroy("Disconnect?", server, "Disconnect", func() { c.forget(server); c.store.SignOut(); c.reset() })
 		})))
 }
 
@@ -85,7 +85,7 @@ func (c *client) providerSettings(cx *core.Scope) core.Node {
 		}
 		if row.DeviceFlow && row.State != proto.SignInNone {
 			out = append(out, c.button("Sign out of "+row.Name, func() {
-				c.confirm("Sign out of "+row.Name+"?", row.Account, "Sign out", func() { c.store.SignOutOf(row.Provider) })
+				c.destroy("Sign out of "+row.Name+"?", row.Account, "Sign out", func() { c.store.SignOutOf(row.Provider) })
 			}))
 		}
 	}

@@ -54,7 +54,7 @@ func signedInApp(t *testing.T, service *pocketdtest.Server, w, h core.Points, op
 	app.Type("label:Service URL", pocketdtest.URL)
 	app.Type("label:Device token", pocketdtest.Token)
 	app.Press("text:Connect")
-	app.WaitFor("label:Commands", 5*time.Second)
+	app.WaitFor("label:"+paletteLabel, 5*time.Second)
 	return app
 }
 func TestQuestion(t *testing.T) {
@@ -129,7 +129,7 @@ func TestFilesAndSearch(t *testing.T) {
 	app.WaitFor("text:example.md", 5*time.Second)
 	app.Press("text:example.md")
 	app.WaitFor("text:Example file contents.", 5*time.Second)
-	app.Press("text:Search")
+	app.Press("label:Search")
 	app.Type("label:Search all sessions", "changeset")
 	app.Press("text:Search sessions")
 	app.WaitFor("text:Ship the changeset.", 5*time.Second)

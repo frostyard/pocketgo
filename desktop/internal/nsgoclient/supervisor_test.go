@@ -47,7 +47,7 @@ func TestSupervisorHistory(t *testing.T) {
 	app.WaitFor("text:Historical checkpoint", 5*time.Second)
 	app.Press("id:chat-find-close")
 	app.WaitFor("text:Report 3200", 5*time.Second)
-	app.Press("text:Search")
+	app.Press("label:Search")
 	app.Type("label:Search all sessions", "checkpoint")
 	app.Press("text:Search sessions")
 	app.WaitFor("text:Historical checkpoint Tools: team_list", 5*time.Second)

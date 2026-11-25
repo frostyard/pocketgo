@@ -63,7 +63,7 @@ func TestWorkBoard(t *testing.T) {
 	app.Press("label:Done")
 	app.Press("label:Closed")
 	app.WaitFor("text:1–12 of 15", 3*time.Second)
-	app.Press("text:Next")
+	app.Press("label:Next")
 	app.WaitFor("text:13–15 of 15", 3*time.Second)
 	app.Press("label:Closed")
 	app.Press("label:In progress")
