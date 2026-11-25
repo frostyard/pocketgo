@@ -192,7 +192,7 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 	submit := func() {
 		p, _ := profile()
 		if id.Get() != "" && p == nil {
-			c.showNotice(ui.ToastWarning, "Session unavailable", "The selected profile is no longer available.")
+			c.showNotice(ui.ToastWarning, "Session unavailable", "pocketd no longer offers the profile "+id.Get()+": choose another profile, or No profile")
 			return
 		}
 		if p != nil && p.Problem != "" {
@@ -218,6 +218,7 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 		}
 		return out
 	}, OnChange: func(s string) { id.Set(s); model.Set(proto.ModelRef{}); thinking.Set(""); syncFolder(); update() }},
+		c.profileNotes(),
 		core.Show{When: func() bool { p, _ := profile(); return p == nil || !p.Standing }, Then: func(*core.Scope) core.Node {
 			return workspaceui.Stack(ui.Input{Label: "Title", Placeholder: "Session title", Value: name.Get, OnChange: name.Set}, body("Repository"), ui.Select[string]{Value: func() string { edited.Get(); return folder.Repository }, OptionsFunc: func() []ui.Option[string] {
 				p, pp := profile()
@@ -227,7 +228,26 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 				}
 				return out
 			}, OnChange: func(s string) { folder.Repository = s; syncFolder(); update() }},
-				ui.Input{Label: "Working directory", Placeholder: "Absolute path on the service host", Value: func() string { edited.Get(); return folder.Cwd }, OnChange: func(s string) { folder.Cwd = s; syncFolder(); update() }}, workspaceui.Row(body("New worktree"), ui.Switch{Label: "New worktree", Checked: func() bool { edited.Get(); return folder.Worktree }, Disabled: func() bool { edited.Get(); return folder.Chosen().Name == "" }, OnChange: func(b bool) { folder.Worktree = b; update() }}),
+				// A session in a new worktree shows the worktree's folder
+				// and branch before it goes, named from the request id it
+				// would go with now; any other has the folder to type.
+				body("Working directory"), core.Dynamic(func(cx *core.Scope) core.Node {
+					edited.Get()
+					name.Get()
+					model.Get()
+					thinking.Get()
+					c.revision.Get()
+					p, _ := profile()
+					request := state.NewSessionRequest(p, folder, name.Get(), model.Get(), thinking.Get())
+					if request.Worktree {
+						request.RequestID = c.store.NextCreateID(request)
+						if path, branch, ok := state.WorktreePreview(request); ok {
+							return workspaceui.Stack(core.Text{Content: path, Selectable: core.SelectableOn},
+								core.Text{Content: state.WorktreeLine(branch), Style: ui.TypeCaption, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)})
+						}
+					}
+					return ui.Input{Label: "Working directory", Placeholder: "Absolute path on the service host", Value: func() string { edited.Get(); return folder.Cwd }, OnChange: func(s string) { folder.Cwd = s; syncFolder(); update() }}
+				}), workspaceui.Row(body("New worktree"), ui.Switch{Label: "New worktree", Checked: func() bool { edited.Get(); return folder.Worktree }, Disabled: func() bool { edited.Get(); return folder.Chosen().Name == "" }, OnChange: func(b bool) { folder.Worktree = b; update() }}),
 				body("Model"), ui.Select[proto.ModelRef]{Searchable: true, Placeholder: "Choose model", Value: model.Get, OptionsFunc: func() []ui.Option[proto.ModelRef] {
 					p, _ := profile()
 					mm, _ := c.store.Models()
@@ -250,6 +270,61 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 						}
 					}
 					return out
-				}, OnChange: thinking.Set})
-		}}, ui.Button{Text: "Start session", OnPress: submit, Busy: func() bool { c.revision.Get(); return c.store.Creating().Busy }})
+				}, OnChange: thinking.Set}, c.modelNotes(profile))
+		}}, core.Dynamic(func(cx *core.Scope) core.Node {
+			// A standing profile keeps one session: the form opens it,
+			// and asks for no folder, model or title.
+			if p, _ := profile(); p != nil && p.Standing {
+				return core.Text{Content: state.StandingNote(*p), StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}
+			}
+			return core.Group{}
+		}), ui.Button{TextFunc: func() string {
+			if p, _ := profile(); p != nil && p.Standing {
+				return "Open session"
+			}
+			return "Start session"
+		}, OnPress: submit, Busy: func() bool { c.revision.Get(); return c.store.Creating().Busy }})
+}
+
+// profileNotes say, under New session's profile choice, which profiles
+// cannot start and why, and that the profiles failed to load.
+func (c *client) profileNotes() core.Node {
+	return core.Dynamic(func(cx *core.Scope) core.Node {
+		c.revision.Get()
+		profiles, problem := c.store.Profiles()
+		var out []core.Node
+		if line := state.ProfileProblemLine(profiles, 3); line != "" {
+			out = append(out, ui.Tooltip{Text: state.ProfileProblemSummary(profiles, 3),
+				Trigger: core.Text{Content: line, MaxLines: 1, Style: ui.TypeCaption, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}})
+		}
+		if problem != "" {
+			out = append(out, c.listProblem("the profiles", problem, "", c.store.LoadProfiles))
+		}
+		return core.Group(out)
+	})
+}
+
+// modelNotes say, under New session's model choice, that the models are
+// loading, that pocketd runs none, or that loading them failed, with a
+// way to load them again. Which profiles can start depends on the same
+// sign-ins, so Reload Models loads the profiles too.
+func (c *client) modelNotes(profile func() (*proto.Profile, []proto.Profile)) core.Node {
+	return core.Dynamic(func(cx *core.Scope) core.Node {
+		c.revision.Get()
+		p, _ := profile()
+		models, problem := c.store.Models()
+		choices := len(state.ModelChoicesFor(models, p))
+		reload := func() { c.store.LoadModels(); c.store.LoadProfiles() }
+		switch {
+		case problem != "" && choices > 0:
+			return c.problemBanner(workspaceui.Warning, "Reloading the models failed, so this list may be out of date: "+problem, reload)
+		case problem != "":
+			return c.problemBanner(workspaceui.Danger, "Loading the models failed: "+problem, reload)
+		case choices == 0 && models != nil:
+			return c.problemBanner(workspaceui.Danger, "pocketd runs no model now: sign it in to a provider (pocketd login PROVIDER), then reload.", reload)
+		case choices == 0:
+			return core.Text{Content: "Loading the models…", Style: ui.TypeCaption, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}
+		}
+		return core.Group{}
+	})
 }

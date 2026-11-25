@@ -230,6 +230,17 @@ func (c *client) sections() []ui.SidebarSection {
 		items[0].Text = "Inbox, " + state.InboxNote(inbox)
 		items[0].Content = workspaceui.NavLabel{Icon: lucide.Inbox, Text: "Inbox", Count: state.InboxCount(inbox), Unread: true}
 	}
+	// The Work board's row counts the threads on the desk, once they
+	// loaded, and the Terminal's the shells that run.
+	d := &c.store.Data
+	if status, _ := d.ThreadsStatus(); status == state.ListLoaded && d.OnTheDesk() > 0 {
+		items[1].Text = "Work board, " + counted(d.OnTheDesk(), "thread on the desk", "threads on the desk")
+		items[1].Content = workspaceui.NavLabel{Icon: lucide.Columns3, Text: "Work board", Count: d.OnTheDesk()}
+	}
+	if n := d.LiveTerminals(); n > 0 {
+		items[4].Text = "Terminal, " + counted(n, "shell running", "shells running")
+		items[4].Content = workspaceui.NavLabel{Icon: lucide.Terminal, Text: "Terminal", Count: n}
+	}
 	items = append(items, place("New session", lucide.SquarePen))
 	sections := []ui.SidebarSection{{Title: "Workspace", Items: items}}
 	tree := c.store.Data.Sidebar(state.SidebarOptions{Seen: c.prefs.Seen, Pinned: c.prefs.Pinned, Filter: c.filter.Get(), Now: time.Now()})
@@ -237,7 +248,13 @@ func (c *client) sections() []ui.SidebarSection {
 	add = func(section *ui.SidebarSection, k state.SidebarKey, depth int, last bool) {
 		switch k.Kind {
 		case state.SidebarSearch:
-			section.Items = append(section.Items, ui.SidebarItem{ID: "search-filter", Text: "Search all sessions", Icon: lucide.Search})
+			// The row says what it searches for, as far as the words
+			// make a search.
+			offer := "Search all sessions"
+			if text, ok := state.SearchOffer(c.filter.Get()); ok {
+				offer = text
+			}
+			section.Items = append(section.Items, ui.SidebarItem{ID: "search-filter", Text: offer, Icon: lucide.Search})
 		case state.SidebarGroup:
 			g, _ := tree.Group(k.Agent)
 			name := g.Name
@@ -255,7 +272,27 @@ func (c *client) sections() []ui.SidebarSection {
 			if description != "" {
 				item.Text = name + ", " + description
 			}
-			item.Content = workspaceui.BranchLabel{Text: name, Icon: lucide.Users, Expanded: item.Expanded, Trailing: activity}
+			// Its role when it is a supervisor or a clerk, and why its
+			// profile cannot start a session.
+			var marks []core.Node
+			if g.Badge != "" {
+				item.Text += ", " + g.Badge
+				marks = append(marks, ui.Badge{Text: g.Badge})
+			}
+			if g.Problem != "" {
+				item.Text += ", " + g.Problem
+				marks = append(marks, core.Func(func(cx *core.Scope) core.Node {
+					return ui.Tooltip{Text: g.Problem, Trigger: ui.Icon(lucide.TriangleAlert, 14, ui.ColorsOf(cx).Warn)}
+				}))
+			}
+			if activity != nil {
+				marks = append(marks, activity)
+			}
+			var trailing core.Node
+			if len(marks) > 0 {
+				trailing = core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceXS, FlexShrink: 0}, Children: marks}
+			}
+			item.Content = workspaceui.BranchLabel{Text: name, Icon: lucide.Users, Expanded: item.Expanded, Trailing: trailing}
 			section.Items = append(section.Items, item)
 			if item.Expanded != nil && item.Expanded() {
 				for i, kid := range children {
@@ -275,8 +312,15 @@ func (c *client) sections() []ui.SidebarSection {
 				item.Text += ", running"
 				status = ui.Badge{Text: "Running", Variant: ui.BadgeAccent}
 			case state.MarkWaiting:
+				// What it waits for, when the client knows.
 				item.Text += ", waiting"
+				if r.Waits != "" {
+					item.Text += ": " + r.Waits
+				}
 				status = ui.Badge{Text: "Waiting", Variant: ui.BadgeWarn}
+			case state.MarkNew:
+				item.Text += ", finished, not read"
+				status = ui.Badge{Text: "New", Variant: ui.BadgeSuccess}
 			}
 			if depth > 0 || status != nil {
 				item.Content = workspaceui.ChildLabel{Text: label, Icon: item.Icon, Depth: depth, Last: last, Trailing: status}
@@ -358,7 +402,7 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 			return c.page.Get()
 		}}},
 		Actions: []core.Node{c.toolbar(cx, launch)},
-		Content: []core.Node{core.Dynamic(func(cx *core.Scope) core.Node {
+		Content: []core.Node{core.View{Style: ui.FillRest, Children: []core.Node{core.View{Style: ui.FillRest.Merge(core.Style{MinHeight: core.Pt(0)}), Children: []core.Node{core.Dynamic(func(cx *core.Scope) core.Node {
 			switch c.page.Get() {
 			case "Session":
 				return c.conversation(cx, c.session.Get())
@@ -380,7 +424,7 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 			default:
 				return c.inbox(cx)
 			}
-		})},
+		})}}, c.statusBar()}}},
 	}
 	return core.Group{shell, palette, c.settingsDialog(cx, settingsOpen)}
 }

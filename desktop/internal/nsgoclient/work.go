@@ -137,7 +137,38 @@ func (c *client) inbox(cx *core.Scope) core.Node {
 		return core.Group(append(out, c.mergeAll()))
 	})
 	note := core.Text{ContentFunc: func() string { c.revision.Get(); return state.InboxNote(d.Inbox()) }, Style: ui.TypeLabel, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}
-	return workspaceui.Page(note, asks, other, approvals, reviews)
+	return workspaceui.Page(note, asks, other, approvals, reviews, c.lessonsInForce())
+}
+
+// lessonsInForce lists each agent's lessons that hold now, after what
+// waits and folded: they wait for nothing. Forget removes a lesson from
+// its agent's sessions at once (ADR-0015).
+func (c *client) lessonsInForce() core.Node {
+	d := &c.store.Data
+	count := func() int { c.revision.Get(); return len(d.LessonsInForce()) }
+	return core.Show{When: func() bool { return count() > 0 }, Then: func(*core.Scope) core.Node {
+		return workspaceui.Section{Title: "Lessons in force", Count: count, Content: func(*core.Scope) core.Node {
+			return core.Dynamic(func(cx *core.Scope) core.Node {
+				c.revision.Get()
+				colors := ui.ColorsOf(cx)
+				var rows []core.Node
+				for _, lesson := range d.LessonsInForce() {
+					pending := c.store.DecidingLesson(lesson.ID)
+					forget := ui.Button{Text: "Forget", Label: fmt.Sprintf("Forget L%d", lesson.ID), Variant: ui.ButtonSecondary, Size: ui.SizeSmall,
+						Disabled: func() bool { return pending.Busy }, OnPress: func() { c.store.DecideLesson(lesson, proto.LessonForget); c.changed() }}
+					row := []core.Node{core.View{TestID: fmt.Sprintf("lesson-in-force-%d", lesson.ID), Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceS}, Children: []core.Node{
+						core.Text{Content: fmt.Sprintf("L%d · %s", lesson.ID, d.AgentName(lesson.Agent)), MaxLines: 1, Style: ui.TypeCaption.Merge(core.Style{FlexShrink: 0}), StyleFunc: ui.Colored(colors.Muted)},
+						core.Text{Content: lesson.Text, Selectable: core.SelectableOn, Style: core.Style{FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(0)}},
+						ui.Tooltip{Text: "Remove this lesson from its agent's sessions now", Trigger: forget}}}}
+					if pending.Err != "" {
+						row = append(row, c.problemBanner(workspaceui.Danger, pending.Err, nil))
+					}
+					rows = append(rows, row...)
+				}
+				return workspaceui.Stack(rows...)
+			})
+		}}
+	}}
 }
 func (c *client) plan(p proto.Plan) core.Node {
 	out := []core.Node{title(p.Title), ui.TextView{Markdown: p.Text, Selectable: true}}
