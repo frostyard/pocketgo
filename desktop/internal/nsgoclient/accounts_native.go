@@ -37,6 +37,11 @@ func (c *client) platformAccounts() {
 		c.result(err)
 		return
 	}
+	// A device that ran the MyGo client starts with what it kept. A file
+	// that cannot be read moves nothing.
+	if settings, err := store.Load(); err == nil {
+		c.moveSettings(settings)
+	}
 	secret := c.cx.Secrets()
 	// Both desktop clients share the same owner sign-in lock and keyring identity.
 	secret.Service = config.AppID

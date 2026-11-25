@@ -22,7 +22,10 @@ import (
 )
 
 type client struct {
-	zoom *core.Signal[float32]
+	// pendingNotice is a notification clicked before the kept sign-in
+	// connected: what it is about opens once it has.
+	pendingNotice *state.NoticeTarget
+	zoom          *core.Signal[float32]
 
 	prefs   preferences
 	groups  *core.Signal[map[string]bool]
@@ -62,6 +65,20 @@ func newClient(cx *core.Scope, transport http.RoundTripper) core.Node {
 	return buildClient(cx, transport, false)
 }
 func buildClient(cx *core.Scope, transport http.RoundTripper, production bool) core.Node {
+	var accounts func(*client)
+	if production {
+		accounts = (*client).platformAccounts
+	}
+	return startClient(cx, transport, production, accounts)
+}
+
+// startClient builds the client. accounts, when set, gives it what a
+// device keeps for it, the device token's store and the GitHub sign-in:
+// the app's own is the platform's (platformAccounts), and a test gives the
+// credentials a keyring would hold. With it the client takes the
+// platform's notification presses and badge, and signs in with a kept
+// token.
+func startClient(cx *core.Scope, transport http.RoundTripper, production bool, accounts func(*client)) core.Node {
 	cx.SetTitle("PocketGo")
 	// The Frostyard theme is set even when the platform refuses the bundled
 	// font: the text then shows in the system's sans-serif face.
@@ -113,16 +130,17 @@ func buildClient(cx *core.Scope, transport http.RoundTripper, production bool) c
 		c.showNotice(ui.ToastWarning, "Signed out", reason)
 	}})
 	cx.Cleanup(c.store.Close)
-	if production {
+	if accounts != nil {
 		cx.OnNotificationPress(c.openNotice)
 		cx.Effect(func() { c.revision.Get(); cx.SetBadge(state.InboxCount(c.store.Data.Inbox())) })
-		c.platformAccounts()
+		accounts(c)
 		c.restore()
 	}
+	c.zoomKeys(cx)
 	// The frame paints the ground and sets the text's color and font; the
 	// view inside it only zooms.
 	return workspaceui.Frame(core.View{TestID: "zoom", Style: core.Style{TransformOrigin: core.ObjectPosition{X: core.PositionStart, Y: core.PositionStart}}, StyleFunc: func() core.Style {
-		z := c.zoom.Get()
+		z := c.shownZoom()
 		return core.Style{Width: core.Pct(100 / z), Height: core.Pct(100 / z), Transform: core.Transform{Scale: z}}
 	}, Children: []core.Node{
 		core.Show{When: func() bool { c.revision.Get(); return c.store.SignedIn() }, Then: c.workspace, Else: c.signIn},
