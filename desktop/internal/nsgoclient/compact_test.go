@@ -232,16 +232,16 @@ func TestAPhonesBoardKeepsWhatHoldsSomethingAboveTheThreads(t *testing.T) {
 
 	app := phoneApp(t, seed())
 	app.SelectTab(tabBar, tabBoard)
-	app.WaitFor("id:board-lane-open", patience())
-	schedules, threads, night := top(app, "id:board >> text:Schedules"), top(app, "id:board-lane-open"), top(app, "id:board >> text:Night shift")
+	app.WaitFor(groupOf("specialists"), patience())
+	schedules, threads, night := top(app, "id:board >> text:Schedules"), top(app, groupOf("specialists")), top(app, "id:board >> text:Night shift")
 	if !(schedules < threads && threads < night) {
 		t.Errorf("a phone's board has the schedules at %v, the threads at %v and the empty night shift at %v: want them in that order", schedules, threads, night)
 	}
 
 	desk := signedInApp(t, seed(), 1230, 900)
 	desk.Press("sidebar-panel >> text:Work board")
-	desk.WaitFor("id:board-lane-open", patience())
-	if threads, schedules := top(desk, "id:board-lane-open"), top(desk, "id:board >> text:Schedules"); threads >= schedules {
+	desk.WaitFor(groupOf("specialists"), patience())
+	if threads, schedules := top(desk, groupOf("specialists")), top(desk, "id:board >> text:Schedules"); threads >= schedules {
 		t.Errorf("a desktop's board has the threads at %v and the schedules at %v: want the threads first", threads, schedules)
 	}
 }

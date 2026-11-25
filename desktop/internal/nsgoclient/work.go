@@ -2,6 +2,7 @@ package nsgoclient
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/frostyard/frostui/workspaceui"
@@ -187,8 +188,7 @@ func (c *client) lessonsInForce() core.Node {
 }
 
 // planHead says where a plan is: its number, its state, its revision, and
-// what its gate waits for. It stands on the plan's card and on its own
-// thread's.
+// what its gate waits for. It stands on the plan's own thread's card.
 func (c *client) planHead(p proto.Plan) core.Node {
 	row := []core.Node{ui.Icon(lucide.ListTree, 16, ui.ColorsOf(c.cx).Muted), core.Text{Content: fmt.Sprintf("Plan P%d", p.ID), Style: ui.TypeLabel}, planBadge(p.State)}
 	if p.Rev != "" {
@@ -225,11 +225,133 @@ func taskBadge(st proto.TaskState) core.Node {
 	return ui.Badge{Text: string(st), Variant: ui.BadgeAccent}
 }
 
+// taskWhere says who does a plan's task, where, and after which. It names
+// the profile the approval binds by its id too when its name differs: two
+// profiles may share a name.
+func (c *client) taskWhere(t proto.PlanTask) string {
+	who := c.store.Data.AgentName(t.Agent)
+	if who != t.Agent {
+		who += " (" + t.Agent + ")"
+	}
+	where := who + " in its home"
+	if t.Repository != "" {
+		where = who + " in " + t.Repository
+	}
+	if len(t.Deps) != 0 {
+		where += " · after " + state.JoinAnd(t.Deps)
+	}
+	return where
+}
+
+// planOnThread shows a plan on its own thread's card, where the MyGo
+// client shows it: where the plan is (planHead), then each task with who
+// does it, where and after which, its thread once it is delivered and its
+// state. The plan's text and each task's checks, which only this client
+// shows, stay folded behind Show the Plan. A plan the client does not hold
+// is named.
+func (c *client) planOnThread(cx *core.Scope, t proto.Thread, open *core.Signal[bool]) core.Node {
+	d := &c.store.Data
+	plan := core.NewMemoFunc(cx, func() *proto.Plan {
+		c.revision.Get()
+		if p, ok := d.Plan(t.Plan); ok {
+			return &p
+		}
+		return nil
+	}, func(a, b *proto.Plan) bool { return reflect.DeepEqual(a, b) })
+	return core.Dynamic(func(*core.Scope) core.Node {
+		p := plan.Get()
+		if p == nil {
+			return c.caption(fmt.Sprintf("Plan P%d", t.Plan))
+		}
+		return c.planSummary(*p, open)
+	})
+}
+
+// planSummary is a plan as a card of the board shows it: its head, its
+// tasks, and its text and checks behind Show the Plan.
+func (c *client) planSummary(p proto.Plan, open *core.Signal[bool]) core.Node {
+	out := []core.Node{c.planHead(p)}
+	if p.Graph != nil {
+		for _, t := range p.Graph.Tasks {
+			row := []core.Node{core.Text{Content: t.ID + " · " + t.Title, Selectable: core.SelectableOn, Style: ui.TypeLabel.Merge(core.Style{FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(0)})}}
+			if t.Thread != 0 {
+				row = append(row, c.caption(fmt.Sprintf("T%d", t.Thread)))
+			}
+			// A draft's tasks have no state yet: they wait for the
+			// approval.
+			if p.Graph.Approved {
+				row = append(row, taskBadge(t.State))
+			}
+			out = append(out, core.View{TestID: fmt.Sprintf("plan-%d-task-%s", p.ID, t.ID), Style: core.Style{Gap: workspaceui.SpaceXS}, Children: []core.Node{
+				core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceS}, Children: row},
+				c.caption(c.taskWhere(t))}})
+		}
+	}
+	out = append(out, ui.Collapsible{Text: "Show the Plan", Variant: ui.CollapsibleArrowLeft, Open: open.Get, OnOpenChange: open.Set,
+		Content: core.Show{When: open.Get, Then: func(*core.Scope) core.Node {
+			var text []core.Node
+			if p.Text == "" {
+				text = append(text, c.note("The plan has no text yet."))
+			} else {
+				text = append(text, ui.TextView{Markdown: p.Text, Selectable: true})
+			}
+			if p.Graph != nil {
+				for _, t := range p.Graph.Tasks {
+					if len(t.Acceptance) == 0 {
+						continue
+					}
+					text = append(text, core.Text{Content: t.ID + " · " + t.Title, Style: ui.TypeLabel})
+					for _, check := range t.Acceptance {
+						text = append(text, body("• "+check))
+					}
+				}
+			}
+			return workspaceui.Stack(text...)
+		}}})
+	return workspaceui.Stack(out...)
+}
+
+// plansOffTheBoard shows each plan that waits for the owner and has no
+// open thread's card to show on (state.PlansOffTheBoard): its thread is
+// not among the threads the client holds, or is closed. Each keeps a card
+// that says what waits and where its thread is, with the way to the
+// Inbox, so no plan waits unseen.
+func (c *client) plansOffTheBoard(cx *core.Scope) core.Node {
+	d := &c.store.Data
+	plans := core.NewMemoFunc(cx, func() []proto.Plan { c.revision.Get(); return d.PlansOffTheBoard() },
+		func(a, b []proto.Plan) bool { return reflect.DeepEqual(a, b) })
+	return core.Show{When: func() bool { return len(plans.Get()) > 0 }, Then: func(*core.Scope) core.Node {
+		return workspaceui.Section{Title: "Plans with no open thread", Count: func() int { return len(plans.Get()) }, InitiallyOpen: true, Content: func(*core.Scope) core.Node {
+			return workspaceui.Stack(core.Each(plans.Get, func(p proto.Plan) int64 { return p.ID },
+				func(cx *core.Scope, item func() proto.Plan, _ func() int) core.Node {
+					open := core.NewSignal(cx, false)
+					return core.Dynamic(func(cx *core.Scope) core.Node {
+						p := item()
+						waits := fmt.Sprintf("P%d waits for your approval.", p.ID)
+						target := state.PlanCard(p.ID)
+						if !state.ToApprove(p) {
+							waits, target = fmt.Sprintf("P%d waits for your answer: %s.", p.ID, state.JoinAnd(state.OpenAsksOf(p))), ""
+						}
+						where := fmt.Sprintf("Its thread, T%d, is not among the threads loaded.", p.Thread)
+						if _, ok := d.Thread(p.Thread); ok {
+							where = fmt.Sprintf("Its thread, T%d, is closed.", p.Thread)
+						}
+						return core.View{TestID: fmt.Sprintf("plan-%d", p.ID), Children: []core.Node{boardCard(cx, func() bool { return true }, []core.Node{
+							title(p.Title),
+							core.Text{Content: waits + " " + where, Selectable: core.SelectableOn, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)},
+							c.planSummary(p, open),
+							workspaceui.Row(ui.Button{Text: "Open the Inbox", OnPress: func() { c.goTo(destination{page: "Inbox", card: target}) }}),
+						})}}
+					})
+				}))
+		}}
+	}}
+}
+
 // plan shows a plan's text and its tasks: who does each, where, after
 // which, its thread once it is delivered and its state, then the checks
 // its work must pass.
 func (c *client) plan(p proto.Plan) core.Node {
-	d := &c.store.Data
 	out := []core.Node{title(p.Title), ui.TextView{Markdown: p.Text, Selectable: true}}
 	if p.Graph != nil {
 		for _, t := range p.Graph.Tasks {
@@ -242,20 +364,7 @@ func (c *client) plan(p proto.Plan) core.Node {
 			if p.Graph.Approved {
 				head = append(head, taskBadge(t.State))
 			}
-			// The profile the approval binds, by its id too when its name
-			// differs: two profiles may share a name.
-			who := d.AgentName(t.Agent)
-			if who != t.Agent {
-				who += " (" + t.Agent + ")"
-			}
-			where := who + " in its home"
-			if t.Repository != "" {
-				where = who + " in " + t.Repository
-			}
-			if len(t.Deps) != 0 {
-				where += " · after " + state.JoinAnd(t.Deps)
-			}
-			out = append(out, workspaceui.Row(head...), body(where))
+			out = append(out, workspaceui.Row(head...), body(c.taskWhere(t)))
 			for _, check := range t.Acceptance {
 				out = append(out, body("• "+check))
 			}

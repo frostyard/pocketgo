@@ -72,12 +72,11 @@ func TestAPullRequestSaysItsCrossReview(t *testing.T) {
 	if got := app.OpenedURLs; !slices.Equal(got, []string{"https://github.com/frostyard/nsl/pull/31"}) {
 		t.Errorf("opened %q", got)
 	}
-	// The same card stands in its thread's details on the board.
+	// The same card stands on its thread's card on the board.
 	app.Press("sidebar-panel >> text:Work board")
-	app.Press("label:Details for T2")
 	app.WaitFor(card(2)+` >> text:"Cross-review R4 by teg (gpt-6-astra): ready at cccccccccccc · CI green"`, 5*time.Second)
 	app.Find(card(2) + ` >> text:"ready-for-human"`)
-	// In a lane's narrow card, nothing of it stands outside the card.
+	// Nothing of it stands outside its thread's card.
 	lane := app.Find(card(2)).Bounds()
 	for _, part := range []string{`text:"ready-for-human"`, `text:"vera/pin-the-runner-image-t2 → main"`, "text:Open pull request"} {
 		b := app.Find(card(2) + " >> " + part).Bounds()

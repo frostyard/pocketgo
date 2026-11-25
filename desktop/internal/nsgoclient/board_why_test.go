@@ -66,9 +66,9 @@ func seedTeam(s *pocketdtest.Server) {
 // card is the selector of thread id's card on the board.
 func card(id int64) string { return fmt.Sprintf("id:thread-%d", id) }
 
-// The board says of each thread who works on it, where, and why it is
-// where it is, as TestTheWorkBoardSnapshot holds for the MyGo client. The
-// lanes stay the NSGo client's own: by the thread's state.
+// The board says of each thread who works on it, where, its state, and
+// why it is in its group, as TestTheWorkBoardSnapshot holds for the MyGo
+// client. The groups are by who moves the thread next.
 func TestTheWorkBoardSaysWhyEachThreadIsWhereItIs(t *testing.T) {
 	s := pocketdtest.New()
 	seedTeam(s)
@@ -76,27 +76,48 @@ func TestTheWorkBoardSaysWhyEachThreadIsWhereItIs(t *testing.T) {
 	app.Press("sidebar-panel >> text:Work board")
 	app.WaitFor("text:5 threads on the desk, 2 wait for you", 5*time.Second)
 	for id, says := range map[int64][]string{
-		1: {"T1 · Vera · frostyard/nsl on vera/fix-the-flaky-arm64-job-t1", "Your move", `"A1 waits for your answer."`},
-		2: {"T2 · Vera · frostyard/nsl on vera/pin-the-runner-image-t2", "Your move", `"frostyard/nsl#31 waits for your review."`},
-		3: {"Specialist working", `"Vera works on it."`},
-		4: {"Specialist working", `"pocketd sets it up for Vera."`},
-		5: {"T5 · Vera · frostyard/snow on vera/find-why-snow-fails-to-boot-t5", "Supervisor review", `"Vera reported it done; Odrade reads the report."`},
+		1: {"T1 · Vera · frostyard/nsl on vera/fix-the-flaky-arm64-job-t1", `"blocked"`, `"A1 waits for your answer."`},
+		2: {"T2 · Vera · frostyard/nsl on vera/pin-the-runner-image-t2", `"done"`, `"frostyard/nsl#31 waits for your review."`},
+		3: {`"open"`, `"Vera works on it."`},
+		4: {`"starting"`, `"pocketd sets it up for Vera."`},
+		5: {"T5 · Vera · frostyard/snow on vera/find-why-snow-fails-to-boot-t5", `"done"`, `"Vera reported it done; Odrade reads the report."`},
 	} {
 		for _, text := range says {
 			app.WaitFor(card(id)+" >> text:"+text, 5*time.Second)
 		}
 	}
-	// The lanes are by the thread's state, each thread in its own.
-	for lane, id := range map[string]int64{"starting": 4, "open": 3, "blocked": 1, "done": 2} {
-		app.Find("id:board-lane-" + lane + " >> " + card(id))
+	// Each thread in the group of who moves it next, with its count.
+	for group, ids := range map[string][]int64{"owner": {1, 2}, "specialists": {3, 4}, "supervisors": {5}} {
+		for _, id := range ids {
+			app.Find(groupOf(group) + " >> " + card(id))
+		}
+		app.Find(groupOf(group) + fmt.Sprintf(` >> text:"%d"`, len(ids)))
 	}
 	if app.Exists(card(6)) {
-		t.Error("a closed thread shows before its section is unfolded")
+		t.Error("a closed thread shows before its group is unfolded")
+	}
+	// The ways to a thread's sessions stand on its card, and the Inbox
+	// on the card of a thread whose ask waits.
+	for _, says := range []string{"Open the Inbox", "Open Vera's Session", "Open the Supervisor", "Close Thread"} {
+		app.Find(card(1) + " >> text:" + says)
+	}
+	if app.Exists(card(2)+" >> text:Open the Inbox") || app.Exists(card(3)+" >> text:Open the Inbox") {
+		t.Error("a thread with no ask offers the Inbox")
 	}
 	app.Screenshot("work-board-sentences")
 	app.Press("label:Closed")
 	app.WaitFor(card(6)+` >> text:"Closed."`, 5*time.Second)
 	app.Find(card(6) + " >> text:T6 · Vera · in agents/vera")
+	app.Find(card(6) + ` >> text:"closed"`)
+	if app.Exists(card(6) + " >> text:Close Thread") {
+		t.Error("a closed thread offers Close Thread")
+	}
+	// A thread's session opens from its card, and the way back shows the
+	// card again.
+	app.Press(card(6) + " >> text:Open Vera's Session")
+	app.WaitFor("label:Message", 5*time.Second)
+	app.Press("label:Back")
+	app.WaitFor(card(6)+` >> text:"Closed."`, 5*time.Second)
 }
 
 // plan1 is a plan led by duncan in its thread T7, in review with its
@@ -157,7 +178,7 @@ func TestEachSentenceOfWhyAThreadIsWhereItIs(t *testing.T) {
 		name string
 		seed func(s *pocketdtest.Server)
 		id   int64
-		// closed says the thread is in the Closed section, which starts
+		// closed says the thread is in the Closed group, which starts
 		// folded.
 		closed bool
 		want   string
