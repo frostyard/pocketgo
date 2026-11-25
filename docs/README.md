@@ -83,6 +83,7 @@ Docs are split by the question they answer:
 - [0068 — Build a shared NSGo client beside the desktop client](adr/0068-build-a-shared-nsgo-client-beside-the-desktop-client.md)
 - [0069 — Browse a session's working folder](adr/0069-browse-a-sessions-working-folder.md)
 - [0070 — Ship NSGo as the default Linux client](adr/0070-ship-nsgo-as-the-default-linux-client.md)
+- [0074 — Keep the prompt cache warm between a run's requests, in code](adr/0074-keep-the-prompt-cache-warm-between-a-runs-requests-in-code.md)
 
 ### Org-wide decisions
 
