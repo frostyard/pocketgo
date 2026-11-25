@@ -197,10 +197,10 @@ func threadsFixture() Threads {
 		Board: boardWith([]proto.Thread{open, asking, done, review, closed, old, closedReview},
 			[]proto.Ask{{ID: 3, Thread: 6, State: proto.AskOpen}, {ID: 4, Thread: 6, State: proto.AskOpen}},
 			[]proto.PullRequest{
-				{ID: 1, Thread: 5, Repository: "frostyard/example", Number: 12, State: proto.PullOpen, Draft: true},
-				{ID: 2, Thread: 7, Repository: "frostyard/example", Number: 13, State: proto.PullMerged, Checks: proto.ChecksGreen,
+				{ID: 1, Thread: 5, Repository: "frostyard/example", Number: 12, State: proto.PullOpen, Draft: true, CheckedAt: at(4 * time.Minute)},
+				{ID: 2, Thread: 7, Repository: "frostyard/example", Number: 13, State: proto.PullMerged, Checks: proto.ChecksGreen, CheckedAt: at(time.Hour),
 					Review: &proto.PullReview{Verdict: proto.ReviewReady}},
-				{ID: 3, Thread: 3, Repository: "frostyard/example", Number: 11, State: proto.PullClosed, Checks: proto.ChecksFailing},
+				{ID: 3, Thread: 3, Repository: "frostyard/example", Number: 11, State: proto.PullClosed, Checks: proto.ChecksFailing, CheckedAt: at(3 * 24 * time.Hour)},
 			}),
 		Reviews: map[int64]ThreadReview{8: {Pull: "frostyard/example#12", Head: strings.Repeat("c", 40)}, 4: {Pull: "frostyard/example#11", Head: "d"}},
 	}
@@ -218,10 +218,10 @@ func TestThreadsTextGroupsTheThreadsByWhoMovesNext(t *testing.T) {
 		"On the desk: 4 threads not closed, of its cap of 12; a cross-review takes a place, a plan's own thread does not.",
 		"Who moves each thread next is the work board's rule:",
 		"Waiting for the owner (1):\n" + `- T6 "Tidy the docs" · duncan · blocked · 2 open asks · changed 1h ago · delegated by session 9` + "\n",
-		"With their specialists (1):\n" + `- T5 "Fix CI" · vera · open · shift round 3 of 20, running · pull requests: frostyard/example#12 (open, draft, CI not read yet, no verdict) · follows T3 · changed 2h ago · delegated by you` + "\n",
-		"Waiting for their supervisor (1):\n" + `- T7 "Bump the pin" · vera · done · pull requests: frostyard/example#13 (merged, CI green, verdict ready) · changed 30m ago · delegated by you` + "\n",
+		"With their specialists (1):\n" + `- T5 "Fix CI" · vera · open · shift round 3 of 20, running · pull requests: frostyard/example#12 (open, draft, CI not read yet, no verdict, read 4m ago) · follows T3 · changed 2h ago · delegated by you` + "\n",
+		"Waiting for their supervisor (1):\n" + `- T7 "Bump the pin" · vera · done · pull requests: frostyard/example#13 (merged, CI green, verdict ready, read 1h ago) · changed 30m ago · delegated by you` + "\n",
 		"Cross-reviews pocketd runs and closes at their verdicts (1):\n" + `- T8 "Review frostyard/example#12" · irulan · open · reviews frostyard/example#12 at cccccccccccc · changed 5m ago` + "\n",
-		"Closed in the last 7 days, by their record's last change (1):\n" + `- T3 "First try" · vera · closed · pull requests: frostyard/example#11 (closed, CI failing, no verdict) · carried on by T5 · record last changed 2d ago · delegated by you` + "\n",
+		"Closed threads whose records changed in the last 7 days (1):\n" + `- T3 "First try" · vera · closed · pull requests: frostyard/example#11 (closed, CI failing, no verdict, read 3d ago) · carried on by T5 · record last changed 2d ago · delegated by you` + "\n",
 		"Read one thread whole with team_threads read.",
 	} {
 		if !strings.Contains(text, want) {
@@ -236,7 +236,7 @@ func TestThreadsTextGroupsTheThreadsByWhoMovesNext(t *testing.T) {
 	// An empty desk says each list is empty.
 	empty := Threads{Now: inboxNow, DeskCap: 12, Board: boardWith(nil, nil, nil)}
 	for _, want := range []string{"Waiting for the owner: none.", "With their specialists: none.", "Waiting for their supervisor: none.",
-		"Cross-reviews pocketd runs and closes at their verdicts: none.", "Closed in the last 7 days, by their record's last change: none.",
+		"Cross-reviews pocketd runs and closes at their verdicts: none.", "Closed threads whose records changed in the last 7 days: none.",
 		"have not begun since it started"} {
 		if text := ThreadsText(empty); !strings.Contains(text, want) {
 			t.Errorf("an empty desk lacks %q:\n%s", want, text)
@@ -258,7 +258,7 @@ func TestThreadsTextNamesPlansAndCountsPullRequests(t *testing.T) {
 		proto.Plan{ID: 1, Thread: 11, State: proto.PlanDrafting})}
 	text := ThreadsText(th)
 	for _, want := range []string{`T11 "Signing" · duncan · open · leads plan P1, drafting`, `T12 "Keys" · vera · open · plan P1, task t1`,
-		"frostyard/example#104 (open, CI not read yet, no verdict) and 2 more"} {
+		"frostyard/example#104 (open, CI not read yet, no verdict, read at no time pocketd recorded) and 2 more"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the list lacks %q:\n%s", want, text)
 		}
@@ -376,7 +376,7 @@ func TestThreadTextReadsAThreadWhole(t *testing.T) {
 	// thread that starts its session to come; a closed thread nobody.
 	other := w
 	other.Thread = th.Board.Threads[6]
-	other.Thread.Cwd = "/home/duncan"
+	other.Thread.Cwd, other.Thread.State = "/home/duncan", proto.ThreadStarting
 	other.Supervisor, other.Specialist, other.Worker, other.WorkerAsked, other.Plan = ThreadSession{ID: 9, Profile: "leto"}, ThreadSession{}, ThreadSession{}, proto.ModelRef{}, nil
 	text = ThreadText(th, other)
 	for _, want := range []string{"- Delegated by: session 9, of profile leto\n", "- Specialist's session: none yet; pocketd starts it\n",
@@ -385,15 +385,24 @@ func TestThreadTextReadsAThreadWhole(t *testing.T) {
 			t.Errorf("another supervisor's thread lacks %q:\n%s", want, text)
 		}
 	}
+	// A cross-review copies its author's supervisor session, but pocketd
+	// started it: the read never names a delegating session for it (Codex
+	// review of #175, round 1).
 	review := other
-	review.Thread = th.Board.Threads[8]
-	if text := ThreadText(th, review); !strings.Contains(text, "- A cross-review pocketd started: it reviews frostyard/example#12 at cccccccccccc, and closes at its verdict") {
+	review.Thread, review.Supervisor = th.Board.Threads[8], ThreadSession{ID: 1, Profile: "odrade"}
+	text = ThreadText(th, review)
+	if !strings.Contains(text, "- Started by: pocketd, as a cross-review of frostyard/example#12 at cccccccccccc; it closes at its verdict, and no supervisor sends to it or closes it\n") ||
+		strings.Contains(text, "Delegated by") {
 		t.Errorf("a review:\n%s", text)
 	}
+	// A thread that closed before it started has no session to come
+	// (Codex review of #175, round 1).
 	closed := other
 	closed.Thread = th.Board.Threads[3]
-	if text := ThreadText(th, closed); !strings.Contains(text, "· closed · next: nobody: it is closed") {
-		t.Errorf("a closed thread:\n%s", text)
+	text = ThreadText(th, closed)
+	if !strings.Contains(text, "· closed · next: nobody: it is closed") || !strings.Contains(text, "- Specialist's session: none; pocketd started no session for it\n") ||
+		strings.Contains(text, "pocketd starts it") {
+		t.Errorf("a closed thread that never started:\n%s", text)
 	}
 }
 
@@ -436,7 +445,7 @@ func TestThreadTextIsCutToFitItsBounds(t *testing.T) {
 
 // The supervisor's instructions name team_threads (ADR-0071).
 func TestThreadsGuideNamesTheTool(t *testing.T) {
-	for _, want := range []string{"team_threads", "before you ask the owner or a specialist where a thread stands", "closed in the last 7 days"} {
+	for _, want := range []string{"team_threads", "before you ask the owner or a specialist where a thread stands", "closed threads whose records changed in the last 7 days"} {
 		if !strings.Contains(strings.ToLower(ThreadsGuide), strings.ToLower(want)) {
 			t.Errorf("the guide lacks %q: %s", want, ThreadsGuide)
 		}

@@ -129,7 +129,7 @@ const inboxParameters = `{"type":"object","properties":{},"additionalProperties"
 
 // threadsParameters are team_threads' (ADR-0071).
 var threadsParameters = `{"type":"object","properties":{` +
-	`"action":{"type":"string","enum":["list","read"],"description":"list every thread not closed with who moves it next, and the threads closed in the last ` +
+	`"action":{"type":"string","enum":["list","read"],"description":"list every thread not closed with who moves it next, and the closed threads whose records changed in the last ` +
 	strconv.Itoa(team.InboxDays) + ` days; or read one thread whole."},` +
 	`"thread":{"type":"integer","minimum":1,"description":"read: the thread's number, 5 for T5."}` +
 	`},"required":["action"],"additionalProperties":false}`
@@ -467,7 +467,7 @@ func (e *Engine) teamExtension() *durable.Extension {
 				// before the line in its instructions.
 				ToolSchema: schema(toolThreads, fmt.Sprintf("See the threads: list every thread not closed, grouped by who moves it next as the owner's work board "+
 					"groups it (the owner, its specialist or its supervisor), each with its state, shift, open asks, pull requests with CI and verdict, and "+
-					"who delegated it, then the cross-reviews pocketd runs and the threads closed in the last %d days; or read one thread whole, with its task, "+
+					"who delegated it, then the cross-reviews pocketd runs and the closed threads whose records changed in the last %d days; or read one thread whole, with its task, "+
 					"latest report, asks and answers, pull requests, shift rounds, plan and worker. It reads pocketd's records alone, never GitHub, and "+
 					"changes nothing. Read a thread before you ask the owner or a specialist where it stands.", team.InboxDays), threadsParameters),
 				Replay: durable.ReplaySafe,

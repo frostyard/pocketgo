@@ -2287,12 +2287,32 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	key := requestKey(r, request.RequestID)
 	defer s.keys.lock(key)()
+	// The asking thread's messages already in its specialist's transcript
+	// are noted first, under outboxMu held through the answer's filing, as
+	// every read of a thread's state does: one may have reopened the closed
+	// thread, and the answer's note to its supervisor says what the thread's
+	// state lets it do (ADR-0061, ADR-0071; Codex review of #175, round 1).
+	// An ask that cannot be found is left to AnswerAsk, which claims the
+	// request first.
+	s.outboxMu.Lock()
+	if ask, err := s.store.Ask(ctx, id); err == nil {
+		if err := s.noteSendsPlaced(ctx, ask.ThreadID); err != nil {
+			s.outboxMu.Unlock()
+			s.internal(w, "note the asking thread's placed messages", err)
+			return
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.outboxMu.Unlock()
+		s.internal(w, "read the ask", err)
+		return
+	}
 	s.workMu.Lock()
 	row, replayed, err := s.store.AnswerAsk(ctx, key, id, text, deviceOf(r).Name)
 	if err == nil && !replayed {
 		s.publishAsk(row)
 	}
 	s.workMu.Unlock()
+	s.outboxMu.Unlock()
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)

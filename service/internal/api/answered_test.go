@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/store"
 	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
@@ -50,6 +52,43 @@ func TestTheSupervisorHearsTheOwnersAnswerOnce(t *testing.T) {
 	}
 	note, err := h.store.Note(ctx, team.AnsweredKey(thread.Owner, "team:"+fmt.Sprint(thread.Session)+":5:m1:ask:0", "Yes, squash."))
 	if err != nil || note.SentAt == nil || note.SessionID != h.super.ID {
+		t.Fatalf("the note %+v %v", note, err)
+	}
+}
+
+// An owner's message that reached a closed thread's specialist reopens the
+// thread once noted. An answer that comes between its placement and its
+// noting notes it first, under outboxMu, so the answer's note reads the
+// reopened thread and never tells the supervisor to reopen an open one
+// (ADR-0061, ADR-0071; Codex review of #175, round 1).
+func TestTheAnswersNoteReadsTheThreadAfterItsPlacedMessages(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}, team.Report{Message: "A question.", Status: team.StatusBlocked,
+		Asks: []team.Ask{{Question: "Keep the old numbers?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamClose(ctx, TeamCall{Session: h.super.ID, CallID: "c1"}, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.queueOwner(thread.Session)
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "Carry on with the renumbering."}); err != nil {
+		t.Fatal(err)
+	}
+	// Placed in the transcript, and no pass has noted it yet.
+	h.placeQueued(requestKeyOf(h.harness, "o1"), thread.Session)
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadClosed {
+		t.Fatalf("the thread before the answer %+v", got)
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "Keep them."}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadOpen || got.Reopened != 1 {
+		t.Fatalf("the thread after the answer %+v", got)
+	}
+	note, err := h.store.Note(ctx, team.AnsweredKey(thread.Owner, "team:"+fmt.Sprint(thread.Session)+":5:m1:ask:0", "Keep them."))
+	if err != nil || strings.Contains(note.Text, "is closed") || !strings.Contains(note.Text, "duncan goes on with T1 once the answer is in its session") {
 		t.Fatalf("the note %+v %v", note, err)
 	}
 }

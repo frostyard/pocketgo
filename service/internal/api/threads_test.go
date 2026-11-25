@@ -145,11 +145,11 @@ func TestTeamThreadsListsAndReadsTheThreads(t *testing.T) {
 	for _, want := range []string{
 		"team_threads at Wed 18 Nov 23:00 UTC, from pocketd's records alone",
 		"On the desk: 4 threads not closed, of its cap of 12;",
-		"Waiting for the owner (1):\n" + `- T1 "Fix CI" · vera · blocked · 1 open ask · pull requests: frostyard/example#3 (open, CI not read yet, no verdict) · changed 1h ago · delegated by you` + "\n",
+		"Waiting for the owner (1):\n" + `- T1 "Fix CI" · vera · blocked · 1 open ask · pull requests: frostyard/example#3 (open, CI not read yet, no verdict, read 1h ago) · changed 1h ago · delegated by you` + "\n",
 		"With their specialists (1):\n" + fmt.Sprintf(`- T3 "Notes" · duncan · open · changed 1h ago · delegated by session %d`, leto.ID) + "\n",
 		"Waiting for their supervisor (1):\n" + `- T2 "Tidy" · duncan · done · changed 1h ago · delegated by you` + "\n",
 		"Cross-reviews pocketd runs and closes at their verdicts (1):\n" + `- T6 "Review #3" · duncan · starting · reviews frostyard/example#3 at 333333333333 · changed 1h ago` + "\n",
-		"Closed in the last 7 days, by their record's last change (1):\n" + `- T4 "Old" · duncan · closed · record last changed 1h ago · delegated by you` + "\n",
+		"Closed threads whose records changed in the last 7 days (1):\n" + `- T4 "Old" · duncan · closed · record last changed 1h ago · delegated by you` + "\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the list lacks %q:\n%s", want, text)
@@ -159,8 +159,12 @@ func TestTeamThreadsListsAndReadsTheThreads(t *testing.T) {
 	if strings.Contains(text, "T5 ") {
 		t.Errorf("the list holds the closed review:\n%s", text)
 	}
+	// Read whole, it names pocketd as its starter, never the author's
+	// supervisor session it copies (Codex review of #175, round 1), and a
+	// review closed with no session started none.
 	if text, err := h.threadsCall(h.super.ID, team.ThreadsCall{Action: team.ThreadsRead, Thread: 5}); err != nil ||
-		!strings.Contains(text, "- A cross-review pocketd started: it reviews frostyard/example#3 at 333333333333, and closes at its verdict") {
+		!strings.Contains(text, "- Started by: pocketd, as a cross-review of frostyard/example#3 at 333333333333; it closes at its verdict") ||
+		strings.Contains(text, "Delegated by") || !strings.Contains(text, "- Specialist's session: none; pocketd started no session for it") {
 		t.Errorf("the closed review read whole: %v\n%s", err, text)
 	}
 	// Leto, another supervisor, sees the same threads, its own marked.

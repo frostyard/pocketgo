@@ -165,3 +165,56 @@ func TestTeamThreadReadsOneThreadWhole(t *testing.T) {
 		t.Fatalf("no thread: %v", err)
 	}
 }
+
+// The board reads the shifts of the threads it lists alone, and no round
+// of any: a shift and a round of a thread closed before the window, and a
+// round of a listed thread, each a row no read could scan, break neither
+// list nor a read of another thread. A read reads its own thread's rounds
+// (Codex review of #175, round 1).
+func TestTheBoardReadsOnlyItsThreadsShifts(t *testing.T) {
+	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	now := base
+	s := threadsStore(t, &now)
+	shift := func(key string) ThreadRow {
+		t.Helper()
+		row, _, err := s.CreateShiftThread(ctx, ThreadRow{Key: key, Title: key, Agent: "vera", SupervisorSession: 1, Task: "x"}, ShiftRow{Stop: "green", MaxRounds: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row
+	}
+	old := shift("old")
+	if _, err := s.CloseThread(ctx, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(8 * 24 * time.Hour)
+	listed, read := shift("listed"), shift("read")
+	for _, q := range []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE shifts SET deadline = 'not a time' WHERE thread_id = ?`, []any{old.ID}},
+		{`INSERT INTO shift_rounds (thread_id, n, verdict, reason, at) VALUES (?, 1, 'continue', '', 'not a time')`, []any{old.ID}},
+		{`INSERT INTO shift_rounds (thread_id, n, verdict, reason, at) VALUES (?, 1, 'continue', '', 'not a time')`, []any{listed.ID}},
+		{`INSERT INTO shift_rounds (thread_id, n, verdict, reason, at) VALUES (?, 1, 'continue', 'still red', ?)`, []any{read.ID, now.UnixMilli()}},
+	} {
+		if _, err := s.db.ExecContext(ctx, q.query, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	since := now.Add(-team.InboxWindow)
+	rows, err := s.TeamThreads(ctx, since)
+	if err != nil {
+		t.Fatalf("the list read a shift or round it does not show: %v", err)
+	}
+	if _, ok := rows.Shifts[old.ID]; ok || len(rows.Shifts) != 2 || len(rows.Shifts[listed.ID].Rounds) != 0 || len(rows.Shifts[read.ID].Rounds) != 0 {
+		t.Fatalf("the board's shifts %+v", rows.Shifts)
+	}
+	_, whole, err := s.TeamThread(ctx, read.ID, since)
+	if err != nil {
+		t.Fatalf("a read of another thread: %v", err)
+	}
+	if whole.Shift == nil || len(whole.Shift.Rounds) != 1 || whole.Shift.Rounds[0].Reason != "still red" {
+		t.Fatalf("the read's shift %+v", whole.Shift)
+	}
+}

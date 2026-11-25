@@ -53,7 +53,7 @@ const (
 
 // ThreadsGuide is the line of the supervisor's instructions that names
 // team_threads (ADR-0071).
-var ThreadsGuide = fmt.Sprintf("Before you ask the owner or a specialist where a thread stands, read it with team_threads: list shows every thread not closed with who moves it next, and those closed in the last %d days; read shows one whole, with its asks, pull requests and shift. ", InboxDays)
+var ThreadsGuide = fmt.Sprintf("Before you ask the owner or a specialist where a thread stands, read it with team_threads: list shows every thread not closed with who moves it next, and the closed threads whose records changed in the last %d days; read shows one whole, with its asks, pull requests and shift. ", InboxDays)
 
 // ThreadsCall is a team_threads call.
 type ThreadsCall struct {
@@ -398,7 +398,7 @@ func (t Threads) lists(since time.Time) []inboxList {
 		{"With their specialists", movers[MoverSpecialist]},
 		{"Waiting for their supervisor", movers[MoverSupervisor]},
 		{"Cross-reviews pocketd runs and closes at their verdicts", reviews},
-		{fmt.Sprintf("Closed in the last %d days, by their record's last change", InboxDays), closed},
+		{fmt.Sprintf("Closed threads whose records changed in the last %d days", InboxDays), closed},
 	}
 }
 
@@ -474,12 +474,12 @@ func shiftPart(sh *proto.Shift) string {
 
 // pullsPart names thread's pull requests on one line, at most
 // threadsLinePulls of them: "pull requests: frostyard/x#3 (open, CI
-// green, verdict ready)"; "" for none.
+// green, verdict ready, read 5m ago)"; "" for none.
 func (t Threads) pullsPart(thread int64) string {
 	var refs []string
 	for _, p := range t.Board.Pulls {
 		if p.Thread == thread {
-			refs = append(refs, pullBrief(p))
+			refs = append(refs, t.pullBrief(p))
 		}
 	}
 	switch n := len(refs); {
@@ -492,8 +492,10 @@ func (t Threads) pullsPart(thread int64) string {
 }
 
 // pullBrief is p as a list's line names it: its reference, then its
-// state, draft, CI and verdict at its head as pocketd last read them.
-func pullBrief(p proto.PullRequest) string {
+// state, draft, CI and verdict at its head as pocketd last read them, and
+// how long ago that read was: the thread's own age says nothing of it
+// (Codex review of #175, round 1).
+func (t Threads) pullBrief(p proto.PullRequest) string {
 	facts := []string{string(p.State)}
 	if p.Draft {
 		facts = append(facts, "draft")
@@ -503,7 +505,7 @@ func pullBrief(p proto.PullRequest) string {
 	if p.Review != nil {
 		verdict = "verdict " + string(p.Review.Verdict)
 	}
-	facts = append(facts, verdict)
+	facts = append(facts, verdict, "read "+t.clock().rel(p.CheckedAt))
 	return fmt.Sprintf("%s#%d (%s)", p.Repository, p.Number, strings.Join(facts, ", "))
 }
 
@@ -603,27 +605,37 @@ func (t Threads) facts(w ThreadWhole) []string {
 	th := w.Thread
 	c := t.clock()
 	var out []string
-	switch w.Supervisor.ID {
-	case 0:
-		out = append(out, "Delegated by: no session pocketd recorded")
-	case t.Caller:
-		out = append(out, fmt.Sprintf("Delegated by: session %d, this session", w.Supervisor.ID))
-	default:
-		out = append(out, fmt.Sprintf("Delegated by: session %d, %s", w.Supervisor.ID, profileOf(w.Supervisor)))
-	}
-	if w.Specialist.ID == 0 {
-		out = append(out, "Specialist's session: none yet; pocketd starts it")
+	// A cross-review copies its author's thread's supervisor session, but
+	// pocketd started it, and no supervisor sends to it or closes it
+	// (ADR-0019; Codex review of #175, round 1).
+	if r, ok := t.Reviews[th.ID]; ok {
+		out = append(out, fmt.Sprintf("Started by: pocketd, as a cross-review of %s at %s; it closes at its verdict, and no supervisor sends to it or closes it",
+			r.Pull, short(r.Head)))
 	} else {
+		switch w.Supervisor.ID {
+		case 0:
+			out = append(out, "Delegated by: no session pocketd recorded")
+		case t.Caller:
+			out = append(out, fmt.Sprintf("Delegated by: session %d, this session", w.Supervisor.ID))
+		default:
+			out = append(out, fmt.Sprintf("Delegated by: session %d, %s", w.Supervisor.ID, profileOf(w.Supervisor)))
+		}
+	}
+	switch {
+	case w.Specialist.ID != 0:
 		out = append(out, fmt.Sprintf("Specialist's session: %d, %s", w.Specialist.ID, modelOf(w.Specialist.Model)))
+	case th.State == proto.ThreadStarting:
+		out = append(out, "Specialist's session: none yet; pocketd starts it")
+	default:
+		// A thread that failed before its start closed with no session
+		// (Codex review of #175, round 1).
+		out = append(out, "Specialist's session: none; pocketd started no session for it")
 	}
 	switch {
 	case th.Repository != "":
 		out = append(out, fmt.Sprintf("Repository: %s · branch %s · worktree %s", th.Repository, orNone(th.Branch), orNone(th.Cwd)))
 	case th.Cwd != "":
 		out = append(out, "Works in its specialist's home: "+th.Cwd)
-	}
-	if r, ok := t.Reviews[th.ID]; ok {
-		out = append(out, fmt.Sprintf("A cross-review pocketd started: it reviews %s at %s, and closes at its verdict", r.Pull, short(r.Head)))
 	}
 	if line := planLine(th, w.Plan); line != "" {
 		out = append(out, line)

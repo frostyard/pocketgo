@@ -13,7 +13,9 @@ import (
 type ThreadsRows struct {
 	// Threads are every thread not closed and every closed one whose
 	// record changed at the window's start or later, the most recently
-	// changed first, and Shifts their shifts, by thread.
+	// changed first, and Shifts their shifts, by thread, without their
+	// rounds: the board shows a shift's state and round alone, and a read
+	// reads its own thread's rounds (TeamThread).
 	Threads []ThreadRow
 	Shifts  map[int64]ShiftRow
 	// Asks are the open asks, oldest first (OpenAsks).
@@ -144,8 +146,16 @@ func threadsBoardIn(ctx context.Context, tx *sql.Tx, since time.Time) (ThreadsRo
 		ORDER BY updated_at DESC, id DESC`, at); err != nil {
 		return ThreadsRows{}, err
 	}
-	if rows.Shifts, err = shiftsOf(ctx, tx, rows.Threads); err != nil {
+	// The shifts of the threads read alone, never the whole history of
+	// shifts and rounds (Codex review of #175, round 1).
+	shifts, err := queryRows(ctx, tx, scanShift, `SELECT `+shiftColumns+` FROM shifts
+		WHERE thread_id IN (SELECT id FROM threads WHERE state != 'closed' OR updated_at >= ?)`, at)
+	if err != nil {
 		return ThreadsRows{}, err
+	}
+	rows.Shifts = make(map[int64]ShiftRow, len(shifts))
+	for _, sh := range shifts {
+		rows.Shifts[sh.ThreadID] = sh
 	}
 	if rows.Asks, err = openAsksIn(ctx, tx); err != nil {
 		return ThreadsRows{}, err
