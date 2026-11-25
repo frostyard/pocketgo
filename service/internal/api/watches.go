@@ -111,6 +111,20 @@ func (s *Server) addWatch(ctx context.Context, call TeamCall, c team.WatchCall) 
 	if s.afterWatchRead != nil {
 		s.afterWatchRead()
 	}
+	// A closed thread's specialist may run on a message that reopens the
+	// thread once noted: its placed messages are noted first, under
+	// outboxMu, as a report's are, and the insert's own transaction still
+	// checks the thread against a close (Codex review of #173, round 3).
+	if thread, err := s.store.ThreadOfSession(context.WithoutCancel(ctx), call.Session); err == nil && thread.State == store.ThreadClosed {
+		s.outboxMu.Lock()
+		err := s.noteSendsPlaced(context.WithoutCancel(ctx), thread.ID)
+		s.outboxMu.Unlock()
+		if err != nil {
+			return "", err
+		}
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return "", err
+	}
 	outcome := team.WatchDecide(plan.Until, seen)
 	row := store.WatchRow{Key: call.key(), SessionID: call.Session, Repository: p.Repository, Number: p.Number, GitHubID: p.ID,
 		Until: plan.Until, Hours: plan.Hours, Deadline: plan.Deadline(s.now())}
@@ -257,9 +271,16 @@ func (s *Server) watchPass(ctx context.Context) error {
 	reads := map[string]watchRead{}
 	cis := map[string]watchCI{}
 	var failures []error
+	// held says the budget held back a watch's read: no later watch of the
+	// pass reads, so the budget builds up for that whole read, which the
+	// next pass starts with (Codex review of #173, round 3).
+	held := false
 	for _, w := range rows {
 		ref := strings.ToLower(w.Ref())
 		r, done := reads[ref]
+		if need := s.watchReadNeed(w, r, done, cis); held || need > 0 && !s.watchBudget.Has(s.now(), need) {
+			held, done, r = true, true, watchRead{err: errWatchReadsSpent}
+		}
 		if !done {
 			r.pull, r.err = s.readWatched(ctx, gh, w.Repository, w.Number)
 			reads[ref] = r
@@ -329,6 +350,29 @@ func (s *Server) watchPass(ctx context.Context) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// watchReadNeed is how many GitHub requests w's whole read may still take
+// in a pass, at most: its pull request's read, unless the pass read it
+// (r, done), and for checks every page of CI, unless the pass read CI at
+// its head already (cis) or the pull request is not open.
+func (s *Server) watchReadNeed(w store.WatchRow, r watchRead, done bool, cis map[string]watchCI) int {
+	need := 0
+	if !done {
+		need++
+	}
+	if w.Until != team.UntilChecks {
+		return need
+	}
+	if done {
+		if r.err != nil || r.pull.State != github.Open {
+			return need
+		}
+		if _, read := cis[strings.ToLower(r.pull.Repository)+"@"+r.pull.HeadSHA]; read {
+			return need
+		}
+	}
+	return need + github.MaxCIRequests
 }
 
 // uncheckedPass ends the live watches no round checks

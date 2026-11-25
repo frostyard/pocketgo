@@ -1086,7 +1086,16 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 		// submitted. A close drops it in its transaction, and no queued
 		// copy outlives the close.
 		idle = true
-		check = func(ctx context.Context) error { return s.watchNoteGoes(ctx, row.SessionID) }
+		check = func(ctx context.Context) error {
+			if err := s.watchNoteGoes(ctx, row.SessionID); err != nil {
+				return err
+			}
+			// Idle means no run and no input in PiG's inbox, which
+			// WhenBusyReject does not look at: after a failed run an older
+			// input may wait there, and PiG would start it and queue the
+			// note behind it (Codex review of #173, round 3).
+			return s.specialistIdle(ctx, row.SessionID)
+		}
 	}
 	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check, idleOnly: idle},
 		func(sub int64) error { return s.store.NoteSubmitted(ctx, row.Key, sub) },

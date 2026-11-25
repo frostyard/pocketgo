@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A watch's note is submitted only while its session has no run and no input waiting in PiG's inbox (Server.specialistIdle, checked right before the submission): WhenBusyReject looks at the run alone, and after a failed run PiG would start an older input and queue the note behind it, past a thread's close.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 3: [P1] Check for queued input before submitting a watch note",
+  "promoted_to": "service/internal/api/watches_round3_test.go"
+}

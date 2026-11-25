@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "Before a closed thread's specialist's watch is admitted, the add notes the thread's placed messages under outboxMu (Server.noteSendsPlaced), so a message that reopens it counts; store.AddWatch still checks the thread in its own transaction against a close.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 3: [P2] Note delivered reopen messages before admitting a watch",
+  "promoted_to": "service/internal/api/watches_round3_test.go"
+}

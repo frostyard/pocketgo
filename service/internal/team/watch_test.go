@@ -283,9 +283,21 @@ func TestWatchBounds(t *testing.T) {
 func TestReadBudget(t *testing.T) {
 	start := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
 	var b ReadBudget
+	// Has spends nothing (Codex review of #173, round 3).
+	for range 2 {
+		if !b.Has(start, WatchReadsBurst) {
+			t.Fatal("Has spent the budget")
+		}
+	}
+	if b.Has(start, WatchReadsBurst+1) {
+		t.Fatal("Has found more than the burst")
+	}
 	n := 0
 	for b.Take(start) {
 		n++
+	}
+	if b.Has(start, 1) {
+		t.Fatal("an empty budget had a request")
 	}
 	if n != WatchReadsBurst {
 		t.Fatalf("a burst of %d", n)
@@ -311,6 +323,10 @@ func TestReadBudget(t *testing.T) {
 	// Any hour, not only those on the hour: the first hour with its burst.
 	if n+spent[0] > WatchReadBudget+1 {
 		t.Errorf("the first hour spent %d", n+spent[0])
+	}
+	// An empty budget holds a whole read of 21 requests after 63 seconds.
+	if b.Has(at.Add(62*time.Second), 21) || !b.Has(at.Add(64*time.Second), 21) {
+		t.Error("the budget did not build up for a whole read")
 	}
 }
 

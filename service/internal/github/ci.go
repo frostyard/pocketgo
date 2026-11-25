@@ -27,6 +27,10 @@ const (
 // list longer than that is cut, and never green.
 const ciPages = 10
 
+// MaxCIRequests is the most requests one CIChecks makes: every page of
+// check runs and of statuses.
+const MaxCIRequests = 2 * ciPages
+
 // IgnoredChecks are the check runs CI leaves out, by their exact names:
 // core's pr-triage job runs on the label's own labeled event, as core's
 // readiness step leaves it out (core ADR-0077). Called as a reusable

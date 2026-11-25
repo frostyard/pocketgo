@@ -96,6 +96,18 @@ type ReadBudget struct {
 // Take spends one request at now, and says whether one was left. A clock
 // that went back refills nothing.
 func (b *ReadBudget) Take(now time.Time) bool {
+	if !b.Has(now, 1) {
+		return false
+	}
+	b.left--
+	return true
+}
+
+// Has says whether n requests are left at now, spending none: a watch's
+// read starts only when its whole read fits, so the budget builds up for
+// a read of many pages rather than spending each refill on its first ones
+// (Codex review of #173, round 3). n is at most WatchReadsBurst.
+func (b *ReadBudget) Has(now time.Time, n int) bool {
 	if !b.started {
 		b.started, b.left, b.at = true, WatchReadsBurst, now
 	}
@@ -103,11 +115,7 @@ func (b *ReadBudget) Take(now time.Time) bool {
 		b.left = math.Min(WatchReadsBurst, b.left+now.Sub(b.at).Hours()*WatchReadsPerHour)
 		b.at = now
 	}
-	if b.left < 1 {
-		return false
-	}
-	b.left--
-	return true
+	return b.left >= float64(n)
 }
 
 // WatchReadsSpent is the refusal of a watch's read once the budget is
