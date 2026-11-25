@@ -159,7 +159,7 @@ func (c *client) explorer(cx *core.Scope, src fileScope, session bool) core.Node
 	if session {
 		width = 170
 	}
-	header := core.View{Style: core.Style{Padding: core.Symmetric(8, 12), Gap: 6, Direction: core.Row, AlignItems: core.AlignCenter}, Children: []core.Node{ui.Icon(lucide.FolderOpen, 16, ui.Inherited), core.Text{Content: src.folder, Style: ui.TypeCaption, MaxLines: 1, Selectable: core.SelectableOn}}}
+	header := core.View{Style: core.Style{Padding: core.Symmetric(workspaceui.SpaceS, workspaceui.SpaceM), Gap: 6, Direction: core.Row, AlignItems: core.AlignCenter}, Children: []core.Node{ui.Icon(lucide.FolderOpen, 16, ui.Inherited), core.Text{Content: src.folder, Style: ui.TypeCaption, MaxLines: 1, Selectable: core.SelectableOn}}}
 	return workspaceui.FileExplorer{Header: header, Tree: e.tree(), Preview: core.Dynamic(e.content), TreeWidth: width, HasPreview: func() bool { return e.selected.Get() != "" }, BackToTree: func() { e.route(state.FileSpot{Root: src.root}, false) }}
 }
 
@@ -394,5 +394,5 @@ func (e *explorer) content(cx *core.Scope) core.Node {
 		}
 		children = append(children, core.Text{Content: fmt.Sprintf("%s · %s", f.Kind, state.FileSize(f.Size)), Style: ui.TypeCaption})
 	}
-	return core.Scroll{Style: ui.FillRest, Children: []core.Node{core.View{Style: core.Style{Padding: core.All(14), Gap: 10}, Children: children}}}
+	return core.Scroll{Style: ui.FillRest, Children: []core.Node{core.View{Style: core.Style{Padding: core.All(workspaceui.SpaceM), Gap: 10}, Children: children}}}
 }

@@ -105,7 +105,7 @@ func (c *client) sessionDetails(cx *core.Scope) core.Node {
 	startOver := core.Show{When: func() bool { s := session(); ro, _ := d.ReadOnly(id); return s.Standing && !ro }, Then: func(*core.Scope) core.Node {
 		why := func() string { return state.StartOverBlocked(session(), d.Open()) }
 		return workspaceui.Stack(ui.Button{Text: "Start over", Disabled: func() bool { return why() != "" }, OnPress: func() {
-			c.confirm("Start over?", state.StartOverQuestion(session()), "Start over", func() { c.store.StartOver(id) })
+			c.destroy("Start over?", state.StartOverQuestion(session()), "Start over", func() { c.store.StartOver(id) })
 		}}, core.Text{ContentFunc: why})
 	}}
 	return workspaceui.Page(core.Text{Style: ui.TypeTitle, ContentFunc: func() string { return sessionName(session()) }},

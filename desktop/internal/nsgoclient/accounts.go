@@ -103,7 +103,7 @@ func (c *client) githubSettings() core.Node {
 	}
 	if g.CanSignOut() {
 		out = append(out, c.button("Sign out of GitHub", func() {
-			c.confirm("Sign out of GitHub?", "Remove the owner credential from the desktop keyring.", "Sign out", func() { g.SignOut(c.result) })
+			c.destroy("Sign out of GitHub?", "Remove the owner credential from the desktop keyring.", "Sign out", func() { g.SignOut(c.result) })
 		}))
 	}
 	if g.CanSaveAgain() {

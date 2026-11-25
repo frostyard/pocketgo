@@ -3,6 +3,7 @@ package nsgoclient
 import (
 	"strings"
 
+	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/nsgo-dev/nsgo/core"
 	"github.com/nsgo-dev/nsgo/icons/lucide"
@@ -53,7 +54,7 @@ func (c *client) signIn(cx *core.Scope) core.Node {
 		connect()
 	}
 	return core.Scroll{Style: ui.FillRest, Children: []core.Node{core.View{
-		Style: core.Style{Width: core.Pct(100), MaxWidth: core.Pt(458), AlignSelf: core.AlignCenter, Margin: core.Edges{Top: 64}, Padding: core.All(24), Gap: 13},
+		Style: core.Style{Width: core.Pct(100), MaxWidth: core.Pt(458), AlignSelf: core.AlignCenter, Margin: core.Edges{Top: 64}, Padding: core.All(workspaceui.SpaceXL), Gap: 13},
 		Children: []core.Node{
 			core.Icon{SVG: lucide.MessagesSquare(), Style: core.Style{Width: core.Pt(38), Height: core.Pt(38)}, StyleFunc: ui.Colored(ui.ColorsOf(cx).Accent)},
 			core.Text{Content: "PocketGo", Style: ui.TypeHeading}, core.Text{Content: "Connect to pocketd with a device token from your service host."},

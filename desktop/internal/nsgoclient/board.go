@@ -78,7 +78,7 @@ func (c *client) board(cx *core.Scope) core.Node {
 		return proposals() > 0 || c.store.LaunchUncertain() || c.store.Launching().Err != "" || c.launchNote() != ""
 	}, c.nightShift))
 	return core.Scroll{Style: ui.FillRest, Children: []core.Node{core.View{
-		Style: core.Style{Width: core.Pct(100), MaxWidth: core.Pt(1560), AlignSelf: core.AlignCenter, Padding: core.All(16), Gap: 14}, Children: nodes,
+		Style: core.Style{Width: core.Pct(100), MaxWidth: core.Pt(1560), AlignSelf: core.AlignCenter, Padding: core.All(workspaceui.SpaceL), Gap: 14}, Children: nodes,
 	}}}
 }
 
@@ -97,7 +97,7 @@ func (c *client) threadLanes(cx *core.Scope, byState func() map[proto.ThreadStat
 		{"", "Other", colors.Muted},
 	} {
 		items := func() []proto.Thread { return byState()[lane.key] }
-		column := core.View{TestID: "board-lane-" + string(lane.key), Style: core.Style{MinWidth: core.Pt(0), Padding: core.All(8), CornerRadius: 10, BorderWidth: 1, Borders: core.Edges{Top: 3}},
+		column := core.View{TestID: "board-lane-" + string(lane.key), Style: core.Style{MinWidth: core.Pt(0), Padding: core.All(workspaceui.SpaceS), CornerRadius: ui.RadiusInset, BorderWidth: 1, Borders: core.Edges{Top: 3}},
 			StyleFunc: func() core.Style {
 				return core.Style{Background: colors.Inset(), BorderColor: colors.Border(), BorderColors: core.EdgeColors{Top: lane.color()}}
 			},
@@ -145,14 +145,18 @@ func (c *client) threadCards(cx *core.Scope, items func() []proto.Thread) core.N
 				return c.cardAnchor(fmt.Sprintf("thread-%d", thread.Get().ID), c.threadCard(cx, thread.Get(), report, details))
 			})
 		})
+	// The pages are NSGo's pagination, beside which of the lane's threads
+	// the page shows.
 	pager := core.Show{When: func() bool { return len(items()) > pageSize }, Then: func(*core.Scope) core.Node {
-		return workspaceui.Row(ui.Button{Text: "Previous", Disabled: func() bool { return offset() == 0 }, OnPress: func() { page.Set(offset()/pageSize - 1) }},
-			core.Text{ContentFunc: func() string {
+		return workspaceui.Row(
+			ui.Pagination{Label: "Pages", PreviousLabel: "Previous", NextLabel: "Next", Compact: func() bool { return true },
+				Page: func() int { return offset()/pageSize + 1 }, TotalPages: func() int { return (len(items()) + pageSize - 1) / pageSize },
+				OnChange: func(n int) { page.Set(n - 1) }},
+			core.Text{Style: ui.TypeCaption, ContentFunc: func() string {
 				n := len(items())
 				start := offset()
 				return fmt.Sprintf("%d–%d of %d", start+1, min(start+pageSize, n), n)
-			}},
-			ui.Button{Text: "Next", Disabled: func() bool { return offset()+pageSize >= len(items()) }, OnPress: func() { page.Set(offset()/pageSize + 1) }})
+			}})
 	}}
 	return workspaceui.Stack(rows, pager)
 }
@@ -260,7 +264,7 @@ func (c *client) threadDetails(cx *core.Scope, t proto.Thread, report *core.Sign
 		actions = append(actions, c.button("Resume shift", func() { c.store.ResumeShift(t.ID) }))
 	}
 	if state.CanStopShift(t) {
-		actions = append(actions, c.button("Stop shift", func() { c.confirm("Stop shift?", t.Title, "Stop", func() { c.store.StopShift(t.ID) }) }))
+		actions = append(actions, c.button("Stop shift", func() { c.destroy("Stop shift?", t.Title, "Stop", func() { c.store.StopShift(t.ID) }) }))
 	}
 	if t.State != proto.ThreadClosed {
 		actions = append(actions, c.button("Close thread", func() {
@@ -268,7 +272,7 @@ func (c *client) threadDetails(cx *core.Scope, t proto.Thread, report *core.Sign
 			if state.PlanThread(t) {
 				msg += ". Closing this thread also drops its plan."
 			}
-			c.confirm("Close thread?", msg, "Close thread", func() { c.store.CloseThread(t.ID) })
+			c.destroy("Close thread?", msg, "Close thread", func() { c.store.CloseThread(t.ID) })
 		}))
 	}
 
@@ -304,7 +308,7 @@ func (c *client) nightShift(cx *core.Scope) core.Node {
 				label = "Unpick"
 			}
 			children := []core.Node{title(p.Title), body(p.Task), body(c.store.Data.ProposalCaption(p, time.Now())),
-				workspaceui.Row(c.button(label, func() { c.store.TogglePick(p.ID) }), c.button("Drop proposal", func() { c.confirm("Drop proposal?", p.Title, "Drop", func() { c.store.DropProposal(p.ID, p.Rev) }) }))}
+				workspaceui.Row(c.button(label, func() { c.store.TogglePick(p.ID) }), c.button("Drop proposal", func() { c.destroy("Drop proposal?", p.Title, "Drop", func() { c.store.DropProposal(p.ID, p.Rev) }) }))}
 			if err := c.store.Dropping(p.ID).Err; err != "" {
 				children = append(children, body(err))
 			}

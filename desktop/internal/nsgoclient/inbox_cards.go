@@ -16,7 +16,7 @@ import (
 // the themed glyphs so the categories also read clearly without color.
 func inboxHeader(cx *core.Scope, kind string, icon func() *core.SVG, tint func() core.Color, source func() string) core.Node {
 	colors := ui.ColorsOf(cx)
-	mark := core.View{Style: core.Style{Width: core.Pt(26), Height: core.Pt(26), CornerRadius: 7, AlignItems: core.AlignCenter, JustifyContent: core.JustifyCenter},
+	mark := core.View{Style: core.Style{Width: core.Pt(26), Height: core.Pt(26), CornerRadius: ui.RadiusControl, AlignItems: core.AlignCenter, JustifyContent: core.JustifyCenter},
 		StyleFunc: func() core.Style { return core.Style{Background: ui.Mix(colors.Raised(), tint(), 0.14)} },
 		Children:  []core.Node{ui.Icon(icon, 16, tint)}}
 	return workspaceui.Row(mark, core.Text{Content: kind, Style: ui.TypeLabel}, core.Text{ContentFunc: source, Style: ui.TypeCaption.Merge(core.Style{FlexShrink: 1}), StyleFunc: ui.Colored(colors.Muted)})
@@ -46,7 +46,7 @@ func (c *client) approvalCard(cx *core.Scope, approval func() proto.Approval, _ 
 			a := approval()
 			return strings.Join(nonempty(a.Tool, state.ToolSummary(a.Tool, a.Arguments)), " · ")
 		}, Style: ui.TypeTitle, Selectable: core.SelectableOn},
-		core.View{Style: core.Style{Padding: core.All(10), CornerRadius: 6}, StyleFunc: ui.Filled(colors.Inset), Children: []core.Node{
+		core.View{Style: core.Style{Padding: core.All(workspaceui.SpaceS), CornerRadius: ui.RadiusControl}, StyleFunc: ui.Filled(colors.Inset), Children: []core.Node{
 			core.Scroll{Style: core.Style{MaxHeight: core.Pt(160)}, Children: []core.Node{core.Text{ContentFunc: args.Get, Style: ui.TypeCode, Selectable: core.SelectableOn}}},
 		}},
 		c.approvalActions(a.ID, ui.IconButton{Icon: lucide.Copy, Label: "Copy arguments", OnPress: func() { c.cx.SetClipboard(args.Get()) }}, c.openInboxConversation(key, a.SessionID)),
