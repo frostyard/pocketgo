@@ -4,14 +4,12 @@
 /build/
 /service/pocketd
 /service/cmd/pocketd/pocketd
-/desktop/pocket
-/desktop/cmd/pocket/pocket
 *.exe
 # Agent worktrees that Claude Code creates beside the checkout.
 /.claude/worktrees/
-# make app (go tool mygo build) writes the desktop app's packages to
-# desktop/build/ (mygo.json's "out"); go tool mygo dev keeps its bundle in
-# desktop/.mygo/.
+# The MyGo client, removed by ADR-0071, wrote its packages to desktop/build/
+# and its bundle to desktop/.mygo/; a checkout that built it may still hold
+# them.
 /desktop/build/
 /desktop/.mygo/
 

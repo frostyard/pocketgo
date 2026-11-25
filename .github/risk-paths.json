@@ -238,11 +238,6 @@
       "why": "auth: the owner signs pocketd in to and out of a subscription from the desktop, and the only device page the desktop opens (ADR-0062)"
     },
     {
-      "glob": "desktop/internal/app/signins.go",
-      "level": "L2",
-      "why": "destructive operations: the Sign Out of pocketd from a provider and the question before it (ADR-0062)"
-    },
-    {
       "glob": "service/internal/api/reviews.go",
       "level": "L2",
       "why": "publish: pocketd puts ready-for-human on pull requests on GitHub, as the bot account, from cross-review verdicts it checks"
@@ -253,24 +248,9 @@
       "why": "auth: where the desktop keeps the device token (keyring, or a private file without one)"
     },
     {
-      "glob": "desktop/cmd/pocket/main.go",
-      "level": "L1",
-      "why": "auth: joins the desktop keyring to the token storage, and the file fallback switch"
-    },
-    {
-      "glob": "desktop/internal/app/app.go",
-      "level": "L1",
-      "why": "auth: App.Start reads the kept token and signs in without asking"
-    },
-    {
       "glob": "desktop/internal/state/store.go",
       "level": "L1",
       "why": "auth: Store.newClient chooses the transport that carries the device token, and Store signs out on a refused token"
-    },
-    {
-      "glob": "desktop/internal/app/signin.go",
-      "level": "L1",
-      "why": "auth: the sign-in that waits for the owner's word before plain HTTP, keeps the token, and ends the automatic sign-in on sign-out"
     },
     {
       "glob": "desktop/internal/state/url.go",
@@ -288,16 +268,6 @@
       "why": "auth: the HTTP client that carries the device token and refuses redirects to another origin"
     },
     {
-      "glob": "desktop/internal/app/board.go",
-      "level": "L2",
-      "why": "destructive operations: the work board's Close Thread and Stop Shift and the confirmations before them, which withdraw a brief not started yet or a shift's queued round (ADR-0024)"
-    },
-    {
-      "glob": "desktop/internal/app/nightshift.go",
-      "level": "L2",
-      "why": "destructive operations: the work board's Drop of a proposal, which takes it off the board for good, and Launch picks, which starts threads (ADR-0034)"
-    },
-    {
       "glob": "desktop/internal/state/nightshift.go",
       "level": "L2",
       "why": "destructive operations: the owner's drop of a proposal and launch of picks, and which request id goes with which, so a lost reply never launches twice (ADR-0034)"
@@ -308,19 +278,9 @@
       "why": "destructive operations: the owner's Stop of a shift, which withdraws its queued round and ends it, and which request id goes with which stop (ADR-0024)"
     },
     {
-      "glob": "desktop/internal/app/session.go",
-      "level": "L2",
-      "why": "destructive operations: a standing session's Start Over and the confirmation before it, which starts the agent's context afresh (ADR-0026)"
-    },
-    {
       "glob": "desktop/internal/state/standing.go",
       "level": "L2",
       "why": "destructive operations: the owner's Start Over of a standing session, when it may go, and which request id goes with which Start Over (ADR-0026)"
-    },
-    {
-      "glob": "desktop/internal/app/plans.go",
-      "level": "L2",
-      "why": "auth: the owner's approval of a plan and the confirmation before it, after which the supervisor delivers its tasks (ADR-0020)"
     },
     {
       "glob": "desktop/internal/state/plans.go",
@@ -348,16 +308,6 @@
       "why": "auth: one PocketGo at a time spends the GitHub sign-in's refresh tokens"
     },
     {
-      "glob": "desktop/cmd/pocket/github.go",
-      "level": "L1",
-      "why": "auth: joins the keyring, the sign-in lock and the device flow to the GitHub token"
-    },
-    {
-      "glob": "desktop/cmd/pocket/suspend.go",
-      "level": "L1",
-      "why": "auth: when the GitHub sign-in holds its refresh and waits for a credential write as iOS suspends the app (ADR-0041)"
-    },
-    {
       "glob": "desktop/internal/state/platform.go",
       "level": "L1",
       "why": "auth: the platform rules, among them state.SavesOnSuspend, which decides whether the GitHub sign-in holds its refresh as iOS suspends the app (ADR-0040, ADR-0041)"
@@ -368,29 +318,14 @@
       "why": "auth: which pull request the owner approves and merges, at which head, and which sign-in is kept"
     },
     {
-      "glob": "desktop/internal/app/merge.go",
-      "level": "L2",
-      "why": "destructive operations: the confirmation before an approve and merge as the owner"
-    },
-    {
-      "glob": "desktop/internal/app/confirms.go",
-      "level": "L2",
-      "why": "destructive operations: the queue every confirmation goes through, and the one a compact window draws, whose action runs only once the owner confirms (ADR-0044)"
-    },
-    {
       "glob": "desktop/internal/state/mergeall.go",
       "level": "L1",
       "why": "auth: which pull requests Merge All Ready approves and merges as the owner, each read fresh and re-gated at its turn (ADR-0031)"
     },
     {
-      "glob": "desktop/internal/app/mergeall.go",
-      "level": "L2",
-      "why": "destructive operations: the one confirmation before Merge All Ready approves and merges a list as the owner (ADR-0031)"
-    },
-    {
-      "glob": "desktop/mygo.json",
+      "glob": "desktop/cmd/pocket-nsgo/nsgo.yaml",
       "level": "L1",
-      "why": "publish: the desktop app's identifier, keyring service and package settings, and the iOS build's signing distribution (ADR-0040)"
+      "why": "publish: the desktop app's identifier, version, icon and build targets, which NSGo's packager builds every client from (ADR-0071)"
     },
     {
       "glob": "service/internal/terminal/**",
@@ -406,11 +341,6 @@
       "glob": "desktop/internal/state/terminal.go",
       "level": "L2",
       "why": "auth: the owner's keys to a shell on the service host, which links a shell prints open, and which request id a start keeps (ADR-0025)"
-    },
-    {
-      "glob": "desktop/internal/app/terminal*.go",
-      "level": "L2",
-      "why": "auth: what a shell on the service host may do on the desktop: no clipboard write or read, web and mail links only, no reply to its history (ADR-0025)"
     },
     {
       "glob": "desktop/internal/ownerauth/**",
@@ -431,6 +361,11 @@
       "glob": "desktop/internal/nsgoclient/signin.go",
       "level": "L1",
       "why": "auth: device sign-in and plain HTTP confirmation"
+    },
+    {
+      "glob": "desktop/internal/nsgoclient/compact.go",
+      "level": "L1",
+      "why": "auth: when the GitHub sign-in holds its refresh as iOS suspends the app (ADR-0041), and the compact window's sign-out"
     },
     {
       "glob": "desktop/internal/nsgoclient/*.go",

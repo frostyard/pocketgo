@@ -11,8 +11,8 @@ import (
 	"strings"
 )
 
-// Keyring is the part of a credential store the client uses: mygo.Secrets
-// in the app, a map in tests.
+// Keyring is the part of a credential store the client uses: NSGo's
+// secrets in the app (desktop/internal/nsgoclient), a map in tests.
 type Keyring interface {
 	Set(key string, value []byte) error
 	Get(key string) ([]byte, error)
@@ -23,7 +23,7 @@ type Keyring interface {
 // in a file of the config folder that only the user can read only where
 // there is no keyring. A keyring is missing when its methods fail with an
 // error for which errors.Is(err, errors.ErrUnsupported) holds, as
-// mygo.Secrets does on a Linux desktop without a Secret Service; a nil Ring
+// the NSGo client's keyring does where NSGo has no secret store; a nil Ring
 // is the same. Any other keyring error is returned, never a reason to use
 // the file, and a working keyring without the token means there is none,
 // whatever a file left from a time without a keyring holds.

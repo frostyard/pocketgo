@@ -37,7 +37,7 @@ build/pocketd device add laptop    # prints the device's token once
 build/pocketd serve -listen 127.0.0.1:8788
 ```
 
-Start the desktop client with `build/pocket` (or `make run`), and sign in with the service URL and the device's token. Linux uses NSGo and GTK 4. `make app` packages the native client. `make build-mygo`, `make run-mygo` and `make app-mygo` select the MyGo fallback.
+Start the desktop client with `build/pocket` (or `make run`), and sign in with the service URL and the device's token. Linux uses NSGo and GTK 4. `make app` packages the native client. `make build`, `make run` and `make app` build the client on Linux alone.
 
 The [NSGo port](desktop/cmd/pocket-nsgo/README.md) builds a GTK 4 desktop client and a web/WASM client from the same Go UI. Its preview runs both against disposable data.
 
@@ -45,7 +45,7 @@ To run pocketgo on a host of your own, follow the [setup guide](docs/design/setu
 
 ## How it works
 
-The service, `pocketd`, runs agents on PiG's durable harness, a Go port of Pi Durable. The service and the desktop share one module of wire types: REST for commands, SSE for live updates. Linux and web use the shared NSGo interface. The MyGo client remains available on Linux and serves the other native platforms. The full design is in [docs/design/architecture.md](docs/design/architecture.md).
+The service, `pocketd`, runs agents on PiG's durable harness, a Go port of Pi Durable. The service and the desktop share one module of wire types: REST for commands, SSE for live updates. Linux and web use the shared NSGo interface, the only client. Its macOS and iOS builds have not run on a device yet. The full design is in [docs/design/architecture.md](docs/design/architecture.md).
 
 ## Develop
 

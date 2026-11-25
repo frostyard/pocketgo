@@ -1,9 +1,9 @@
-.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross portable tidy build deploy corrections-base run app snapshot
+.PHONY: verify verify-static verify-template check ci fmt fmt-check lint lint-version-check test race cross portable tidy build deploy corrections-base run app
 
 # A bare `make` verifies; formatting stays an explicit `make fmt` or `make check`.
 .DEFAULT_GOAL := verify
 
-.PHONY: linux-client build-mygo run-mygo app-mygo rc nsgo-live nsgo-pictures
+.PHONY: linux-client rc nsgo-live nsgo-pictures
 HOST_OS := $(shell uname -s)
 HOST_ARCH := $(shell uname -m)
 NSGO_ARCH := $(patsubst x86_64,x64,$(patsubst aarch64,arm64,$(HOST_ARCH)))
@@ -38,17 +38,14 @@ CROSS_proto ?= linux/amd64 linux/arm64 darwin/arm64 windows/amd64
 CROSS_service ?= linux/amd64 linux/arm64 darwin/arm64
 CROSS_desktop ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
-# The phone client is the desktop's own code on MyGo's iOS target (ADR-0040).
-# make portable builds proto and PORTABLE_desktop, the desktop's packages that
-# import no UI, for each of PORTABLE_TARGETS with CGO off, so a dependency or a
-# call that iOS lacks fails CI; make ci runs it. Linking for iOS needs cgo and
-# Xcode, on a Mac, and go vet for iOS refuses CGO off, so it only builds. It
-# also fails when the desktop's iOS app, listed as MyGo's build lists it,
-# imports one of IOS_LEFT_OUT: MyGo's terminal plugin has no libghostty-vt for
-# iOS, and MyGo's iOS build stops on it.
+# The iPad and the iPhone run the NSGo client over the desktop's rules
+# (ADR-0071). make portable builds proto and PORTABLE_desktop, the desktop's
+# packages that import no UI, for each of PORTABLE_TARGETS with CGO off, so a
+# dependency or a call that iOS lacks fails CI; make ci runs it. Linking for
+# iOS needs cgo and Xcode, on a Mac, and go vet for iOS refuses CGO off, so it
+# only builds.
 PORTABLE_TARGETS ?= ios/arm64
-PORTABLE_desktop ?= ./internal/state ./internal/config ./internal/github ./internal/icons
-IOS_LEFT_OUT ?= github.com/egoist/mygo/plugins/terminal
+PORTABLE_desktop ?= ./internal/state ./internal/config ./internal/github
 
 # Where make build writes the commands, relative to the repository root or
 # absolute; BUILD_PATH is its absolute form, so a build inside a module writes
@@ -57,13 +54,8 @@ BUILD_DIR ?= build
 BUILD_PATH = $(abspath $(BUILD_DIR))
 
 # The tests need no display. Unsetting DISPLAY and WAYLAND_DISPLAY proves it
-# on a desktop too. The desktop's view tests draw with MyGo's Tester, which
-# lays text out with Pango and cairo.
+# on a desktop too: the NSGo client's view tests run on NSGo's headless host.
 HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY
-
-# Where make snapshot writes the desktop's views as PNGs, relative to the
-# repository root or absolute.
-SNAPSHOT_DIR ?= build/snapshots
 
 fmt:
 	find $(MODULES) -type d -name .nsgo -prune -o -type f -name '*.go' -exec gofmt -s -w {} +
@@ -127,10 +119,7 @@ cross:
 	done;)
 
 # Build proto and the desktop's UI-free packages for the phone's targets with
-# CGO off, and keep IOS_LEFT_OUT out of the desktop's iOS app (ADR-0040). The
-# list runs without -e, so a package that does not load fails it rather than
-# leaving the tree incomplete, and it must name the app's own package, or it
-# listed nothing.
+# CGO off (ADR-0071).
 portable:
 	@set -e; for target in $(PORTABLE_TARGETS); do \
 		goos=$${target%/*}; goarch=$${target#*/}; \
@@ -138,12 +127,6 @@ portable:
 		(cd proto && CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GOCMD) build -o /dev/null ./...); \
 		echo "==> portable: desktop $(PORTABLE_desktop) $$goos/$$goarch"; \
 		(cd desktop && CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GOCMD) build -o /dev/null $(PORTABLE_desktop)); \
-	done
-	@echo "==> portable: the desktop's iOS app leaves out $(IOS_LEFT_OUT)"
-	@deps="$$(cd desktop && GOOS=ios GOARCH=arm64 CGO_ENABLED=1 $(GOCMD) list -deps ./cmd/pocket)" || { echo "go list could not load the desktop's iOS app"; exit 1; }; \
-	printf '%s\n' "$$deps" | grep -qx 'github.com/frostyard/pocketgo/desktop/internal/app' || { echo "go list did not list the desktop's iOS app"; exit 1; }; \
-	for pkg in $(IOS_LEFT_OUT); do \
-		if printf '%s\n' "$$deps" | grep -qx "$$pkg"; then echo "the desktop's iOS app imports $$pkg, which MyGo's iOS build cannot bundle (ADR-0040)"; exit 1; fi; \
 	done
 
 build: daemon
@@ -159,10 +142,11 @@ run: linux-client
 app:
 	cd desktop/cmd/pocket-nsgo && $(GOCMD) tool nsgo build -target linux_$(NSGO_ARCH)
 else
-build:
-	cd desktop && $(GOCMD) build -o "$(BUILD_PATH)/pocket" ./cmd/pocket
-run: run-mygo
-app: app-mygo
+# The desktop client is the NSGo client alone (ADR-0071). Its macOS app links
+# through Xcode's tools, as .github/workflows/apple.yml builds it; this
+# Makefile builds the client on Linux alone.
+run app:
+	@echo "make $@ builds the desktop client on Linux alone: on a Mac, run go tool nsgo build -target macos_arm64 in desktop/cmd/pocket-nsgo, as .github/workflows/apple.yml does"; exit 1
 endif
 
 # Use the NSGo packager so the executable carries the configured app identity
@@ -175,24 +159,8 @@ linux-client:
 	install -m755 "$$1/PocketGo" "$(BUILD_PATH)/pocket"; \
 	install -m755 "$$1/libghostty-vt.so" "$(BUILD_PATH)/libghostty-vt.so"
 
-build-mygo:
-	@mkdir -p "$(BUILD_PATH)"
-	cd desktop && $(GOCMD) build -o "$(BUILD_PATH)/pocket-mygo" ./cmd/pocket
-
-run-mygo:
-	cd desktop && $(GOCMD) run ./cmd/pocket
-
-app-mygo:
-	cd desktop && $(GOCMD) tool mygo build
-
 rc:
 	GOCMD="$(GOCMD)" packaging/build-rc.sh "$(BUILD_PATH)/rc"
-
-# Write the desktop's views as PNGs in SNAPSHOT_DIR (POCKETGO_DARK=1 for the
-# dark theme), from the headless view tests.
-snapshot:
-	@mkdir -p "$(abspath $(SNAPSHOT_DIR))"
-	cd desktop && POCKETGO_SNAPSHOT_DIR="$(abspath $(SNAPSHOT_DIR))" $(HEADLESS) $(GOCMD) test ./internal/app -run Snapshot -count=1
 
 # The NSGo client's suite in a real Linux window, and its kept pictures taken
 # again (desktop/internal/nsgoclient/comparison/linux). Xvfb gives the run a
@@ -257,13 +225,11 @@ verify-template:
 	node scripts/check-template.mjs
 	node --test test/*.test.mjs
 
-# The non-mutating static checks: tidy diff, vet, MyGo's build-lifetime vet
-# of the desktop, gofmt, the pinned lint and the template gate.
+# The non-mutating static checks: tidy diff, vet, gofmt, the pinned lint and
+# the template gate.
 verify-static:
 	@for m in $(MODULES); do echo "==> verify: $$m go.mod is tidy"; (cd $$m && $(GOCMD) mod tidy -diff) || exit 1; done
 	@for m in $(MODULES); do echo "==> verify: $$m go vet"; (cd $$m && $(GOCMD) vet ./...) || exit 1; done
-	@echo "==> verify: desktop mygo vet (native UI build lifetimes)"
-	cd desktop && $(GOCMD) tool mygo vet .
 	@echo "==> verify: gofmt"
 	$(MAKE) --no-print-directory fmt-check
 	@echo "==> verify: lint"

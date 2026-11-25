@@ -79,7 +79,7 @@ Read from `desktop/internal/app` (the MyGo client: 8,540 lines in 26 files, and 
 
 **Rules of a phone and a tablet.** `state` holds them with their tests: `Compact`, `TabOf`, `BackTo`, `TabBarShows`, `InboxBadge`, `HasTerminal`, `QuitsItself`, `SavesOnSuspend`, `BoardOrder`, `MinTarget`, `Notifies`, `BadgesIcon`. The NSGo client reads `InboxBadge` alone. Its narrow layout is by the window's width (the kit's shell, compact under 720), with no bar of tabs, no suspend hook and no touch size. `desktop/cmd/pocket-nsgo/nsgo.yaml` builds `linux_x64` and `web`.
 
-**The terminal's clipboard.** The NSGo terminal view sets neither `AllowClipboardRead` nor `AllowClipboardWrite`, which NSGo denies by default, and `remoteOutput.Read` drops OSC 52 before the emulator. No test of the NSGo client holds either. MyGo's has 2 (`TestTerminalOptionsKeepTheServerOffTheDesktop`, `TestServerOutputCannotWriteTheClipboard`).
+**The terminal's clipboard.** The NSGo terminal view sets neither `AllowClipboardRead` nor `AllowClipboardWrite`, which NSGo denies by default, and `remoteOutput.Read` drops OSC 52 before the emulator. No test of the NSGo client holds either. MyGo's had 2 (TestTerminalOptionsKeepTheServerOffTheDesktop, TestServerOutputCannotWriteTheClipboard), which went with it.
 
 **On the web** there is no owner sign-in to GitHub and no merge, since they need a keyring: a pull request's card links to GitHub. The [shared owner merge service](shared-merge-service.md) is the proposal for it, and is not part of this plan.
 
@@ -87,7 +87,7 @@ Read from `desktop/internal/app` (the MyGo client: 8,540 lines in 26 files, and 
 
 ## Phase 1 — The rules that have no test (small)
 
-- A test of the NSGo terminal's clipboard: output with OSC 52 from pocketd's test server leaves the clipboard as it was, as `TestServerOutputCannotWriteTheClipboard` shows for MyGo.
+- A test of the NSGo terminal's clipboard: output with OSC 52 from pocketd's test server leaves the clipboard as it was, as TestServerOutputCannotWriteTheClipboard showed for MyGo.
 - The preferences move: at a start with no NSGo preferences, the NSGo client reads `settings.json` once and takes the service's address, the pins, the seen marks, the notification switches, the notified keys and the zoom. It does not change the file.
 - A notification clicked before the sign-in connected opens once connected (item 15).
 - **Done when:** each has its test in `desktop/internal/nsgoclient`, and a start on a MyGo client's `settings.json` signs in with no form.
@@ -100,7 +100,7 @@ Read from `desktop/internal/app` (the MyGo client: 8,540 lines in 26 files, and 
 ## Phase 3 — The Inbox, the counts and New session (medium)
 
 - Items 3, 4 and 5: lessons in force with Forget, the counts and usage and the service's version where the window always shows them, Save Again from any view, and New session's worktree preview and notes.
-- **Done when:** the NSGo client's tests hold what `TestTheOwnerForgetsALessonInForce`, `TestSessionsAndInboxSnapshot`'s counts, `TestTheUsageMeterSnapshot`, `TestAnUnsavedSignInShowsInTheStatusBar` and `TestNewSessionOnARepositoryInAWorktreeSnapshot` hold for MyGo.
+- **Done when:** the NSGo client's tests hold what `TestTheOwnerForgetsALessonInForce`, TestSessionsAndInboxSnapshot's counts, TestTheUsageMeterSnapshot, TestAnUnsavedSignInShowsInTheStatusBar and TestNewSessionOnARepositoryInAWorktreeSnapshot held for MyGo.
 
 ## Phase 4 — The board, the sidebar and a session (large)
 

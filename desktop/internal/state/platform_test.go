@@ -2,9 +2,9 @@ package state
 
 import "testing"
 
-// The iPad runs the desktop's code (ADR-0040): it has no Terminal, since
-// MyGo's terminal plugin has no library for iOS, and no Quit, since iOS
-// ends apps itself. Every desktop platform keeps both.
+// The iPad and the iPhone (ADR-0071) have no Terminal, since NSGo's
+// terminal view has not run on iOS, and no Quit, since iOS ends apps
+// itself. Every desktop platform keeps both.
 func TestThePlatformsTerminalAndQuit(t *testing.T) {
 	for _, tc := range []struct {
 		goos           string

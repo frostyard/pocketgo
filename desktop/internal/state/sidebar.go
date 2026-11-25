@@ -14,7 +14,7 @@ import (
 // The sidebar's rules, ported from frostyard/pocket's
 // internal/app/sidebar.go (ADR-0010): which rows it lists in which section
 // and order, what each row says, and which sessions show NEW or dimmed.
-// desktop/internal/app draws it with frostui's SourceList.
+// The NSGo client (desktop/internal/nsgoclient) draws it.
 
 // SidebarKind is what a row of the sidebar stands for.
 type SidebarKind int

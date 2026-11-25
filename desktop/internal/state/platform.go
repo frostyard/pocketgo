@@ -1,41 +1,35 @@
 package state
 
-// The platform rules (ADR-0040): what the client offers on the system it
-// runs on, by runtime.GOOS, which the program gives the window
-// (app.Options.Platform). The iPad runs the desktop's own code on MyGo's
-// iOS target.
+// The platform rules (ADR-0040, ADR-0071): what the client offers on the
+// system it runs on, by Go's name of it, which the NSGo client takes from
+// its environment. The iPad and the iPhone run the NSGo client.
 
 // platformIOS is runtime.GOOS on an iPad or an iPhone.
 const platformIOS = "ios"
 
 // HasTerminal reports whether the Terminal place (ADR-0025) shows on goos.
-// MyGo's terminal plugin has no libghostty-vt for iOS: its bindings are
-// stubs there (vt.Supported is false), so terminal.Load fails, and MyGo's
-// iOS build cannot bundle the library. iOS has no Terminal until the
-// plugin supports it: the sidebar leaves the place out, and the emulator's
-// library never loads.
+// The removed MyGo client's terminal plugin had no libghostty-vt for iOS.
+// NSGo's terminal view has an iOS library, which has not run there, so iOS
+// has no Terminal until it has (ADR-0071): the client leaves the place
+// out.
 func HasTerminal(goos string) bool { return goos != platformIOS }
 
 // QuitsItself reports whether the app offers Quit on goos. iOS ends apps
-// itself, and MyGo's App.Quit there stops the app's loop and leaves the
-// process to the system, so the window would stop answering: the menu has
-// no Quit on iOS.
+// itself: the client offers no Quit on iOS.
 func QuitsItself(goos string) bool { return goos != platformIOS }
 
-// SavesOnSuspend reports whether the window keeps what it keeps between
-// runs, as it closes, when the system suspends the app on goos, and holds
-// the GitHub sign-in's refresh until the app comes back (ADR-0041). iOS
-// may end a suspended app without closing its window, so App.Close may
-// never run there: the pane widths, the session shown and the settings are
-// saved as the app goes to the background, and a refresh in progress
-// lands in the keychain before the app stops. A desktop is suspended when
-// the computer sleeps, and goes on after it with its window open: it saves
-// as its window closes, as it did.
+// SavesOnSuspend reports whether the client holds the GitHub sign-in's
+// refresh while the system has the app in the background on goos, until
+// the app comes back (ADR-0041). iOS may end a suspended app without
+// closing its window, so a refresh in progress lands in the keychain
+// before the app stops; the NSGo client keeps each preference as it
+// changes, so it has nothing else to save then. A desktop is suspended
+// when the computer sleeps, and goes on after it with its window open.
 func SavesOnSuspend(goos string) bool { return goos == platformIOS }
 
 // CompactBelow is the desktop's smallest window width in DIPs, at 100%
-// (cmd/pocket's MinWidth): a window narrower than it takes the compact
-// layout.
+// (the removed MyGo client's MinWidth): a window narrower than it takes
+// the compact layout.
 const CompactBelow = 760
 
 // Compact reports whether a window width DIPs wide at 100% on goos takes
