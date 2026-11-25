@@ -1489,10 +1489,10 @@ func TestASessionFromAProfileHasItsIdentityAndTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An agent's own session is told where it changes a repository, after
-	// its identity (ADR-0073).
+	// A session that is not at the agent's home (it has none) gets no
+	// guide to work elsewhere, and keeps team_work (ADR-0073).
 	if agent.Instructions == nil || !strings.HasPrefix(*agent.Instructions, instructions(f.work)) ||
-		!strings.Contains(*agent.Instructions, "You are Vera, the team's agent.") || !strings.HasSuffix(*agent.Instructions, "She tidies the example repository.\n\n"+team.WorkGuide) {
+		!strings.Contains(*agent.Instructions, "You are Vera, the team's agent.") || !strings.HasSuffix(*agent.Instructions, "She tidies the example repository.") {
 		t.Errorf("instructions %v", agent.Instructions)
 	}
 	var tools []string

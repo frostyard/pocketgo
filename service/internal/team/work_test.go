@@ -179,3 +179,32 @@ func TestWorkTexts(t *testing.T) {
 		}
 	}
 }
+
+// The work guide goes to a session that may call team_work at the agent's
+// home alone: one the owner opened in a checkout or a worktree keeps the
+// tool, and works where the owner placed it (Codex review of #174, round
+// 3).
+func TestWorkGuideFor(t *testing.T) {
+	vera := &profiles.Profile{ID: "vera", Role: profiles.RoleAgent, Home: "/home/vera", Repositories: map[string]string{"frostyard/example": "/src/example"}}
+	teg := &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Workspace: "/work"}
+	for name, tc := range map[string]struct {
+		p    *profiles.Profile
+		role SessionRole
+		cwd  string
+		want bool
+	}{
+		"at its home":               {vera, SessionRole{}, "/home/vera", true},
+		"at its home, spelled long": {vera, SessionRole{}, "/home/vera/./", true},
+		"in its checkout":           {vera, SessionRole{}, "/src/example", false},
+		"in a worktree":             {vera, SessionRole{}, "/src/example--vera-fix-abc123", false},
+		"below its home":            {vera, SessionRole{}, "/home/vera/notes", false},
+		"a profile with no home":    {teg, SessionRole{}, "/work", false},
+		"a work session at home":    {vera, SessionRole{Work: true}, "/home/vera", false},
+		"no folder":                 {vera, SessionRole{}, "", false},
+		"no profile":                {nil, SessionRole{}, "/home/vera", false},
+	} {
+		if got := WorkGuideFor(tc.p, tc.role, tc.cwd); (got == WorkGuide) != tc.want || (got != "" && got != WorkGuide) {
+			t.Errorf("%s: %q, want the guide %v", name, got, tc.want)
+		}
+	}
+}

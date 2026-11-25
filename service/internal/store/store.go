@@ -652,8 +652,10 @@ var migrations = []string{
 	// which takes its answers, the profile and repository it works on, its
 	// checkout, worktree and branch, its title and task, why its branch
 	// starts from the checkout's HEAD ('' for a fresh fetch), the session
-	// once it started (0 before), and the entry that began the last of its
-	// runs whose answer was kept.
+	// once it started (0 before) with the model and folder it was created
+	// with, and the entry that began the last of its runs whose answer was
+	// kept. A work whose session is not recorded yet is pending, found by
+	// work_sessions_pending at start.
 	`CREATE TABLE work_sessions (
 		key TEXT PRIMARY KEY,
 		caller INTEGER NOT NULL,
@@ -666,10 +668,14 @@ var migrations = []string{
 		task TEXT NOT NULL,
 		stale TEXT NOT NULL DEFAULT '',
 		session INTEGER NOT NULL DEFAULT 0,
+		provider TEXT NOT NULL DEFAULT '',
+		model TEXT NOT NULL DEFAULT '',
+		cwd TEXT NOT NULL DEFAULT '',
 		cursor INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL
 	);
-	CREATE UNIQUE INDEX work_sessions_session ON work_sessions (session) WHERE session != 0;`,
+	CREATE UNIQUE INDEX work_sessions_session ON work_sessions (session) WHERE session != 0;
+	CREATE INDEX work_sessions_pending ON work_sessions (created_at) WHERE session = 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

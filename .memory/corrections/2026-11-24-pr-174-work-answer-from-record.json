@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The model and folder a work session was created with are kept with the work's record, in the transaction that records the session (store.RecordWorkSession), and team_work's answer, a replay's too, is made from them: no engine lookup once the task may have gone.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 3: [P2] Return the recorded start result on replay",
+  "promoted_to": "service/internal/api/work_test.go"
+}

@@ -498,6 +498,13 @@ type Server struct {
 	worksDue    map[int64]bool
 	workScanDue bool
 	workFollows keyLocks
+	// workPendingDue says the next delivery pass records the sessions of
+	// the works whose record failed or was cut off (reconcileWork), as the
+	// first after a start does; workDueMu guards it. recordWorkSession
+	// records a work's session (store.RecordWorkSession); tests make it
+	// fail.
+	workPendingDue    bool
+	recordWorkSession func(ctx context.Context, key string, session store.SessionRow, task store.NoteRow) (store.WorkRow, error)
 	// standingDue says a delivery pass looks after every standing session
 	// (standingPass): the first after start, as a run's end may have gone
 	// unseen while pocketd stopped. standingMu guards it.
@@ -857,7 +864,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal, launchStarting: map[int64]bool{}, launchSettle: map[int64]string{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, workScanDue: true, markWorktree: s.MarkWorktree, keepWorkStale: s.KeepWorkStale, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
+		standingDue: true, workScanDue: true, workPendingDue: true, recordWorkSession: s.RecordWorkSession, markWorktree: s.MarkWorktree, keepWorkStale: s.KeepWorkStale, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.changesSlots = make(chan struct{}, maxChangesReads)
 	server.filesSlots = make(chan struct{}, proto.MaxFileReads)

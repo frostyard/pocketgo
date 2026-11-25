@@ -73,7 +73,7 @@ func TestAPrivateProfilesSessionHasNoTeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sessionInstructionsOf(t, e, teamID); got != instructions(f.work)+"\n\nYou are Vera, the team's agent. Your profile follows.\n\n"+vera.Identity+"\n\n"+team.WorkGuide+section {
+	if got := sessionInstructionsOf(t, e, teamID); got != instructions(f.work)+"\n\nYou are Vera, the team's agent. Your profile follows.\n\n"+vera.Identity+section {
 		t.Fatalf("a team agent's instructions:\n%s", got)
 	}
 	if got := agentTools(t, e, teamID); !slices.Equal(got, []string{"read", "bash", toolWork, toolMemory}) {

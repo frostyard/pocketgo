@@ -70,7 +70,7 @@ func (s *Server) TeamWork(ctx context.Context, call TeamCall, w team.Work) (stri
 	fresh := false
 	switch {
 	case err == nil && row.Session != 0:
-		return s.workAnswer(db, row, nil)
+		return s.workAnswer(db, row)
 	case errors.Is(err, store.ErrNotFound):
 		if row, err = s.newWork(ctx, call, key, w); err != nil {
 			return "", err
@@ -79,21 +79,10 @@ func (s *Server) TeamWork(ctx context.Context, call TeamCall, w team.Work) (stri
 	case err != nil:
 		return "", err
 	}
-	started, err := s.startWork(ctx, row, fresh)
-	if err != nil {
+	if row, err = s.startWork(ctx, row, fresh); err != nil {
 		return "", err
 	}
-	return s.workAnswer(db, started.row, &started)
-}
-
-// workStart is a work whose session this call recorded, with the model
-// and folder the session was created with: the call's answer is made from
-// them, never from a lookup that could fail once the task went (Codex
-// review of #174, round 2).
-type workStart struct {
-	row   store.WorkRow
-	model proto.ModelRef
-	cwd   string
+	return s.workAnswer(db, row)
 }
 
 // newWork checks a team_work call and records its work: the caller
@@ -225,22 +214,22 @@ func (s *Server) workChoice(p profiles.Profile, models []proto.Model) (router.Ch
 // context, ctx, so a call stopped before the session exists starts none,
 // as a delegation's does (attachBriefOpen); only a session PiG created is
 // recorded whatever ctx does (Codex review of #174, round 1).
-func (s *Server) startWork(ctx context.Context, row store.WorkRow, fresh bool) (workStart, error) {
+func (s *Server) startWork(ctx context.Context, row store.WorkRow, fresh bool) (store.WorkRow, error) {
 	db := context.WithoutCancel(ctx)
 	made, exists, err := s.engine.Created(db, row.Key)
 	if err != nil {
-		return workStart{}, err
+		return store.WorkRow{}, err
 	}
 	if exists {
 		return s.recordMadeWork(db, row, made)
 	}
 	if !fresh {
 		if err := s.recheckWorkCaller(ctx, row); err != nil {
-			return workStart{}, err
+			return store.WorkRow{}, err
 		}
 	}
 	if row, err = s.makeWorkWorktree(ctx, row); err != nil {
-		return workStart{}, err
+		return store.WorkRow{}, err
 	}
 	if s.beforeCreateLock != nil {
 		s.beforeCreateLock()
@@ -250,18 +239,18 @@ func (s *Server) startWork(ctx context.Context, row store.WorkRow, fresh bool) (
 	// The wait for the lock may have been long: a call stopped meanwhile
 	// starts nothing.
 	if err := ctx.Err(); err != nil {
-		return workStart{}, fmt.Errorf("team_work was stopped: %w", err)
+		return store.WorkRow{}, fmt.Errorf("team_work was stopped: %w", err)
 	}
 	place, err := s.usableWorkWorktree(ctx, row)
 	if err != nil {
-		return workStart{}, err
+		return store.WorkRow{}, err
 	}
 	spec, err := s.recheckWork(ctx, row, place)
 	if err != nil {
-		return workStart{}, err
+		return store.WorkRow{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return workStart{}, fmt.Errorf("team_work was stopped: %w", err)
+		return store.WorkRow{}, fmt.Errorf("team_work was stopped: %w", err)
 	}
 	id, err := s.engine.CreateSession(ctx, row.Key, spec)
 	if err != nil {
@@ -271,14 +260,14 @@ func (s *Server) startWork(ctx context.Context, row store.WorkRow, fresh bool) (
 		if made, exists, lookErr := s.engine.Created(db, row.Key); lookErr == nil && exists {
 			return s.recordMadeWork(db, row, made)
 		}
-		return workStart{}, err
+		return store.WorkRow{}, err
 	}
 	return s.recordWork(db, row, id, spec, spec.Profile.ID, false)
 }
 
 // recordMadeWork records the session the engine made for row's work key
 // as it was made, without its profile (recordWork).
-func (s *Server) recordMadeWork(ctx context.Context, row store.WorkRow, made Created) (workStart, error) {
+func (s *Server) recordMadeWork(ctx context.Context, row store.WorkRow, made Created) (store.WorkRow, error) {
 	spec := SessionSpec{Title: made.Title, Cwd: made.Cwd, Model: made.Model, Thinking: made.Thinking, Route: made.Route, Work: true}
 	return s.recordWork(ctx, row, made.ID, spec, made.Profile, true)
 }
@@ -290,17 +279,21 @@ func (s *Server) recordMadeWork(ctx context.Context, row store.WorkRow, made Cre
 // pass watches it again (workDue). A session recovered as it was made, its
 // lessons section unknown, has its profile's lessons refreshed by the
 // delivery pass (Codex review of #174, round 1). It answers the work as
-// recorded, with the model and folder spec created the session with.
-func (s *Server) recordWork(ctx context.Context, row store.WorkRow, id int64, spec SessionSpec, profile string, recovered bool) (workStart, error) {
+// recorded, with the model and folder spec created the session with. A
+// record that fails leaves the work pending: the delivery pass records it
+// once the engine's creation record shows the session (reconcileWork;
+// round 3).
+func (s *Server) recordWork(ctx context.Context, row store.WorkRow, id int64, spec SessionSpec, profile string, recovered bool) (store.WorkRow, error) {
 	title := spec.Title
 	if title == "" {
 		title = team.WorkSessionTitle(row.Agent, row.Title)
 	}
 	brief := team.WorkBrief(row.Caller, row.Repository, spec.Cwd, row.Branch, row.Stale, row.Task)
-	recorded, err := s.store.RecordWorkSession(ctx, row.Key, store.SessionRow{ID: id, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
+	recorded, err := s.recordWorkSession(ctx, row.Key, store.SessionRow{ID: id, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
 		Model: spec.Model.ID, Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: teamCreator}, store.NoteRow{Key: workTaskKey(row.Key), Text: brief})
 	if err != nil {
-		return workStart{}, err
+		s.workPending()
+		return store.WorkRow{}, err
 	}
 	// Its profile's MCP tools as they are now: it builds, as the owner's
 	// session of its profile does (ADR-0063).
@@ -316,42 +309,26 @@ func (s *Server) recordWork(ctx context.Context, row store.WorkRow, id int64, sp
 		s.log.Warn("watch a work session", "session", id, "err", err)
 		s.workDue(id)
 	}
-	return workStart{row: recorded, model: spec.Model, cwd: spec.Cwd}, nil
+	return recorded, nil
 }
 
 // workAnswer is team_work's answer for row's work session, whose task it
 // sends now when it can; one that cannot go now, a delivery pass sends.
-// The session's model and folder are those the engine created it with,
-// which no later change of its model touches, so a call and a run of it
-// again answer the same (Codex review of #174, round 1): started's, when
-// this call recorded the session, else the engine's creation record
-// (Engine.Created). A call that recorded the session never looks them up
-// after its task went, so no failed lookup reports a failed start of work
-// that runs (round 2).
-func (s *Server) workAnswer(ctx context.Context, row store.WorkRow, started *workStart) (string, error) {
+// The session's model and folder are those it was created with, kept with
+// the work's record in the transaction that recorded the session
+// (store.RecordWorkSession), which no later change of its model touches:
+// a call and a run of it again answer the same, and neither looks
+// anything up once the task may have gone, so no failed lookup reports a
+// failed start of work that runs (Codex review of #174, rounds 1 to 3).
+func (s *Server) workAnswer(ctx context.Context, row store.WorkRow) (string, error) {
 	if done, err := s.sendNotes(ctx, row.Session); err != nil || !done {
 		if err != nil {
 			s.log.Warn("send a work session its task", "session", row.Session, "err", err)
 		}
 		s.deliverLater()
 	}
-	if started != nil {
-		return team.WorkStarted(row.Session, started.model.String(), row.Repository, started.cwd, row.Branch), nil
-	}
-	made, exists, err := s.engine.Created(ctx, row.Key)
-	if err != nil {
-		return "", err
-	}
-	if exists && made.ID == row.Session {
-		return team.WorkStarted(row.Session, made.Model.String(), row.Repository, made.Cwd, row.Branch), nil
-	}
-	// No creation record, as of a durable store restored from before it:
-	// the session's own record says.
-	session, err := s.store.Session(ctx, row.Session)
-	if err != nil {
-		return "", err
-	}
-	return team.WorkStarted(row.Session, modelOf(session).String(), row.Repository, session.Cwd, row.Branch), nil
+	model := proto.ModelRef{Provider: row.Provider, ID: row.Model}
+	return team.WorkStarted(row.Session, model.String(), row.Repository, row.Cwd, row.Branch), nil
 }
 
 // makeWorkWorktree makes row's worktree, or finishes the one an earlier run
@@ -390,17 +367,17 @@ func (s *Server) makeWorkWorktree(ctx context.Context, row store.WorkRow) (store
 		}
 		return nil
 	}
+	// Each base newly decided replaces what an earlier one kept, a fresh
+	// fetch's clearing a failed one's reason; a resumed worktree decides
+	// none, and keeps its own (Codex review of #174, round 3).
 	keep := func(start worktree.Start) error {
-		if start.Stale == "" {
-			return nil
+		if start.Stale != "" {
+			s.log.Warn("a work session's worktree starts from the checkout's HEAD", "path", row.Path, "why", start.Stale)
 		}
-		s.log.Warn("a work session's worktree starts from the checkout's HEAD", "path", row.Path, "why", start.Stale)
 		if err := s.keepWorkStale(db, row.Key, start.Stale); err != nil {
-			return fmt.Errorf("keep why the worktree %s starts from the checkout's HEAD: %w", row.Path, err)
+			return fmt.Errorf("keep the base of the worktree %s: %w", row.Path, err)
 		}
-		if row.Stale == "" {
-			row.Stale = start.Stale
-		}
+		row.Stale = start.Stale
 		return nil
 	}
 	if _, err := worktree.AddNewKeepingBase(gitCtx, s.worktreeTools(), place.Top, place.Dest, row.Branch, worktreeToken(row.Key), worktree.Step(claim.Made), keep, record); err != nil {
@@ -665,6 +642,61 @@ func (s *Server) queueWorkReplies(ctx context.Context, row store.WorkRow) error 
 	return s.store.QueueWorkReplies(ctx, current.Session, notes, cursor)
 }
 
+// workPending has the delivery pass record every pending work the engine
+// made a session for (reconcileWork): a record that failed is tried again
+// without a restart.
+func (s *Server) workPending() {
+	s.workDueMu.Lock()
+	s.workPendingDue = true
+	s.workDueMu.Unlock()
+	s.deliverLater()
+}
+
+// reconcileWork records the session of each pending work, one whose
+// session is not recorded yet, that the engine's creation record shows it
+// made for the work's key (Engine.Created), as it was made, with its task
+// (recordMadeWork): a start whose record failed, or that a stop cut off
+// after the engine made its session, is finished, at the first delivery
+// pass after a start and after a record that failed (Codex review of #174,
+// round 3). It creates no session: a work the engine made none for, as a
+// call stopped before the session's creation, stays as it is. A work a
+// call holds now is left to that call. done says nothing failed.
+func (s *Server) reconcileWork(ctx context.Context) bool {
+	keys, err := s.store.PendingWorkKeys(ctx)
+	if err != nil {
+		s.log.Warn("read the pending works", "err", err)
+		return false
+	}
+	done := true
+	for _, key := range keys {
+		unlock, ok := s.keys.tryLock(key)
+		if !ok {
+			continue
+		}
+		if err := s.reconcileOne(ctx, key); err != nil {
+			s.log.Warn("record a pending work's session", "key", key, "err", err)
+			done = false
+		}
+		unlock()
+	}
+	return done
+}
+
+// reconcileOne records pending work key's session, when the engine made
+// one for it; the work's key is held.
+func (s *Server) reconcileOne(ctx context.Context, key string) error {
+	row, err := s.store.WorkByKey(ctx, key)
+	if err != nil || row.Session != 0 {
+		return err
+	}
+	made, exists, err := s.engine.Created(ctx, key)
+	if err != nil || !exists {
+		return err
+	}
+	_, err = s.recordMadeWork(ctx, row, made)
+	return err
+}
+
 // workDue keeps work session session for the delivery pass to watch and
 // read again.
 func (s *Server) workDue(session int64) {
@@ -691,7 +723,16 @@ func (s *Server) followDueWork(ctx context.Context) bool {
 	s.worksDue = nil
 	scan := s.workScanDue
 	s.workScanDue = false
+	pending := s.workPendingDue
+	s.workPendingDue = false
 	s.workDueMu.Unlock()
+	// The works whose session is not recorded yet first: one recorded now
+	// is followed below, at the next pass (Codex review of #174, round 3).
+	if pending && !s.reconcileWork(ctx) {
+		s.workDueMu.Lock()
+		s.workPendingDue = true
+		s.workDueMu.Unlock()
+	}
 	if scan {
 		// The sessions alone: each work's record is read as it is followed.
 		ids, err := s.store.WorkSessionIDs(ctx)
@@ -731,7 +772,7 @@ func (s *Server) followDueWork(ctx context.Context) bool {
 	}
 	s.workDueMu.Lock()
 	defer s.workDueMu.Unlock()
-	return len(s.worksDue) == 0 && !s.workScanDue
+	return len(s.worksDue) == 0 && !s.workScanDue && !s.workPendingDue
 }
 
 // upgradeWorkTools gives team_work to every session that gets it now

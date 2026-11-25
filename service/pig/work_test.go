@@ -40,24 +40,30 @@ func TestTeamWorkCallsTheTeam(t *testing.T) {
 	}
 }
 
-// An agent's own session is told where it changes a repository, after its
-// identity; a work session, a thread's specialist, a supervisor and a
-// private agent are not (ADR-0073).
+// An agent's own session at its home is told where it changes a
+// repository, after its identity; one the owner opened in a checkout or a
+// worktree, a work session, a thread's specialist, a supervisor and a
+// private agent are not (ADR-0073; Codex review of #174, round 3).
 func TestOnlyASessionThatStartsWorkGetsTheWorkGuide(t *testing.T) {
-	vera := &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent, Identity: "# Vera"}
+	vera := &profiles.Profile{ID: "vera", Name: "Vera", Role: profiles.RoleAgent, Identity: "# Vera", Home: "/home/vera"}
 	for name, tc := range map[string]struct {
 		spec api.SessionSpec
 		want bool
 	}{
-		"an agent's own session": {api.SessionSpec{Profile: vera}, true},
-		"a clerk's own session":  {api.SessionSpec{Profile: &profiles.Profile{ID: "clerk", Name: "Clerk", Role: profiles.RoleClerk}}, true},
-		"a work session":         {api.SessionSpec{Profile: vera, Work: true}, false},
-		"a thread's specialist":  {api.SessionSpec{Profile: vera, Thread: 3}, false},
-		"a supervisor":           {api.SessionSpec{Profile: &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor}, Roster: "R"}, false},
-		"a private agent":        {api.SessionSpec{Profile: &profiles.Profile{ID: "chani", Name: "Chani", Role: profiles.RoleAgent, Private: true}}, false},
-		"a plain session":        {api.SessionSpec{}, false},
+		"an agent's own session at its home": {api.SessionSpec{Profile: vera, Cwd: "/home/vera/"}, true},
+		"a clerk's own session at its home": {api.SessionSpec{Profile: &profiles.Profile{ID: "clerk", Name: "Clerk", Role: profiles.RoleClerk, Home: "/home/clerk"},
+			Cwd: "/home/clerk"}, true},
+		"an agent's session in a checkout": {api.SessionSpec{Profile: vera, Cwd: "/src/example"}, false},
+		"an agent's session in a worktree": {api.SessionSpec{Profile: vera, Cwd: "/src/example--vera-fix-abc123"}, false},
+		"an agent with no home":            {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Name: "Teg", Role: profiles.RoleAgent}, Cwd: "/work"}, false},
+		"a work session":                   {api.SessionSpec{Profile: vera, Work: true, Cwd: "/home/vera"}, false},
+		"a thread's specialist":            {api.SessionSpec{Profile: vera, Thread: 3, Cwd: "/home/vera"}, false},
+		"a supervisor": {api.SessionSpec{Profile: &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor, Home: "/home/odrade"},
+			Roster: "R", Cwd: "/home/odrade"}, false},
+		"a private agent": {api.SessionSpec{Profile: &profiles.Profile{ID: "chani", Name: "Chani", Role: profiles.RoleAgent, Private: true, Home: "/home/chani"},
+			Cwd: "/home/chani"}, false},
+		"a plain session": {api.SessionSpec{Cwd: "/work"}, false},
 	} {
-		tc.spec.Cwd = "/work"
 		got := sessionInstructions(tc.spec, team.Loaded{Folder: "FOLDER"})
 		if strings.Contains(got, team.WorkGuide) != tc.want {
 			t.Errorf("%s: the guide %v, want %v:\n%s", name, strings.Contains(got, team.WorkGuide), tc.want, got)

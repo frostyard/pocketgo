@@ -834,3 +834,117 @@ func TestAFreshWorkAnswersWithoutLookingItsSessionUp(t *testing.T) {
 		t.Fatal("the task did not go")
 	}
 }
+
+// A work whose session the engine made, but whose record failed, is
+// recorded by a restarted pocketd's first delivery pass, with its task; a
+// work the engine made no session for, as a call stopped before the
+// session's creation, gets none (Codex review of #174, round 3).
+func TestAPendingWorkIsRecordedAtStart(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	failed := false
+	h.server.recordWorkSession = func(ctx context.Context, key string, session store.SessionRow, task store.NoteRow) (store.WorkRow, error) {
+		if !failed {
+			failed = true
+			return store.WorkRow{}, errors.New("the work database refused the write")
+		}
+		return h.store.RecordWorkSession(ctx, key, session, task)
+	}
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil {
+		t.Fatal("a failed record answered")
+	}
+	stopped := recordedWork(t, h, TeamCall{Session: agnes.ID, Task: 8, CallID: "w2"}, "Stopped.", "Stopped.")
+	h.engine.mu.Lock()
+	made, created := h.engine.byKey[workKey(call)], h.engine.created
+	h.engine.mu.Unlock()
+	if row, err := h.store.WorkByKey(ctx, workKey(call)); err != nil || row.Session != 0 || made == 0 {
+		t.Fatalf("the work %+v, %v; the engine's session %d", row, err, made)
+	}
+	if err := h.restarted(t).DeliverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	row, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil || row.Session != made {
+		t.Fatalf("the work after the start %+v, %v; the engine's session %d", row, err, made)
+	}
+	if left, err := h.store.WorkByKey(ctx, stopped.Key); err != nil || left.Session != 0 {
+		t.Fatalf("the stopped work %+v, %v", left, err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if h.engine.to[workTaskKey(row.Key)] != made || h.engine.created != created {
+		t.Fatalf("the task went to %d; %d sessions after %d", h.engine.to[workTaskKey(row.Key)], h.engine.created, created)
+	}
+}
+
+// A call run again after its session was recorded answers from the work's
+// record, with no lookup of the engine's creation record that could fail
+// once the task went (Codex review of #174, round 3).
+func TestAWorkReplayAnswersFromItsRecord(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	first, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.createdErr = errors.New("the durable store is busy")
+	h.engine.mu.Unlock()
+	again, err := h.restarted(t).TeamWork(ctx, call, team.Work{Task: "Fix it."})
+	h.engine.mu.Lock()
+	h.engine.createdErr = nil
+	h.engine.mu.Unlock()
+	if err != nil || again != first {
+		t.Fatalf("a run again %q, %v; the first %q", again, err, first)
+	}
+}
+
+// A base decided again replaces the one kept before, a fresh fetch's
+// clearing an earlier failure's reason: a call stopped after its base was
+// kept, before its worktree was made, and run again once origin answers,
+// tells its work session nothing of a stale base (Codex review of #174,
+// round 3).
+func TestANewBaseReplacesTheKeptOne(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	keep := h.server.keepWorkStale
+	stopped := false
+	h.server.keepWorkStale = func(ctx context.Context, key, stale string) error {
+		if err := keep(ctx, key, stale); err != nil {
+			return err
+		}
+		if !stopped {
+			stopped = true
+			return errors.New("pocketd stopped")
+		}
+		return nil
+	}
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil {
+		t.Fatal("a stopped call answered")
+	}
+	if row, err := h.store.WorkByKey(ctx, workKey(call)); err != nil || row.Stale == "" {
+		t.Fatalf("the first base kept %+v, %v", row, err)
+	}
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	if _, err := h.engine.Git(ctx, h.checkout, "clone", "-q", "--bare", h.checkout, bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Git(ctx, h.checkout, "remote", "add", "origin", bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err != nil {
+		t.Fatal(err)
+	}
+	row, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil || row.Stale != "" {
+		t.Fatalf("the work after a fresh fetch %+v, %v", row, err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if task := h.engine.texts[workTaskKey(row.Key)]; task == "" || strings.Contains(task, "could not fetch") {
+		t.Fatalf("the task after a fresh fetch:\n%s", task)
+	}
+}

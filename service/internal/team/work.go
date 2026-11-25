@@ -3,6 +3,7 @@ package team
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -178,8 +179,22 @@ func WorkStarted(session int64, model, repository, path, branch string) string {
 		session, model, path, repository, branch, session)
 }
 
-// WorkGuide is the line of an agent's instructions that says where it
-// changes a repository (ADR-0073): from a work session, never from its
-// home.
+// WorkGuideFor is the guide a session of profile p, working as role in
+// folder cwd, gets in its instructions: WorkGuide for a session that may
+// call team_work (MayWork) at the agent's home, "" for any other. A
+// session the owner opened in a checkout or a worktree of a repository
+// (ADR-0027) works there, as the owner placed it: it keeps team_work, but
+// is never told to move its changes to a work session (Codex review of
+// #174, round 3).
+func WorkGuideFor(p *profiles.Profile, role SessionRole, cwd string) string {
+	if !MayWork(p, role) || p.Home == "" || cwd == "" || filepath.Clean(cwd) != filepath.Clean(p.Home) {
+		return ""
+	}
+	return WorkGuide
+}
+
+// WorkGuide is the line of an agent's instructions, in a session at its
+// home, that says where it changes a repository (ADR-0073): from a work
+// session, never from its home (WorkGuideFor).
 const WorkGuide = "Your home holds your plans and notes, not your repositories' work: change a repository from a work session, never from your home. " +
 	"team_work starts one in a fresh worktree of one of your repositories, where that repository's own AGENTS.md and skills load; give it the task in full, and each of its answers comes back to this session."

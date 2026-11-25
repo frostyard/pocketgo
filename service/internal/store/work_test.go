@@ -138,20 +138,21 @@ func TestWorkQueriesUseTheirIndexes(t *testing.T) {
 	}
 }
 
-// Why a work's branch starts from its checkout's HEAD is kept once, with
-// its record (Codex review of #174, round 1).
-func TestAWorkKeepsItsStaleBaseOnce(t *testing.T) {
+// Why a work's branch starts from its checkout's HEAD is kept with its
+// record, each base decided replacing the last, a fresh fetch's clearing
+// it (Codex review of #174, rounds 1 and 3).
+func TestAWorkKeepsItsLatestBase(t *testing.T) {
 	s, _ := open(t)
 	if _, err := s.StartWork(ctx, workRow("work:k")); err != nil {
 		t.Fatal(err)
 	}
-	for _, why := range []string{"", "no origin", "later"} {
+	for _, why := range []string{"no origin", "", "later"} {
 		if err := s.KeepWorkStale(ctx, "work:k", why); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if row, err := s.WorkByKey(ctx, "work:k"); err != nil || row.Stale != "no origin" {
-		t.Fatalf("the work %+v, %v", row, err)
+		if row, err := s.WorkByKey(ctx, "work:k"); err != nil || row.Stale != why {
+			t.Fatalf("after keeping %q: the work %+v, %v", why, row, err)
+		}
 	}
 	if err := s.KeepWorkStale(ctx, "work:none", "x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("no work: %v", err)

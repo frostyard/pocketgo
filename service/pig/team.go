@@ -500,7 +500,8 @@ func (e *Engine) teamExtension() *durable.Extension {
 				// from a work session is in its description too, which an
 				// older session reads from this registration (ADR-0073).
 				ToolSchema: schema(toolWork, "Start a work session of yours in a fresh git worktree of one of your repositories, on a new branch, with the task "+
-					"as its first message: that repository's own AGENTS.md and skills load there. Change a repository from a work session, never from your home. "+
+					"as its first message: that repository's own AGENTS.md and skills load there. In a session at your home, change a repository through a work session, "+
+					"never in your home; a session the owner opened in a repository works there. "+
 					"Each answer of the work session comes back to this session as a message. Refused in a work session: report to the session that started you.", workParameters),
 				Replay: durable.ReplaySafe,
 				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {

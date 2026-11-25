@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A work whose session record failed or was cut off stays pending (session 0, work_sessions_pending); the first delivery pass after a start, and the pass after a record that failed, records each one the engine's creation record shows a session for, as it was made, with its task, and creates no session (Server.reconcileWork).",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 3: [P2] Recover a created work session after its record fails",
+  "promoted_to": "service/internal/api/work_test.go"
+}

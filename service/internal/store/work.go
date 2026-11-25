@@ -34,8 +34,13 @@ type WorkRow struct {
 	// making of its worktree found it (worktree.Start.Stale), "" for a
 	// fresh fetch: its task says so, a replayed or recovered one too.
 	Stale string
-	// Session is the work session, 0 until it started.
-	Session int64
+	// Session is the work session, 0 until it started; Provider, Model
+	// and Cwd are the model and folder it was created with, kept with its
+	// record, which no later change of its model touches: team_work's
+	// answer, a replay's too, is made from them (Codex review of #174,
+	// round 3).
+	Session              int64
+	Provider, Model, Cwd string
 	// Cursor is the entry that began the last of its runs whose answer
 	// was kept.
 	Cursor    int64
@@ -46,7 +51,7 @@ type WorkRow struct {
 // the one its record was asked for.
 var ErrWorkSessionTaken = errors.New("the work names another session already")
 
-const workColumns = `key, caller, agent, repository, checkout, path, branch, title, task, stale, session, cursor, created_at`
+const workColumns = `key, caller, agent, repository, checkout, path, branch, title, task, stale, session, provider, model, cwd, cursor, created_at`
 
 // workBySession finds a work by its session, in the words of the partial
 // index work_sessions_session, so SQLite reads it (session != 0).
@@ -56,7 +61,7 @@ func scanWork(scan func(...any) error) (WorkRow, error) {
 	var row WorkRow
 	var created int64
 	err := scan(&row.Key, &row.Caller, &row.Agent, &row.Repository, &row.Checkout, &row.Path, &row.Branch, &row.Title, &row.Task,
-		&row.Stale, &row.Session, &row.Cursor, &created)
+		&row.Stale, &row.Session, &row.Provider, &row.Model, &row.Cwd, &row.Cursor, &created)
 	row.CreatedAt = fromMillis(created)
 	return row, err
 }
@@ -100,25 +105,37 @@ func (s *Store) WorkOfSession(ctx context.Context, session int64) (WorkRow, erro
 }
 
 // KeepWorkStale keeps why the worktree of the work keyed key starts from
-// its checkout's HEAD, once: the first reason kept stays, since only the
-// first making of the worktree fetched.
+// its checkout's HEAD, "" for a fresh fetch, in place of what an earlier
+// decision kept: its caller keeps each base it newly decides, so a fetch
+// that works on a retry clears an earlier failure's reason, and a resumed
+// worktree, whose base no retry decides again, keeps its own (Codex review
+// of #174, round 3). A key with no work is ErrNotFound.
 func (s *Store) KeepWorkStale(ctx context.Context, key, stale string) error {
-	if stale == "" {
-		return nil
-	}
-	result, err := s.db.ExecContext(ctx, `UPDATE work_sessions SET stale = ? WHERE key = ? AND stale = ''`, stale, key)
+	result, err := s.db.ExecContext(ctx, `UPDATE work_sessions SET stale = ? WHERE key = ?`, stale, key)
 	if err != nil {
 		return err
 	}
 	if n, err := result.RowsAffected(); err != nil {
 		return err
 	} else if n == 0 {
-		if _, err := s.WorkByKey(ctx, key); err != nil {
-			return err
-		}
+		return fmt.Errorf("no work recorded under %s: %w", key, ErrNotFound)
 	}
 	return nil
 }
+
+// PendingWorkKeys are the keys of the works whose session is not recorded
+// yet, oldest first: a start the engine may have created a session for,
+// whose record failed or was cut off (work_sessions_pending).
+func (s *Store) PendingWorkKeys(ctx context.Context) ([]string, error) {
+	return queryRows(ctx, s.db, func(scan func(...any) error) (string, error) {
+		var key string
+		return key, scan(&key)
+	}, `SELECT key FROM work_sessions WHERE `+pendingWork+` ORDER BY created_at, key`)
+}
+
+// pendingWork is a work whose session is not recorded yet, in the words of
+// its partial index, work_sessions_pending.
+const pendingWork = `session = 0`
 
 // WorkSessionIDs are the sessions of the works whose session started,
 // oldest first: a scan of every work reads no task's text (Codex review of
@@ -134,12 +151,15 @@ func (s *Store) WorkSessionIDs(ctx context.Context) ([]int64, error) {
 // work key: the session's row, the key's request, the work's naming of
 // the session, and its task as its first note, all in one transaction,
 // so no work names a session the work database lacks, and no work session
-// lacks its task. Recorded again, it changes nothing; a work that names
-// another session already is ErrWorkSessionTaken, with nothing written.
+// lacks its task. The model and folder it was created with are kept with
+// the work (session's Provider, Model and Cwd). Recorded again, it changes
+// nothing; a work that names another session already is
+// ErrWorkSessionTaken, with nothing written.
 func (s *Store) RecordWorkSession(ctx context.Context, key string, session SessionRow, task NoteRow) (WorkRow, error) {
 	var row WorkRow
 	_, err := s.createSession(ctx, key, session, func(tx *sql.Tx, now int64) error {
-		result, err := tx.ExecContext(ctx, `UPDATE work_sessions SET session = ? WHERE key = ? AND session IN (0, ?)`, session.ID, key, session.ID)
+		result, err := tx.ExecContext(ctx, `UPDATE work_sessions SET session = ?, provider = ?, model = ?, cwd = ? WHERE key = ? AND session = 0`,
+			session.ID, session.Provider, session.Model, session.Cwd, key)
 		if err != nil {
 			return err
 		}
@@ -152,7 +172,10 @@ func (s *Store) RecordWorkSession(ctx context.Context, key string, session Sessi
 			} else if err != nil {
 				return err
 			}
-			return fmt.Errorf("%w: session %d, not %d", ErrWorkSessionTaken, current.Session, session.ID)
+			if current.Session != session.ID {
+				return fmt.Errorf("%w: session %d, not %d", ErrWorkSessionTaken, current.Session, session.ID)
+			}
+			// Recorded already, with the facts it was recorded with.
 		}
 		task.SessionID = session.ID
 		if err := insertNote(ctx, tx, task, now); err != nil {
