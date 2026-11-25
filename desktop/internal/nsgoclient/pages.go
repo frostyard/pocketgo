@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
@@ -146,15 +147,50 @@ func (c *client) search(cx *core.Scope) core.Node {
 		case found.Answered != "":
 			out = append(out, body(state.SearchNote(found.Results, len(groups))), body(state.IndexingNote(found.Results)))
 		}
+		now := time.Now()
 		for _, g := range groups {
-			out = append(out, title(g.Title))
-			for _, h := range g.Hits {
-				out = append(out, c.button(h.Snippet, func() { c.goTo(destination{page: "Session", session: h.SessionID, entry: h.EntryID}) }))
+			// A session's hits are its card: its title, and its agent or
+			// folder as the sidebar says it.
+			head := []core.Node{core.Text{Content: g.Title, MaxLines: 1, Style: ui.TypeTitle.Merge(core.Style{FlexShrink: 1})}}
+			if g.Tag != "" {
+				head = append(head, core.Text{Content: g.Tag, MaxLines: 1, Style: ui.TypeCaption, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)})
 			}
+			card := []core.Node{core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceS}, Children: head}}
+			for _, h := range g.Hits {
+				card = append(card, c.searchHit(cx, g, h, now))
+			}
+			out = append(out, workspaceui.Card{Children: card})
 		}
 		return workspaceui.Stack(out...)
 	}))
 }
+
+// searchHit is one hit: its snippet with its matches marked, and where and
+// when it was said; a press opens its session at its entry.
+func (c *client) searchHit(cx *core.Scope, g state.SearchGroup, h proto.SearchHit, now time.Time) core.Node {
+	colors := ui.ColorsOf(cx)
+	var spans []core.Span
+	for _, sp := range state.SnippetSpans(h.Snippet, h.Marks) {
+		span := core.Span{Content: sp.Text}
+		if sp.Marked {
+			span.Style = core.Style{FontWeight: core.FontWeightSemibold, CornerRadius: ui.RadiusSmall}
+			span.StyleFunc = func() core.Style { return core.Style{Background: ui.Mix(colors.Surface(), colors.Accent(), 0.22)} }
+		}
+		spans = append(spans, span)
+	}
+	where := state.HitField(h.Field)
+	if !h.At.IsZero() {
+		where += " · " + state.ClockAt(h.At, now)
+	}
+	open := func(core.PressEvent) {
+		c.goTo(destination{page: "Session", session: h.SessionID, entry: h.EntryID})
+	}
+	return core.View{Role: core.RoleButton, Label: g.Title + ": " + h.Snippet, OnPress: open,
+		Style: core.Style{Gap: workspaceui.SpaceXS, Padding: core.Symmetric(workspaceui.SpaceXS, workspaceui.SpaceS), CornerRadius: ui.RadiusInset},
+		Children: []core.Node{core.Text{Spans: spans},
+			core.Text{Content: where, MaxLines: 1, Style: ui.TypeCaption, StyleFunc: ui.Colored(colors.Muted)}}}
+}
+
 func (c *client) newSession(cx *core.Scope) core.Node {
 	name := core.NewSignal(cx, "")
 	id := core.NewSignal(cx, "")

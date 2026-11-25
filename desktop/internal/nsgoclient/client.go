@@ -52,7 +52,7 @@ type client struct {
 	shiftEnd       string
 	noticeCard     *core.Signal[string]
 	drafts         map[int64]*core.Signal[string]
-	log            []string
+	log            []activityLine
 	// asking is the confirmation shown, nil with none; asks holds it and
 	// those that wait behind it.
 	asking *core.Signal[*question]
@@ -88,7 +88,7 @@ func startClient(cx *core.Scope, transport http.RoundTripper, production bool, a
 	c.seek = core.NewSignal(cx, int64(0))
 	c.asking = core.NewSignal(cx, (*question)(nil))
 	if fontErr != nil {
-		c.log = append(c.log, "Register the Inter font: "+fontErr.Error())
+		c.logLine(state.LevelWarn, "Register the Inter font: "+fontErr.Error())
 	}
 	c.restoreAppearance()
 	c.browserHistory = production && runtime.GOOS == "js"
@@ -111,10 +111,7 @@ func startClient(cx *core.Scope, transport http.RoundTripper, production bool, a
 	c.store = state.New(state.Options{Transport: transport, Post: func(fn func()) {
 		cx.Post(func() { cx.Batch(func() { fn(); c.changed() }) })
 	}, Notify: c.notify, KeptNotices: func(server string) []string { var keys []string; c.loadJSON("notified/"+server, &keys); return keys }, KeepNotices: func(server string, keys []string) { c.saveJSON("notified/"+server, keys) }, Log: func(level state.Level, text string) {
-		c.log = append(c.log, text)
-		if len(c.log) > 2000 {
-			c.log = c.log[len(c.log)-2000:]
-		}
+		c.logLine(level, text)
 		if level == state.LevelError && !shownInPlace(text) {
 			c.showError(text)
 		}
@@ -435,10 +432,7 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 			case "Terminal":
 				return c.terminalPage(cx)
 			case "Activity":
-				return core.Dynamic(func(*core.Scope) core.Node {
-					c.revision.Get()
-					return workspaceui.Page(core.Text{Content: strings.Join(c.log, "\n"), Selectable: core.SelectableOn})
-				})
+				return c.activity(cx)
 			default:
 				return c.inbox(cx)
 			}

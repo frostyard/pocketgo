@@ -2,6 +2,7 @@ package nsgoclient
 
 import (
 	"strings"
+	"time"
 
 	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
@@ -70,37 +71,90 @@ func (c *client) connectionSettings() core.Node {
 		})))
 }
 
+// providerSettings are pocketd's sign-ins to its model providers: each
+// with what it is signed in as, Sign in… or Sign out, and the sheet of a
+// device flow the owner started.
 func (c *client) providerSettings(cx *core.Scope) core.Node {
 	c.revision.Get()
+	colors := ui.ColorsOf(cx)
+	d := &c.store.Data
 	var out []core.Node
-	if status, msg := c.store.Data.SignInsStatus(); msg != "" {
-		out = append(out, body(msg))
-	} else if status == state.ListLoading {
-		out = append(out, body("Loading accounts…"))
+	status, problem := d.SignInsStatus()
+	switch {
+	case status == state.ListFailed:
+		out = append(out, c.listProblem("the sign-ins", problem, "", c.store.LoadSignIns))
+	case status == state.ListLoading && len(d.SignIns()) == 0:
+		out = append(out, body("Loading the sign-ins…"))
 	}
-	for _, row := range c.store.Data.SignIns() {
-		out = append(out, body(strings.Join(nonempty(row.Name, row.Account, string(row.State)), " · ")))
-		if c.store.MaySignIn(row) {
-			out = append(out, c.button("Sign in to "+row.Name, func() { c.store.StartSignIn(row.Provider) }))
+	for _, row := range d.SignIns() {
+		var action core.Node = core.Group{}
+		switch {
+		case !row.DeviceFlow:
+		case row.State == proto.SignInSignedIn:
+			busy := c.store.SigningOut(row.Provider).Busy
+			action = ui.Button{Text: "Sign out", Label: "Sign out of " + row.Name, Variant: ui.ButtonSecondary, Size: ui.SizeSmall, Disabled: func() bool { return busy }, OnPress: func() {
+				c.destroy("Sign pocketd out of "+row.Name+"?", "pocketd forgets its "+row.Name+" sign-in, and New session no longer offers its models. "+
+					"A session on one of them fails its next call until you sign in again.", "Sign out of "+row.Name, func() { c.store.SignOutOf(row.Provider) })
+			}}
+		case c.store.MaySignIn(row):
+			action = ui.Button{Text: "Sign in…", Label: "Sign in to " + row.Name, Variant: ui.ButtonSecondary, Size: ui.SizeSmall, OnPress: func() { c.store.StartSignIn(row.Provider); c.changed() }}
 		}
-		if row.DeviceFlow && row.State != proto.SignInNone {
-			out = append(out, c.button("Sign out of "+row.Name, func() {
-				c.destroy("Sign out of "+row.Name+"?", row.Account, "Sign out", func() { c.store.SignOutOf(row.Provider) })
-			}))
+		out = append(out, core.View{TestID: "sign-in-" + row.Provider, Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceS}, Children: []core.Node{
+			core.View{Style: core.Style{FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(0)}, Children: []core.Node{
+				core.Text{Content: row.Name, Style: ui.TypeLabel},
+				core.Text{Content: state.SignInCaption(row), Style: ui.TypeCaption, StyleFunc: ui.Colored(colors.Muted)}}},
+			action}})
+		if why := c.store.SigningOut(row.Provider).Err; why != "" {
+			out = append(out, c.problemBanner(workspaceui.Danger, why, nil))
 		}
 	}
-	if sheet := c.store.SignInSheet(); sheet.ProviderID != "" {
-		out = append(out, title(sheet.Provider), body(strings.Join(nonempty(sheet.Flow.UserCode, sheet.Text), "\n")))
-		if page, label, ok := state.DevicePage(sheet.ProviderID); ok && sheet.Phase == state.SheetCode {
-			out = append(out, c.button("Copy code", func() { cx.SetClipboard(sheet.Flow.UserCode) }), c.button("Open "+label, func() { cx.OpenURL(page, nil) }))
-		}
-		out = append(out, c.button("Close sign-in", c.store.CancelSignIn))
+	if sheet := c.signInSheet(cx); sheet != nil {
+		out = append(out, sheet)
 	}
-
 	if len(out) == 0 {
 		return body("No provider accounts available.")
 	}
 	return workspaceui.Stack(out...)
+}
+
+// signInSheet is the device flow the owner started: the code, the
+// provider's device page, the wait with the code's time left, and how it
+// ended, with Try Again. Cancel and Close cancel the flow on pocketd
+// while it waits. nil while none runs.
+func (c *client) signInSheet(cx *core.Scope) core.Node {
+	v := c.store.SignInSheet()
+	if v.Phase == state.SheetClosed {
+		return nil
+	}
+	colors := ui.ColorsOf(cx)
+	page, shown, _ := state.DevicePage(v.ProviderID)
+	rows := []core.Node{title("Sign in to " + v.Provider)}
+	end := c.button("Cancel", c.store.CancelSignIn)
+	switch v.Phase {
+	case state.SheetStarting:
+		rows = append(rows, body("Asking GitHub for a code…"))
+	case state.SheetCode:
+		rows = append(rows, core.Text{Content: "Enter this code at GitHub's device page, and approve the sign-in there. pocketd keeps it; PocketGo never sees a token.", StyleFunc: ui.Colored(colors.Muted)},
+			workspaceui.Row(core.Text{Content: v.Flow.UserCode, Label: "Code " + v.Flow.UserCode, Selectable: core.SelectableOn, Style: ui.TypeCode.Merge(workspaceui.Heading(1))},
+				c.button("Copy code", func() { cx.SetClipboard(v.Flow.UserCode) })))
+		if page != "" {
+			rows = append(rows, workspaceui.Row(ui.Tooltip{Text: page, Trigger: ui.Button{Text: "Open " + shown, OnPress: func() { cx.OpenURL(page, nil) }}}),
+				core.Text{Content: "On another computer, go to " + page + " and enter the code.", Selectable: core.SelectableOn, Style: ui.TypeCaption, StyleFunc: ui.Colored(colors.Muted)})
+		}
+		rows = append(rows, core.Text{Content: "Waiting for approval… " + state.FormatLeft(v.Left) + " left", StyleFunc: ui.Colored(colors.Muted)})
+		// The time left counts down.
+		cx.AfterFunc(time.Second, c.changed)
+		if v.Text != "" {
+			rows = append(rows, c.problemBanner(workspaceui.Danger, v.Text, nil))
+		}
+	case state.SheetSignedIn:
+		rows = append(rows, workspaceui.Row(ui.Icon(lucide.Check, 16, colors.Up), body(v.Text)))
+		end = c.button("Done", c.store.CancelSignIn)
+	case state.SheetFailed:
+		rows = append(rows, c.problemBanner(workspaceui.Danger, v.Text, func() { c.store.StartSignIn(v.ProviderID) }))
+		end = c.button("Close", c.store.CancelSignIn)
+	}
+	return workspaceui.Card{Children: append(rows, workspaceui.Row(end))}
 }
 
 // zoomNote is what Settings says of the zoom: that a window too narrow
