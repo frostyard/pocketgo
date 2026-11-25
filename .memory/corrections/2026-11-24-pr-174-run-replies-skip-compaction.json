@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "runReplies skips proto.EntryCompaction, the wire's own kind for a compaction, as it skips EntryOther, when it finds a run's final answer, so a compaction after the answer never turns it into ended with no reply.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 1: [P2] Preserve the final answer across a trailing compaction",
+  "promoted_to": "service/internal/api/workers_test.go"
+}

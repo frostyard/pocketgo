@@ -79,6 +79,16 @@ type SessionSpec struct {
 	// names its thread; Profile is nil.
 	Worker      bool
 	WorkerTools []string
+	// Work is an agent's work session, which team_work started
+	// (ADR-0074): a session of its caller's profile, with no team_work,
+	// whose answers go back to its caller.
+	Work bool
+	// Repository is the repository the owner opened the session on
+	// (CreateSession.repository, ADR-0027), "" for none: such a session
+	// works where the owner placed it, its checkout or a worktree of it,
+	// and gets no guide to work elsewhere (team.WorkGuideFor), its
+	// checkout the profile's home too.
+	Repository string
 	// StandingKey, for a profile's standing session (ADR-0026), is the key
 	// every request that opens it finds it by: the engine records the
 	// session under it as well as under the request's own key, and a
@@ -197,6 +207,10 @@ type Engine interface {
 	// the team's tools (team_memory), and says whether it did (ADR-0073):
 	// the caller decides which sessions get it (team.MayWatch).
 	SetWatchTool(ctx context.Context, id int64) (bool, error)
+	// SetWorkTool gives team_work to a session made before it, among its
+	// team tools, and says whether it did (ADR-0074): the caller decides
+	// which sessions get it (team.MayWork).
+	SetWorkTool(ctx context.Context, id int64) (bool, error)
 	// MCPProfiles are the profiles with an MCP server pocketd connects,
 	// as it read them at start (ADR-0063); ConnectMCP connects each
 	// server, or reads its tools again, and returns once each answered or
@@ -490,6 +504,22 @@ type Server struct {
 	// workerStops hold one worker each (stopWorker), from the look at its
 	// thread to the note that its stop is done (ADR-0061).
 	workerStops keyLocks
+	// worksDue are the work sessions whose answers could not be read or
+	// kept, and workScanDue says the next delivery pass reads every work
+	// session, as the first after a start does (ADR-0074); workDueMu
+	// guards both. workFollows hold one work session each while its
+	// answers are read and kept (queueWorkReplies).
+	workDueMu   sync.Mutex
+	worksDue    map[int64]bool
+	workScanDue bool
+	workFollows keyLocks
+	// workPendingDue says the next delivery pass records the sessions of
+	// the works whose record failed or was cut off (reconcileWork), as the
+	// first after a start does; workDueMu guards it. recordWorkSession
+	// records a work's session (store.RecordWorkSession); tests make it
+	// fail.
+	workPendingDue    bool
+	recordWorkSession func(ctx context.Context, key string, session store.SessionRow, task store.NoteRow) (store.WorkRow, error)
 	// standingDue says a delivery pass looks after every standing session
 	// (standingPass): the first after start, as a run's end may have gone
 	// unseen while pocketd stopped. standingMu guards it.
@@ -796,6 +826,9 @@ type Server struct {
 	// markWorktree records a step of a session's worktree
 	// (store.MarkWorktree); tests make it fail.
 	markWorktree func(ctx context.Context, key string, step int) error
+	// keepWorkStale keeps why a work's branch starts from its checkout's
+	// HEAD (store.KeepWorkStale; ADR-0074); tests make it fail.
+	keepWorkStale func(ctx context.Context, key, stale string) error
 	// sessionMu orders session events: each is read and published under
 	// it, so the last one carries every change made before it was read. It
 	// also guards retries, untouched and stopped.
@@ -875,7 +908,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal, launchStarting: map[int64]bool{}, launchSettle: map[int64]string{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
+		standingDue: true, workScanDue: true, workPendingDue: true, recordWorkSession: s.RecordWorkSession, markWorktree: s.MarkWorktree, keepWorkStale: s.KeepWorkStale, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.changesSlots = make(chan struct{}, maxChangesReads)
 	server.filesSlots = make(chan struct{}, proto.MaxFileReads)
@@ -1009,6 +1042,9 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 // replies of the runs before go to its specialist.
 func (s *Server) runStarted(id int64) {
 	s.followWorker(id)
+	// And a work session's answers of the runs before go to the session
+	// that started it (ADR-0074).
+	s.followWork(id)
 	if s.afterRunStarted != nil {
 		s.afterRunStarted(id)
 	}
@@ -1685,7 +1721,7 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 		}
 	}
 	spec := SessionSpec{Title: strings.TrimSpace(request.Title), Cwd: cwd, Model: choice.Model, Thinking: request.Thinking,
-		Profile: profile, Route: string(choice.Rule)}
+		Profile: profile, Route: string(choice.Rule), Repository: request.Repository}
 	if profile != nil && profile.Role == profiles.RoleSupervisor {
 		if spec.Roster, err = s.roster(models); err != nil {
 			s.internal(w, "read profiles", err)
@@ -2012,6 +2048,15 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if waits {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("G%d's agent %s does not have its brief yet: send once it has", ask.GatherID, ask.Agent))
+		return
+	}
+	// Nor does an agent's work session before its task, which it works on
+	// first (ADR-0074).
+	if waits, err := s.workTaskWaits(r.Context(), id); err != nil {
+		s.internal(w, "read the session's work", err)
+		return
+	} else if waits {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("work session %d does not have its task yet: send once it has", id))
 		return
 	}
 	key := requestKey(r, request.RequestID)

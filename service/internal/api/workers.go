@@ -374,32 +374,47 @@ type workerReply struct {
 // Only the runs begun after after count, those whose message's entry is
 // later; cursor is the entry that began the last run that ended, or after.
 func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []workerReply, cursor int64) {
-	cursor = after
+	out, cursor, _ = runReplies(entries, live, after, "worker")
+	return out, cursor
+}
+
+// runReplies are the replies of the runs a transcript holds, read as
+// workerReplies reads a worker's, with who naming the session in the
+// replies pocketd writes for a run that ended with none: a worker's, or an
+// agent's work session's (ADR-0074). consumed is the last entry of the
+// last run that ended, or after: the entry before the message that began
+// the next run, or the transcript's last once it is idle, never one of a
+// run still at work. A work session reads on from there, so no entry of a
+// run whose reply was kept is read again (Codex review of #174, round 5).
+func runReplies(entries []proto.Entry, live proto.Live, after int64, who string) (out []workerReply, cursor, consumed int64) {
+	cursor, consumed = after, after
 	start := -1
 	end := func(stop int, last bool) {
 		if start < 0 || entries[start].ID <= after {
 			return
 		}
 		cursor = entries[start].ID
-		// An entry the protocol does not model, as PiG's compaction, is no
-		// step of the run: the reply is the last entry before it (Codex
-		// review of #29, round 7).
+		consumed = max(consumed, entries[stop-1].ID)
+		// A compaction, which the wire names compaction (proto.EntryCompaction),
+		// and an entry the protocol does not model, are no step of the run:
+		// the reply is the last entry before them (Codex review of #29,
+		// round 7; of #174, round 1).
 		at := stop - 1
-		for at > start && entries[at].Kind == proto.EntryOther {
+		for at > start && (entries[at].Kind == proto.EntryCompaction || entries[at].Kind == proto.EntryOther) {
 			at--
 		}
 		final := entries[at]
 		switch {
 		case at > start && final.Kind == proto.EntryAssistant && final.StopReason != stopToolUse:
-			out = append(out, workerReply{entry: final.ID, run: entries[start].ID, text: replyText(final)})
+			out = append(out, workerReply{entry: final.ID, run: entries[start].ID, text: runReplyText(final, who)})
 		case last:
 			why := strings.TrimSpace(live.Failure)
 			if why == "" {
 				why = "no reason was given"
 			}
-			out = append(out, workerReply{entry: entries[start].ID, run: entries[start].ID, text: "The worker's run ended with no reply: " + why + "."})
+			out = append(out, workerReply{entry: entries[start].ID, run: entries[start].ID, text: "The " + who + "'s run ended with no reply: " + why + "."})
 		default:
-			out = append(out, workerReply{entry: entries[start].ID, run: entries[start].ID, text: "The worker's run ended with no reply."})
+			out = append(out, workerReply{entry: entries[start].ID, run: entries[start].ID, text: "The " + who + "'s run ended with no reply."})
 		}
 	}
 	for i, e := range entries {
@@ -411,7 +426,7 @@ func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []w
 	if !live.Busy {
 		end(len(entries), true)
 	}
-	return out, cursor
+	return out, cursor, consumed
 }
 
 // stopToolUse is the stop reason of a model's entry that a tool call
@@ -464,10 +479,14 @@ func (s *Server) dropWorkerReplies(ctx context.Context, thread int64) error {
 	return nil
 }
 
-// replyText is a reply's text, or what ended its run with none. A run
-// stopped or failed mid-answer says so before what it had written: that is
-// no finished report (Codex review of #29, round 6).
-func replyText(e proto.Entry) string {
+// replyText is a worker's reply's text (runReplyText).
+func replyText(e proto.Entry) string { return runReplyText(e, "worker") }
+
+// runReplyText is a reply's text, or what ended its run with none, who
+// naming the session that ran it. A run stopped or failed mid-answer says
+// so before what it had written: that is no finished report (Codex review
+// of #29, round 6).
+func runReplyText(e proto.Entry, who string) string {
 	text := strings.TrimSpace(e.Text)
 	// A stop at the model's output limit is cut short too (Codex review of
 	// #29, round 7).
@@ -479,16 +498,16 @@ func replyText(e proto.Entry) string {
 		case why == "length":
 			why = "it reached the model's output limit"
 		}
-		return "The worker's run ended before it finished (" + why + "). What it had written:\n\n" + text
+		return "The " + who + "'s run ended before it finished (" + why + "). What it had written:\n\n" + text
 	}
 	if text != "" {
 		return text
 	}
 	if e.Error != "" {
-		return "The worker's run failed: " + e.Error
+		return "The " + who + "'s run failed: " + e.Error
 	}
 	if e.StopReason != "" {
-		return "The worker's run ended (" + e.StopReason + ") with no reply."
+		return "The " + who + "'s run ended (" + e.StopReason + ") with no reply."
 	}
 	return ""
 }

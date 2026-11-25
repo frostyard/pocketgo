@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A team_work start whose session pocketd made but could not record answers team.WorkUnrecorded, naming the session and telling the caller not to call again, and one it cannot tell started answers team.WorkUncertain; only a start the engine's record shows made nothing is a failure (team.WorkNotStarted): the delivery pass records the others with their task.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 5: [P2] Distinguish pending work recovery from a failed start",
+  "promoted_to": "service/internal/api/work_test.go"
+}

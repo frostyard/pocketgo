@@ -76,7 +76,7 @@ func TestAPrivateProfilesSessionHasNoTeam(t *testing.T) {
 	if got := sessionInstructionsOf(t, e, teamID); got != instructions(f.work)+"\n\nYou are Vera, the team's agent. Your profile follows.\n\n"+vera.Identity+section {
 		t.Fatalf("a team agent's instructions:\n%s", got)
 	}
-	if got := agentTools(t, e, teamID); !slices.Equal(got, []string{"read", "bash", toolMemory, toolWatch}) {
+	if got := agentTools(t, e, teamID); !slices.Equal(got, []string{"read", "bash", toolWork, toolMemory, toolWatch}) {
 		t.Fatalf("a team agent's tools %q", got)
 	}
 	// A private supervisor, or a private profile with every tool, has no
@@ -336,12 +336,14 @@ func TestAPrivateProfileEndToEndOverHTTP(t *testing.T) {
 		}
 	}
 	// pocketd's next start refreshes every session's lessons: the private
-	// agent's older session loses its section and keeps its identity.
+	// agent's older session loses its section and keeps its identity, as
+	// it was written when the session was a team agent's, team_work's
+	// guide included (ADR-0074), whose tool every call refuses now.
 	server.RefreshAllLessons()
 	if err := server.DeliverPending(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := sessionInstructionsOf(t, engine, duncan.ID); strings.Contains(got, profiles.LessonsMarker) || !strings.HasSuffix(got, "He tends the garden.") {
+	if got := sessionInstructionsOf(t, engine, duncan.ID); strings.Contains(got, profiles.LessonsMarker) || !strings.HasSuffix(got, "He tends the garden.\n\n"+team.WorkGuide) {
 		t.Fatalf("a private agent's older session after a refresh:\n%s", got)
 	}
 }

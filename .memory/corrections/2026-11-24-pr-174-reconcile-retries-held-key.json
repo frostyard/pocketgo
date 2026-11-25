@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "Server.reconcileWork counts a pending work whose key a running call holds as not done, so a later pass looks again once the call lets it go: the failed record that asked for the pass did so while it held the key.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 4: [P2] Retry reconciliation when the work key is still held",
+  "promoted_to": "service/internal/api/work_test.go"
+}

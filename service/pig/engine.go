@@ -561,7 +561,10 @@ func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
 // sessionInstructions are a session's instructions: pocketd's preamble,
 // the owner's global AGENTS.md, then, for a session started from a
 // profile, the agent's identity, and for a supervisor the roster it
-// delegates to, then its folder's AGENTS.md and the skills it may read,
+// delegates to, or for a session at the agent's home that starts work
+// sessions where it changes a repository (team.WorkGuideFor, ADR-0074),
+// then its folder's
+// AGENTS.md and the skills it may read,
 // then its lessons section (ADR-0043); loaded holds the files' parts. A
 // private agent's identity starts with team.PrivateIntro, and has no
 // roster and no lessons section (ADR-0042).
@@ -579,9 +582,13 @@ func sessionInstructions(spec api.SessionSpec, loaded team.Loaded) string {
 		return team.Instructions("", text, loaded.Global, team.PrivateIntro(spec.Profile.Name)+"\n\n"+spec.Profile.Identity, loaded.Folder, loaded.Skills)
 	}
 	identity := "You are " + spec.Profile.Name + ", the team's " + string(spec.Profile.Role) + ". Your profile follows.\n\n" + spec.Profile.Identity
+	// A session at the agent's home that starts work sessions is told
+	// where it changes a repository; one the owner opened in a repository
+	// is not (team.WorkGuideFor, ADR-0074).
+	guide := team.WorkGuideFor(spec.Profile, roleOf(spec), spec.Cwd, spec.Repository)
 	// The lessons last: pocketd owns the instructions from their marker on
 	// (SetLessons).
-	return team.Instructions(spec.Lessons, text, loaded.Global, identity, spec.Roster, loaded.Folder, loaded.Skills)
+	return team.Instructions(spec.Lessons, text, loaded.Global, identity, spec.Roster, guide, loaded.Folder, loaded.Skills)
 }
 
 // SetLessons makes section the end of session id's instructions, in

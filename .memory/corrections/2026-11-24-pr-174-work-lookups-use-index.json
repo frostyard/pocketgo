@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A lookup or update of a work by its session names session != 0, the partial index's predicate (store.workBySession), so SQLite reads work_sessions_session, never the whole table.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 1: [P2] Make work-session lookups use the partial index",
+  "promoted_to": "service/internal/store/work_test.go"
+}

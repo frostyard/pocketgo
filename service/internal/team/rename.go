@@ -19,8 +19,9 @@ type RenameFacts struct {
 	Session int64
 	Profile string
 	// Team says pocketd started the session for the team's work: a
-	// thread's specialist, its worker, a review, a consult or a gather's
-	// ask (its created_by is team or gather).
+	// thread's specialist, its worker, a review, a consult, a gather's
+	// ask or an agent's work session (its created_by is team or gather;
+	// ADR-0074).
 	Team bool
 	// NoProfiles says pocketd runs without profiles. Now is the profile as
 	// loaded now, nil when it is gone or invalid.
@@ -39,7 +40,7 @@ func CheckRename(f RenameFacts) error {
 	case f.Profile == "":
 		return fmt.Errorf("session %d is your own, started from no profile: %s", f.Session, only)
 	case f.Team:
-		return fmt.Errorf("session %d is the team's: pocketd started it for a thread, a worker, a review, a consult or a gather, and %s", f.Session, only)
+		return fmt.Errorf("session %d is the team's: pocketd started it for a thread, a worker, a review, a consult, a gather or an agent's team_work, and %s", f.Session, only)
 	case f.NoProfiles:
 		return fmt.Errorf("pocketd runs without profiles, so session %d's profile %s is not private now: %s", f.Session, f.Profile, only)
 	case f.Now == nil:

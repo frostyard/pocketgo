@@ -18,6 +18,9 @@ func TestWhichSessionsTakeTheirProfilesMCPServers(t *testing.T) {
 		"a consult":             {SessionRole{Consult: true}, false},
 		"a gather's agent":      {SessionRole{Gather: true}, false},
 		"a plan's lead":         {SessionRole{Thread: true, Plan: true}, false},
+		// An agent's work session builds, as the owner's session of its
+		// profile does (ADR-0074).
+		"a work session": {SessionRole{Work: true}, true},
 	} {
 		if got := MayUseMCP(tc.role); got != tc.want {
 			t.Errorf("%s: MayUseMCP = %v, want %v", name, got, tc.want)

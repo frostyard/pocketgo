@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A team_work call run again that finds its work recorded and no session checks its caller and the recorded repository and checkout again before it makes the worktree (Server.recheckWorkCaller).",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 1: [P2] Revalidate an unfinished call before making its worktree",
+  "promoted_to": "service/internal/api/work_test.go"
+}

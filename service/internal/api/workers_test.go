@@ -1166,14 +1166,22 @@ func TestAWorkerThatEndedBeforeItsWatchReplies(t *testing.T) {
 // compaction, leaves the answer the run's reply (Codex review of #29,
 // round 7).
 func TestACompactionAfterTheAnswerKeepsTheReply(t *testing.T) {
-	entries := []proto.Entry{
-		{ID: 1, Kind: proto.EntryUser, Text: "Go."},
-		{ID: 2, Kind: proto.EntryAssistant, Text: "Done.", StopReason: "stop"},
-		{ID: 3, Kind: proto.EntryOther, Raw: "compaction"},
-	}
-	out, cursor := workerReplies(entries, proto.Live{}, 0)
-	if len(out) != 1 || out[0].text != "Done." || out[0].entry != 2 || cursor != 1 {
-		t.Fatalf("replies %+v, cursor %d", out, cursor)
+	// A compaction comes on the wire as its own kind (pig.wireEntry), and
+	// an entry the protocol does not model as other: neither is a step of
+	// the run (Codex review of #174, round 1).
+	for _, after := range []proto.Entry{
+		{ID: 3, Kind: proto.EntryCompaction, Text: "Summary of the work so far."},
+		{ID: 3, Kind: proto.EntryOther, Raw: "custom"},
+	} {
+		entries := []proto.Entry{
+			{ID: 1, Kind: proto.EntryUser, Text: "Go."},
+			{ID: 2, Kind: proto.EntryAssistant, Text: "Done.", StopReason: "stop"},
+			after,
+		}
+		out, cursor := workerReplies(entries, proto.Live{}, 0)
+		if len(out) != 1 || out[0].text != "Done." || out[0].entry != 2 || cursor != 1 {
+			t.Fatalf("after a %s entry: replies %+v, cursor %d", after.Kind, out, cursor)
+		}
 	}
 }
 

@@ -674,6 +674,36 @@ var migrations = []string{
 	);
 	CREATE INDEX watches_live ON watches (session_id) WHERE state = 'live';
 	CREATE INDEX watches_session ON watches (session_id, ended_at);`,
+	// Version 27: the work sessions agents start with team_work
+	// (ADR-0074), one a team call, by its work key, which keys its
+	// worktree's claim and its session too: the session that called it,
+	// which takes its answers, the profile and repository it works on, its
+	// checkout, worktree and branch, its title and task, why its branch
+	// starts from the checkout's HEAD ('' for a fresh fetch), the session
+	// once it started (0 before) with the model and folder it was created
+	// with, and its cursor, the last entry of the last of its runs that
+	// ended and whose answer was kept. A work whose session is not
+	// recorded yet is pending, found by work_sessions_pending at start.
+	`CREATE TABLE work_sessions (
+		key TEXT PRIMARY KEY,
+		caller INTEGER NOT NULL,
+		agent TEXT NOT NULL,
+		repository TEXT NOT NULL,
+		checkout TEXT NOT NULL,
+		path TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		title TEXT NOT NULL,
+		task TEXT NOT NULL,
+		stale TEXT NOT NULL DEFAULT '',
+		session INTEGER NOT NULL DEFAULT 0,
+		provider TEXT NOT NULL DEFAULT '',
+		model TEXT NOT NULL DEFAULT '',
+		cwd TEXT NOT NULL DEFAULT '',
+		cursor INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL
+	);
+	CREATE UNIQUE INDEX work_sessions_session ON work_sessions (session) WHERE session != 0;
+	CREATE INDEX work_sessions_pending ON work_sessions (created_at) WHERE session = 0;`,
 }
 
 // SchemaVersion is the schema version this build migrates to.

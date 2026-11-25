@@ -1388,6 +1388,12 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	if !s.followDueWorkers(ctx) {
 		done = false
 	}
+	// Work sessions whose answers could not be read or kept are read
+	// again, and every one at the first pass after a start; the answers go
+	// with the notes below (ADR-0074).
+	if !s.followDueWork(ctx) {
+		done = false
+	}
 	// The owner's messages to threads' specialists are noted once placed:
 	// one reopens a closed thread (ADR-0061).
 	if noted, err := s.noteAllOwnerMessages(ctx); err != nil || !noted {

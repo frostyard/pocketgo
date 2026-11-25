@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A work's base decision, why its branch starts from the checkout's HEAD, is kept with its record as soon as it is decided, before the folder is made or any step recorded (worktree.AddNewKeepingBase, Server.keepWorkStale): a replay that finds the worktree made decides no base.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 2: [P2] Persist the fallback base before the worktree becomes resumable",
+  "promoted_to": "service/internal/api/work_test.go"
+}

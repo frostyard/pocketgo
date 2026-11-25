@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "team.WorkGuideFor gives the work guide to a session that may call team_work at the agent's home alone; a session the owner opened in a checkout or a worktree keeps team_work, is not told to move its changes, and the tool's description says the rule is a home session's.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 3: [P2] Preserve the owner's selected repository as the work location",
+  "promoted_to": "service/internal/team/work_test.go"
+}

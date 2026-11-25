@@ -61,10 +61,10 @@ func (e *Engine) questionExtension() *durable.Extension {
 }
 
 // roleOf is what a session made from spec works as, for
-// team.MayQuestion and team.MaySchedule.
+// team.MayQuestion, team.MaySchedule and team.MayWork.
 func roleOf(spec api.SessionSpec) team.SessionRole {
 	return team.SessionRole{Thread: spec.Thread != 0, Review: spec.Review, Worker: spec.Worker, Consult: spec.Consult != 0, Gather: spec.Gather != 0,
-		Plan: spec.Plan != 0, Shift: spec.Shift}
+		Plan: spec.Plan != 0, Shift: spec.Shift, Work: spec.Work}
 }
 
 // RunStarter is the request key of the submission that placed the first

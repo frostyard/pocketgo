@@ -59,6 +59,9 @@ type Team interface {
 	// TeamWatch keeps the calling session's watches of pull requests
 	// (ADR-0073).
 	TeamWatch(ctx context.Context, call api.TeamCall, c team.WatchCall) (string, error)
+	// TeamWork starts the calling agent's own work session in a fresh
+	// worktree of one of its repositories (ADR-0074).
+	TeamWork(ctx context.Context, call api.TeamCall, w team.Work) (string, error)
 	// Schedule keeps a private agent's own schedules, to the calling
 	// session, with team_schedule's engine (ADR-0060). It is no team
 	// tool: TeamAllows does not run before it, and it checks its caller
@@ -91,6 +94,7 @@ const (
 	toolInbox    = "team_inbox"
 	toolThreads  = "team_threads"
 	toolWatch    = "team_watch"
+	toolWork     = "team_work"
 )
 
 // proposalProperties are a proposal's fields, as team_propose and
@@ -127,6 +131,12 @@ const launchParameters = `{"type":"object","properties":{` +
 	`"hours":{"type":"number","description":"How long their threads run, from now: above 0 and at most 24."},` +
 	`"until":{"type":"string","description":"Or the clock time they run until, HH:MM on the 24-hour clock, the next such time. Neither is until the next ` + team.DefaultLaunchUntil + `."}` +
 	`},"required":["rows"],"additionalProperties":false}`
+
+const workParameters = `{"type":"object","properties":{` +
+	`"repository":{"type":"string","description":"owner/name of one of your repositories, as your profile names it; leave it out when you have one."},` +
+	`"task":{"type":"string","description":"The task in full, at most 6000 characters: the work session sees only this, its folder and its instructions."},` +
+	`"title":{"type":"string","description":"A short title, at most 120 characters. Default: the task's first line."}` +
+	`},"required":["task"],"additionalProperties":false}`
 
 // inboxParameters are team_inbox's: none.
 const inboxParameters = `{"type":"object","properties":{},"additionalProperties":false}`
@@ -527,6 +537,25 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				// Before team_memory: a session's team tools follow this
+				// list's order (teamTools). An agent's own session's alone
+				// (roleTools, team.MayWork); the rule to change a repository
+				// from a work session is in its description too, which an
+				// older session reads from this registration (ADR-0074).
+				ToolSchema: schema(toolWork, "Start a work session of yours in a fresh git worktree of one of your repositories, on a new branch, with the task "+
+					"as its first message: that repository's own AGENTS.md and skills load there. In a session at your home, change a repository through a work session, "+
+					"never in your home; a session the owner opened in a repository works there. "+
+					"Each answer of the work session comes back to this session as a message. Refused in a work session: report to the session that started you.", workParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					w, err := durable.FromJsonValue[team.Work](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamWork(ctx, call, w) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -594,9 +623,10 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // ADR-0057), and no other session does. A supervisor alone reads the
 // owner's Inbox (team_inbox, ADR-0046) and the threads (team_threads,
 // ADR-0072). Every session that keeps lessons but a shift's specialist
-// watches pull requests (team_watch, ADR-0073). A private agent has no
-// team tool at all (ADR-0042): it keeps its own schedules with the
-// schedule tool, which is none (toolsOf, ADR-0060).
+// watches pull requests (team_watch, ADR-0073). An agent's own session
+// starts its work sessions (team_work, team.MayWork, ADR-0074). A private
+// agent has no team tool at all (ADR-0042): it keeps its own schedules
+// with the schedule tool, which is none (toolsOf, ADR-0060).
 func roleTools(spec api.SessionSpec) []string {
 	// A private agent has no team: no team tool, team_memory and
 	// team_schedule included, whatever its role (ADR-0042, ADR-0060).
@@ -642,6 +672,11 @@ func roleTools(spec api.SessionSpec) []string {
 	case spec.Thread != 0:
 		// A thread's specialist reports, and has a worker (ADR-0021).
 		out = append(out, toolMessage, toolWorker)
+	}
+	// An agent's own session starts work sessions in fresh worktrees of
+	// its repositories; a work session itself does not (ADR-0074).
+	if team.MayWork(spec.Profile, roleOf(spec)) {
+		out = append(out, toolWork)
 	}
 	if spec.Profile != nil {
 		out = append(out, toolMemory)
@@ -1457,6 +1492,39 @@ func (e *Engine) SetWatchTool(ctx context.Context, id int64) (bool, error) {
 	if !hasTool {
 		own, team, tail := e.splitTools(agent.Tools)
 		change.Tools = harness.SetTo(harness.ToolChange{List: slices.Concat(own, e.teamTools(append(team, toolWatch)), tail)})
+	}
+	return true, conversation.Configure(ctx, change)
+}
+
+// SetWorkTool gives team_work to session id made before it (ADR-0074),
+// among its team tools in the order roleTools places it, after its other
+// tools, with the team extension when the session has none, and says
+// whether it did. Its caller decides which sessions get it
+// (team.MayWork); a session that has it is left as it is.
+func (e *Engine) SetWorkTool(ctx context.Context, id int64) (bool, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return false, err
+	}
+	names := extensionNames(agent.Extensions)
+	own, team, tail := e.splitTools(agent.Tools)
+	has := slices.Contains(team, toolWork)
+	if has && slices.Contains(names, e.teamExt.Name) {
+		return false, nil
+	}
+	change := harness.AgentChange{}
+	if !slices.Contains(names, e.teamExt.Name) {
+		change.Extensions = harness.SetTo(harness.ExtensionChange{List: append(slices.Clone(agent.Extensions), e.teamExt)})
+	}
+	// The agent's tools are the ones it is offered, resolved: the tool is
+	// named in the list always, as the question tool is.
+	if !has {
+		list := append(append(own, e.teamTools(append(team, toolWork))...), tail...)
+		change.Tools = harness.SetTo(harness.ToolChange{List: list})
 	}
 	return true, conversation.Configure(ctx, change)
 }

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A team_work call that recorded its work session answers from the model and folder it created the session with (workStart); only a replay that finds the session made looks the creation record up (Engine.Created), so no failed lookup reports a failed start once the task went.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 2: [P2] Avoid reporting a failed start after dispatching the task",
+  "promoted_to": "service/internal/api/work_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A session the owner opened on a repository (CreateSession.repository, SessionSpec.Repository) gets no work guide, its checkout the profile's home too: team.WorkGuideFor takes the chosen repository, and the session works where the owner placed it.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 4: [P2] Honor an explicit checkout when it is also the profile home",
+  "promoted_to": "service/internal/team/work_test.go"
+}

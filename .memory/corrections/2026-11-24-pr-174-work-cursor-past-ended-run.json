@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A work session's reply cursor is the last entry of the last run that ended (runReplies' consumed), never the message that began it nor an entry of a run still at work, kept with the replies in one transaction (store.QueueWorkReplies).",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 5: [P2] Advance the work reply cursor past the completed run",
+  "promoted_to": "service/internal/api/work_test.go"
+}

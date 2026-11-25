@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A team_work call and its recheck refuse a profile no session can start from as Server.startable does, profiles.CheckCompactAt on the routed model included (Server.workChoice).",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 1: [P2] Apply the routed model's profile-startability check",
+  "promoted_to": "service/internal/api/work_test.go"
+}

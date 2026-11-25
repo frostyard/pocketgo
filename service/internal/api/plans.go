@@ -1067,6 +1067,14 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 		}
 		check = gatherCheck
 	}
+	if isWorkTask(row.Key) {
+		// A work session's task goes only to a watched session, so the end
+		// of each of its runs reaches pocketd and its answer its caller
+		// (ADR-0074); a watch that fails holds it until one works. Each new
+		// submission checks its worktree again, which the task names
+		// (workTaskCheck; Codex review of #174, round 1).
+		check = s.workTaskCheck(row.SessionID)
+	}
 	if strings.HasPrefix(row.Key, store.ScheduleNotePrefix) {
 		// An owner's scheduled message is the owner's word: a standing
 		// session takes what its profile says now before it, and one whose
@@ -1105,6 +1113,13 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 	}
 	if errors.Is(err, errWatchClosed) {
 		return true, true, s.store.DropNote(ctx, row.Key)
+	}
+	// A work session's task whose worktree is no longer the one its work
+	// made never reached it: it goes to no one, and its caller hears so
+	// (dropWorkTask). A check that could not tell is tried again.
+	var moved folderChanged
+	if isWorkTask(row.Key) && errors.As(err, &moved) {
+		return true, true, s.dropWorkTask(ctx, row.SessionID, moved)
 	}
 	if err != nil || !placed {
 		return false, true, err
