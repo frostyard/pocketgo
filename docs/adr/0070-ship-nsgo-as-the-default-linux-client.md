@@ -1,6 +1,6 @@
 # 0070 — Ship NSGo as the default Linux client
 
-- **Status:** Accepted
+- **Status:** Accepted; its MyGo fallback on Linux and MyGo's other platforms ended by [ADR-0071](0071-make-the-nsgo-client-the-only-client.md)
 - **Date:** 2026-11-23
 
 ## Context
