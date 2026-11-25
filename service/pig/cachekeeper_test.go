@@ -1084,6 +1084,8 @@ func TestRefreshStaleSaysWhyARefreshCannotGo(t *testing.T) {
 	}{
 		{due, ""},
 		{checked.Add(-time.Second), "the clock went back"},
+		// A timer that fired before its time saw the clock go back.
+		{due.Add(-time.Second), "the clock went back"},
 		{started.Add(maxWarmAge), "the age cap"},
 		{due.Add(16 * time.Second), "a late refresh"},
 	} {
@@ -1124,6 +1126,23 @@ func TestAClockThatWentBackRetiresTheWarm(t *testing.T) {
 	r.clock.fireNow()
 	if r.faux.CallCount() != 1 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
 		t.Fatalf("faux calls %d, warming %d, timers %v after the clock went back", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
+	}
+}
+
+// Codex review of #172, round 4: a clock that goes back to a time still
+// after the refresh was set (12:03 back to 12:02, set at 12:00, due at
+// 12:04:30) makes the keeper's timer fire before its time; the keeper
+// retires the entry then too.
+func TestAClockThatWentBackAfterTheRefreshWasSetRetiresTheWarm(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	set := r.clock.Now()
+	r.clock.set(set.Add(3 * time.Minute))
+	r.clock.set(set.Add(2 * time.Minute))
+	r.faux.AppendResponses([]ai.FauxResponseStep{warmAnswer()})
+	r.clock.fireNow()
+	if r.faux.CallCount() != 1 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("faux calls %d, warming %d, timers %v after the clock went back past the refresh's time", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
 	}
 }
 

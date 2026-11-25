@@ -559,13 +559,16 @@ func (k *cacheKeeper) scheduleLocked(key string, e *warmEntry) {
 }
 
 // refreshStale says why a refresh of an entry cannot go out at now, ""
-// when it can: the clock went back since the refresh was set (checked),
-// so the entry's age can no longer be told and it may be long gone; the
-// age cap, counted from started; or a refresh late past due
-// (lateRefresh).
+// when it can: the clock went back, so the entry's age can no longer be
+// told and it may be long gone; the age cap, counted from started; or a
+// refresh late past due (lateRefresh). The clock went back when it is
+// earlier than when the refresh was set (checked), or than the time the
+// refresh's timer was for, its due time or the age cap: a timer fires
+// before its time only when it saw the clock go back (wallClock), even
+// to a time after checked.
 func refreshStale(now, checked, started, due time.Time, ttl time.Duration) string {
 	switch {
-	case now.Before(checked):
+	case now.Before(checked) || now.Before(minTime(due, started.Add(maxWarmAge))):
 		return "the clock went back"
 	case now.Sub(started) >= maxWarmAge:
 		return "the age cap"
