@@ -105,7 +105,7 @@ func TestServeRefusesToStartWithoutTheSandbox(t *testing.T) {
 		newSandbox = tc.build
 		// An address that cannot be bound: reaching the bind would fail
 		// with a different error, so a pass shows the sandbox came first.
-		if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", "", 12, 0); !tc.want(err) {
+		if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", "", 12, 0, true); !tc.want(err) {
 			t.Errorf("%s: serve = %v", name, err)
 		}
 	}
@@ -131,7 +131,7 @@ func TestServeShowsTheSkillsAndUploadsReadOnly(t *testing.T) {
 		return nil, errStop
 	}
 
-	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), skills, "", 12, 0); !errors.Is(err, errStop) {
+	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), skills, "", 12, 0, true); !errors.Is(err, errStop) {
 		t.Fatalf("serve = %v", err)
 	}
 	if want := []string{skills, uploads.Dir(home)}; !reflect.DeepEqual(shown, want) {
@@ -617,14 +617,14 @@ func TestServeKeepsTheInstructionsFileReadOnly(t *testing.T) {
 		}
 		return nil, errStop
 	}
-	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", "rules.md", 12, 0); !errors.Is(err, errStop) {
+	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", "rules.md", 12, 0, true); !errors.Is(err, errStop) {
 		t.Fatalf("serve = %v", err)
 	}
 	if want := []string{filepath.Join(dir, "rules.md")}; !reflect.DeepEqual(files, want) {
 		t.Fatalf("the sandbox keeps %q read-only, want %q", files, want)
 	}
 	files = nil
-	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", "", 12, 0); !errors.Is(err, errStop) {
+	if err := serve(t.TempDir(), "not-an-address", t.TempDir(), "", "", 12, 0, true); !errors.Is(err, errStop) {
 		t.Fatalf("serve = %v", err)
 	}
 	if want := []string{""}; !reflect.DeepEqual(files, want) {

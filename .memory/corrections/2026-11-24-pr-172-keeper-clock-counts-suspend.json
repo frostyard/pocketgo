@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The cache keeper's clock (wallClock) gives times with no monotonic reading, so its late-refresh and age checks count the time the host spent suspended, which Linux's monotonic clock leaves out.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 1 of head c47c474: [P2] Include host suspend time in the refresh deadline",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}

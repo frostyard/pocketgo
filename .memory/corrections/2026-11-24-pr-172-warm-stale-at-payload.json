@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The cache keeper's warm checks its refresh again in its own payload hook, after the hash matches and before the provider sends it (refreshStale): the provider builds the payload on its own time, and a warm the host slept before would pay a rewrite.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 3 of head 11672db: [P2] Recheck the refresh deadline before sending the payload",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}

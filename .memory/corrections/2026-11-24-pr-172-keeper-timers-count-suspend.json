@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The cache keeper's timers count the time the host spent suspended, as its clock does: wallClock.At waits on Go's timers in steps of at most wallStep and compares wall-clock times at each, so a refresh or an age cap due while the host slept fires soon after it wakes, not a suspend's length late.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 2 of head e9a1ea8: [P2] Make keeper timers count suspend time too",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}

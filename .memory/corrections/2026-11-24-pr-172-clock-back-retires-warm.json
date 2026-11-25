@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A wall clock that went back retires a warm, whose age can no longer be told: a wallClock timer fires at the step after it sees the clock earlier than at its last step, and refreshStale stops a refresh whose clock is earlier than when it was set (warmEntry.checked); a real request's answer seen with the clock earlier than its dispatch starts none.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 3 of head 11672db: [P2] Keep backward clock changes from extending cache lifetimes",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}

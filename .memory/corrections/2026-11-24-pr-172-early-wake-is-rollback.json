@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A refresh whose timer fires before its time, its due time or the age cap, is refused as a clock that went back (refreshStale): a wallClock timer fires early only when it saw the clock go back, even to a time after the refresh was set, which the check against warmEntry.checked alone lets through.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 4 of head 57ba5b4: [P2] Retire the warm when the timer detects a clock rollback",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}

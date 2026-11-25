@@ -87,6 +87,7 @@ Docs are split by the question they answer:
 - [0072 — Let the supervisor read the threads, and hear each answer to an ask, in code](adr/0072-let-the-supervisor-read-the-threads-and-hear-each-answer-in-code.md)
 - [0073 — Watch a pull request in code and tell the session once](adr/0073-watch-a-pull-request-in-code-and-tell-the-session-once.md)
 - [0074 — Let an agent start its own work session in a fresh worktree with team_work](adr/0074-let-an-agent-start-its-own-work-session-in-a-fresh-worktree-with-team-work.md)
+- [0075 — Keep the prompt cache warm between a run's requests, in code](adr/0075-keep-the-prompt-cache-warm-between-a-runs-requests-in-code.md)
 
 ### Org-wide decisions
 

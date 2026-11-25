@@ -69,6 +69,8 @@ type fixture struct {
 	// lived gets a signal after each live state the watch hands OnLive,
 	// so a test waits on what the watch sent, never on a sleep.
 	lived chan struct{}
+	// cacheKeeper opens the engine with its cache keeper on (ADR-0075).
+	cacheKeeper bool
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -99,6 +101,7 @@ func (f *fixture) openWith(models *ai.Models, needs func(string) bool) *Engine {
 		Approver:      f.approve,
 		NeedsApproval: needs,
 		Unsandboxed:   true,
+		CacheKeeper:   f.cacheKeeper,
 		OnEntry:       func(entry proto.Entry) { f.mu.Lock(); f.entries = append(f.entries, entry); f.mu.Unlock() },
 		OnLive: func(live proto.Live) {
 			f.mu.Lock()

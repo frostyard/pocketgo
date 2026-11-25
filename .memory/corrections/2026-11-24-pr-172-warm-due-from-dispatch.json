@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The cache keeper counts a cache entry's lifetime from when the request that last wrote or read it went to the provider, real or warm (realRequest.dispatched, warmEntry.written), never from the end of its answer, and starts or sends no refresh that is late by then (lateRefresh).",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 1 of head c47c474: [P1] Measure cache expiry from the request, not the end of generation",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}

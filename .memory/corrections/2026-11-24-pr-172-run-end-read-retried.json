@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A failed read of a session's state at its run's end proves nothing and the watch will not report that end again: checkRunEnded reads it again after runEndRetry with the token it read first, for as long as that token still has a request or warm to retire.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 2 of head e9a1ea8: [P2] Retry the idle check when the live-state read fails",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}
