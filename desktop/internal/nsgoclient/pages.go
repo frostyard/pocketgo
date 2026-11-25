@@ -1,8 +1,6 @@
 package nsgoclient
 
 import (
-	"reflect"
-	"slices"
 	"strings"
 	"time"
 
@@ -28,86 +26,28 @@ func (c *client) sessionDetails(cx *core.Scope) core.Node {
 		}
 		return "Pin session"
 	}, OnPress: func() { c.prefs.Pinned = c.prefs.Pinned.Toggle(id); c.savePrefs(); c.changed() }}
+	// Rename is offered where pocketd says the session may be renamed
+	// (ADR-0058), and waits while a rename of it is on its way
+	// (state.Store.MayRename). A rename that failed says so here and at
+	// the transcript's end (runFailures).
 	edit := core.Show{When: func() bool { c.revision.Get(); return d.Renamable(id) }, Then: func(*core.Scope) core.Node {
-		return workspaceui.Stack(ui.Input{Label: "Session title", Value: name.Get, OnChange: name.Set}, c.button("Rename", func() {
-			if err := state.ValidateTitle(name.Get()); err != nil {
-				c.result(err)
-				return
-			}
-			c.store.Rename(id, name.Get())
-		}), core.Text{ContentFunc: func() string { c.revision.Get(); return c.store.Renaming(id).Err }})
+		return workspaceui.Stack(ui.Input{Label: "Session title", Value: name.Get, OnChange: name.Set},
+			ui.Button{Text: "Rename", Variant: ui.ButtonSecondary, Disabled: func() bool { c.revision.Get(); return !c.store.MayRename(id) }, OnPress: func() {
+				if err := state.ValidateTitle(name.Get()); err != nil {
+					c.result(err)
+					return
+				}
+				if c.store.MayRename(id) {
+					c.store.Rename(id, name.Get())
+				}
+				c.changed()
+			}}, core.Text{ContentFunc: func() string { c.revision.Get(); return c.store.Renaming(id).Err }})
 	}}
-	type relation struct {
-		id    int64
-		label string
-	}
-	relations := core.NewMemoFunc(cx, func() []relation {
-		var links []relation
-		c.revision.Get()
-		if header, ok := d.WorkerHeaderOf(id); ok && header.Parent != 0 {
-			links = append(links, relation{header.Parent, "Back to " + header.ParentTitle})
-		} else if parent, ok := d.ParentOf(id); ok {
-			links = append(links, relation{parent.ID, "Parent · " + sessionName(parent)})
-		}
-		for _, w := range d.WorkersOf(id) {
-			links = append(links, relation{w.ID, state.WorkerCardLabel(w)})
-		}
-		return links
-	}, slices.Equal)
-	workers := core.Dynamic(func(*core.Scope) core.Node {
-		var nodes []core.Node
-		for _, r := range relations.Get() {
-			nodes = append(nodes, c.button(r.label, func() { c.openSession(r.id) }))
-		}
-		if len(nodes) == 0 {
-			return nil
-		}
-		return workspaceui.InspectorGroup("Workers", nodes...)
-	})
-	type changesView struct {
-		files  state.SessionChanges
-		loaded bool
-		diff   state.ShownDiff
-	}
-	changedFiles := core.NewMemoFunc(cx, func() changesView {
-		c.revision.Get()
-		ch, ok := d.Changes(id)
-		diff, _ := d.Diff()
-		if diff.Session != id {
-			diff = state.ShownDiff{}
-		}
-		return changesView{ch, ok, diff}
-	}, func(a, b changesView) bool { return reflect.DeepEqual(a, b) })
-	changes := core.Dynamic(func(*core.Scope) core.Node {
-		v := changedFiles.Get()
-		ch, ok := v.files, v.loaded
-		summary := state.ChangesSummary(ch, ok)
-		if summary == "" {
-			if ok && ch.Status == state.ListLoaded {
-				return nil
-			}
-			summary = "Reading changes…"
-		}
-		out := []core.Node{body(summary)}
-		if ch.Err != "" {
-			out = append(out, body(ch.Err))
-		}
-		for _, f := range ch.Changes.Files {
-			if state.CanDiff(f) {
-				out = append(out, c.button(state.FileName(f)+" "+state.FileCounts(f), func() { c.store.ShowDiff(id, f.Path) }))
-			} else {
-				out = append(out, body(state.FileName(f)))
-			}
-		}
-		if diff := v.diff; diff.Session == id {
-			out = append(out, title(diff.Path), body(diff.Err), core.Text{Content: diff.Diff.Diff, Style: ui.TypeCode, Selectable: core.SelectableOn}, body(state.CutNote(diff.Diff)), c.button("Close diff", d.CloseDiff))
-		}
-		return workspaceui.InspectorGroup("Changes", out...)
-	})
 	startOver := core.Show{When: func() bool { s := session(); ro, _ := d.ReadOnly(id); return s.Standing && !ro }, Then: func(*core.Scope) core.Node {
 		why := func() string { return state.StartOverBlocked(session(), d.Open()) }
-		return workspaceui.Stack(ui.Button{Text: "Start over", Disabled: func() bool { return why() != "" }, OnPress: func() {
-			c.destroy("Start over?", state.StartOverQuestion(session()), "Start over", func() { c.store.StartOver(id) })
+		return workspaceui.Stack(ui.Button{Text: "Start over", Disabled: func() bool { return why() != "" || c.store.StartingOver(id).Busy }, OnPress: func() {
+			// The confirmation says what starting over does (state.StartOverBody).
+			c.destroy(state.StartOverQuestion(session()), state.StartOverBody, "Start Over", func() { c.store.StartOver(id) })
 		}}, core.Text{ContentFunc: why})
 	}}
 	return workspaceui.Page(core.Text{Style: ui.TypeTitle, ContentFunc: func() string { return sessionName(session()) }},
@@ -121,7 +61,7 @@ func (c *client) sessionDetails(cx *core.Scope) core.Node {
 				}
 				return "No usage reported"
 			}), workspaceui.InspectorRow("Context", func() string { c.revision.Get(); return d.FillOf(id).Tooltip() })),
-		workers, changes)
+		c.workersGroup(cx, id), c.changesGroup(cx, id))
 }
 func (c *client) search(cx *core.Scope) core.Node {
 	query := core.NewSignal(cx, c.store.Data.Search().Query)

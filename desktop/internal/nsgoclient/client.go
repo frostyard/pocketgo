@@ -15,7 +15,6 @@ import (
 	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
-	"github.com/nsgo-dev/nsgo/base/terminal"
 	"github.com/nsgo-dev/nsgo/core"
 	"github.com/nsgo-dev/nsgo/icons/lucide"
 	"github.com/nsgo-dev/nsgo/ui"
@@ -31,7 +30,7 @@ type client struct {
 	groups  *core.Signal[map[string]bool]
 	reasons map[string]string
 
-	terminals      map[string]*terminal.Terminal
+	terminals      map[string]*openTerm
 	termID         *core.Signal[string]
 	creds          credentials
 	credentialDone chan struct{}
@@ -110,7 +109,7 @@ func startClient(cx *core.Scope, transport http.RoundTripper, production bool, a
 	c.loadJSON("zoom", &zoom)
 	c.zoom = core.NewSignal(cx, state.Zoom(zoom))
 	c.termID = core.NewSignal(cx, "")
-	c.terminals = map[string]*terminal.Terminal{}
+	c.terminals = map[string]*openTerm{}
 	cx.Cleanup(c.closeTerminals)
 	c.store = state.New(state.Options{Transport: transport, Now: func() time.Time { return timeNow() }, Post: func(fn func()) {
 		cx.Post(func() { cx.Batch(func() { fn(); c.changed() }) })
@@ -412,15 +411,8 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 		}, SidebarHeader: []core.Node{core.View{Style: core.Style{Padding: core.All(workspaceui.SpaceS), Gap: workspaceui.SpaceS}, Children: []core.Node{
 			workspaceui.SearchField{Placeholder: "Filter sessions", Value: c.filter.Get, OnChange: c.filter.Set}, c.sidebarNotes()}}},
 		SidebarFooter: []core.Node{c.sidebarFoot(showSettings)},
-		Header: []core.Node{core.Text{MaxLines: 1, Style: ui.TypeTitle, ContentFunc: func() string {
-			if c.page.Get() == "Session" {
-				c.revision.Get()
-				s, _ := c.store.Data.Session(c.session.Get())
-				return sessionName(s)
-			}
-			return c.page.Get()
-		}}},
-		Actions: []core.Node{c.toolbar(cx, launch)},
+		Header:        []core.Node{c.contentHeader(cx)},
+		Actions:       []core.Node{c.toolbar(cx, launch)},
 		Content: []core.Node{core.View{Style: ui.FillRest, Children: []core.Node{core.View{Style: ui.FillRest.Merge(core.Style{MinHeight: core.Pt(0)}), Children: []core.Node{core.Dynamic(func(cx *core.Scope) core.Node {
 			switch c.page.Get() {
 			case "Session":

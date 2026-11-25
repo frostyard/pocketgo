@@ -100,7 +100,7 @@ func (c *client) workTurn(cx *core.Scope, part func() turnPart, view *chat.Conve
 			return c.markdown(func() string { return last().Text }, view.Search())
 		},
 		ShowActions: hasFinal, Actions: func(*core.Scope) core.Node {
-			return chat.Actions{Text: func() string { t, _ := last().Copy(); return t }}
+			return chat.Actions{Receipt: state.CopyHold, Text: func() string { t, _ := last().Copy(); return t }}
 		}}
 }
 func toolActivity(current func() *state.ToolRow) chat.Activity {

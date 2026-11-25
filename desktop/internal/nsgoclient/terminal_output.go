@@ -65,9 +65,19 @@ type remoteConn struct {
 
 func (c remoteConn) Read(p []byte) (int, error) { return c.output.Read(p) }
 
-type terminalAccess struct{}
+// terminalAccess is what a shell's view may ask of the platform. A link
+// a shell printed opens only when state.SafeLink holds: what a shell
+// prints is the server's, not the owner's word. refused, when set, hears
+// of a link that was not opened.
+type terminalAccess struct{ refused func(link string) }
 
-func (terminalAccess) Allows(r core.AccessRequest) bool {
-	return r.Permission != core.AccessOpenURL || state.SafeLink(r.Resource)
+func (a terminalAccess) Allows(r core.AccessRequest) bool {
+	if r.Permission != core.AccessOpenURL || state.SafeLink(r.Resource) {
+		return true
+	}
+	if a.refused != nil {
+		a.refused(r.Resource)
+	}
+	return false
 }
 func (terminalAccess) WebHosts() []string { return nil }
