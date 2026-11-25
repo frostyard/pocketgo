@@ -404,11 +404,14 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 		}
 	}
 	// A shift's brief is its round 1, and says how its rounds go
-	// (ADR-0024).
+	// (ADR-0024). Any other building thread's says how to wait for CI
+	// with team_watch (ADR-0073).
 	if sh, err := s.store.Shift(db, thread.ID); err == nil {
 		brief += "\n\n" + team.ShiftRules(team.ShiftPlan{Stop: sh.Stop, MaxRounds: sh.MaxRounds, CI: sh.CI}, sh.Deadline)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.ThreadRow{}, err
+	} else if !thread.IsPlanThread() {
+		brief += "\n" + team.WatchGuide
 	}
 	if thread.ReviewPull != 0 {
 		// A review's brief is pocketd's, read from the worktree before the
@@ -511,6 +514,15 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if thread.IsPlanThread() || thread.ReviewPull != 0 {
 		if _, err := s.engine.SetGitHubTool(db, id); err != nil {
 			return store.ThreadRow{}, fmt.Errorf("give the session team_github: %w", err)
+		}
+	}
+	// One made by a run before team_watch gets it before the brief that
+	// names it: the work database does not know the session yet, so the
+	// start's upgrade passed it by (ADR-0073; Codex review of #173, round
+	// 1).
+	if spec.Profile == nil {
+		if err := s.recoveredWatchTool(db, id, current, profile); err != nil {
+			return store.ThreadRow{}, fmt.Errorf("give the session team_watch: %w", err)
 		}
 	}
 	brief := newBrief
@@ -801,6 +813,13 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 		Profile: &target, Route: string(choice.Rule), Thread: thread.ID}
 	if thread.IsPlanThread() {
 		spec.Plan = thread.Plan
+	}
+	// A shift's specialist watches nothing: its rounds read CI in code
+	// (ADR-0073). The shift is recorded with its thread.
+	if _, err := s.store.Shift(ctx, thread.ID); err == nil {
+		spec.Shift = true
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return SessionSpec{}, "", "", "", err
 	}
 	return spec, cwd, branch, stale, nil
 }

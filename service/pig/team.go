@@ -56,6 +56,9 @@ type Team interface {
 	Question(ctx context.Context, call api.TeamCall, q team.Question) (string, error)
 	TeamInbox(ctx context.Context, call api.TeamCall) (string, error)
 	TeamThreads(ctx context.Context, call api.TeamCall, c team.ThreadsCall) (string, error)
+	// TeamWatch keeps the calling session's watches of pull requests
+	// (ADR-0073).
+	TeamWatch(ctx context.Context, call api.TeamCall, c team.WatchCall) (string, error)
 	// Schedule keeps a private agent's own schedules, to the calling
 	// session, with team_schedule's engine (ADR-0060). It is no team
 	// tool: TeamAllows does not run before it, and it checks its caller
@@ -87,6 +90,7 @@ const (
 	toolLaunch   = "team_launch"
 	toolInbox    = "team_inbox"
 	toolThreads  = "team_threads"
+	toolWatch    = "team_watch"
 )
 
 // proposalProperties are a proposal's fields, as team_propose and
@@ -244,6 +248,14 @@ const findingParameters = `{"type":"object","properties":{` +
 const closeParameters = `{"type":"object","properties":{` +
 	`"thread":{"type":"integer","description":"The thread's number: 12 for T12."}` +
 	`},"required":["thread"],"additionalProperties":false}`
+
+var watchParameters = `{"type":"object","properties":{` +
+	`"action":{"type":"string","enum":["add","list","cancel"],"description":"add a watch, list this session's, or cancel one of yours."},` +
+	`"pull":{"type":"string","description":"add: the pull request, as owner/name#number."},` +
+	`"until":{"type":"string","enum":["checks","merged","closed"],"description":"add: what to wait for. checks: CI at the pull request's head is done, green, failing or none; merged: it merged; closed: it merged or was closed without merging."},` +
+	`"hours":{"type":"number","description":"add: how long to wait at most, above 0 and at most ` + strconv.Itoa(team.MaxWatchHours) + `; ` + strconv.Itoa(team.DefaultWatchHours) + ` when left out. A few hours suit checks."},` +
+	`"id":{"type":"string","description":"cancel: the watch's id, as W3, from add or list."}` +
+	`},"required":["action"],"additionalProperties":false}`
 
 const sendParameters = `{"type":"object","properties":{` +
 	`"thread":{"type":"integer","description":"The thread's number: 12 for T12. A thread you delegated: open, done, blocked, or closed, which the message reopens."},` +
@@ -526,6 +538,25 @@ func (e *Engine) teamExtension() *durable.Extension {
 					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamMemory(ctx, call, m) })
 				},
 			},
+			{
+				// After team_memory: a session given it later gets it last
+				// among its team tools (SetWatchTool), as a new one has it
+				// (ADR-0073). How to wait is in its description, which a
+				// session started before the guide in its brief reads too.
+				ToolSchema: schema(toolWatch, "Have pocketd tell you when a pull request reaches a condition: its checks are done, it merged, or it closed. "+
+					"The call returns at once. Only an answer that starts with \"Watching W\" promises a message: end your run then. pocketd checks the pull "+
+					"request on GitHub itself, in each of its rounds, and sends this session one message when the condition holds, when it no longer can, "+
+					"or when the time is up, which starts your next run. Any other answer (the pull request is there already, or a refusal) comes with "+
+					"no message: act on it now. Never sleep or poll for CI or a merge: watch it. list shows your watches, and cancel ends one.", watchParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					c, err := durable.FromJsonValue[team.WatchCall](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamWatch(ctx, call, c) })
+				},
+			},
 		},
 	}
 }
@@ -562,9 +593,10 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // cross-review read GitHub with GET alone, too (team_github, ADR-0036,
 // ADR-0057), and no other session does. A supervisor alone reads the
 // owner's Inbox (team_inbox, ADR-0046) and the threads (team_threads,
-// ADR-0072). A private agent has no team tool
-// at all (ADR-0042): it keeps its own schedules with the schedule tool,
-// which is none (toolsOf, ADR-0060).
+// ADR-0072). Every session that keeps lessons but a shift's specialist
+// watches pull requests (team_watch, ADR-0073). A private agent has no
+// team tool at all (ADR-0042): it keeps its own schedules with the
+// schedule tool, which is none (toolsOf, ADR-0060).
 func roleTools(spec api.SessionSpec) []string {
 	// A private agent has no team: no team tool, team_memory and
 	// team_schedule included, whatever its role (ADR-0042, ADR-0060).
@@ -613,6 +645,12 @@ func roleTools(spec api.SessionSpec) []string {
 	}
 	if spec.Profile != nil {
 		out = append(out, toolMemory)
+	}
+	// Every session that keeps lessons watches pull requests too, but a
+	// shift's specialist, whose rounds read CI in code (team.MayWatch,
+	// ADR-0073).
+	if team.MayWatch(spec.Profile, roleOf(spec)) {
+		out = append(out, toolWatch)
 	}
 	return out
 }
@@ -1390,16 +1428,50 @@ func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
+// SetWatchTool gives team_watch, and the team's extension if the session
+// lacks it, to a session made before it (ADR-0073), in the place roleTools
+// gives it among its team tools, after its other tools, and says whether
+// it did. Its caller decides which sessions get it (team.MayWatch): a
+// session made before team_memory, with other team tools or none, gets
+// it too (Codex review of #173, round 4). Its tools become an exact list
+// of the ones it is offered and team_watch, so a new extension offers no
+// other team tool. A session that has it is left as it is.
+func (e *Engine) SetWatchTool(ctx context.Context, id int64) (bool, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return false, err
+	}
+	hasExt := slices.Contains(extensionNames(agent.Extensions), e.teamExt.Name)
+	hasTool := slices.Contains(toolNames(agent.Tools), toolWatch)
+	if hasExt && hasTool {
+		return false, nil
+	}
+	change := harness.AgentChange{}
+	if !hasExt {
+		change.Extensions = harness.SetTo(harness.ExtensionChange{List: append(slices.Clone(agent.Extensions), e.teamExt)})
+	}
+	if !hasTool {
+		own, team, tail := e.splitTools(agent.Tools)
+		change.Tools = harness.SetTo(harness.ToolChange{List: slices.Concat(own, e.teamTools(append(team, toolWatch)), tail)})
+	}
+	return true, conversation.Configure(ctx, change)
+}
+
 // splitTools splits a session's tools into its own (the coding tools),
 // the names of its team tools and its tail, the question and schedule
-// tools, which come after the team tools (toolsOf, ADR-0048, ADR-0060): a
-// team tool given later goes among the team tools, before the tail.
+// tools and the MCP tools, which come after the team tools in that order
+// (toolsOf, ADR-0048, ADR-0060, ADR-0063): a team tool given later goes
+// among the team tools, before the tail.
 func (e *Engine) splitTools(tools []*durable.ToolRegistration) (own []*durable.ToolRegistration, team []string, tail []*durable.ToolRegistration) {
 	for _, tool := range tools {
 		switch {
 		case e.isTeamTool(tool.Name):
 			team = append(team, tool.Name)
-		case tool.Name == toolQuestion || tool.Name == toolOwnSchedule:
+		case tool.Name == toolQuestion || tool.Name == toolOwnSchedule || strings.HasPrefix(tool.Name, mcpToolPrefix):
 			tail = append(tail, tool)
 		default:
 			own = append(own, tool)

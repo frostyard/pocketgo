@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "Once the budget holds a watch pass back, the pass makes no more GitHub requests, but a watch its reads answer whole (Server.watchReadNeed is 0) still decides from them, so two watches of one pull request are told the same.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 4: [P2] Use cached watch results after the read budget blocks a request",
+  "promoted_to": "service/internal/api/watches_round4_test.go"
+}

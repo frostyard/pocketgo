@@ -66,6 +66,10 @@ type SessionSpec struct {
 	// lessons section (team.LessonsSection), at the end of its
 	// instructions (ADR-0015).
 	Lessons string
+	// Shift says the thread's specialist works in a shift's rounds
+	// (ADR-0024): it gets no team_watch, since the rounds read CI in code
+	// (ADR-0073).
+	Shift bool
 	// Review is a cross-review's session (ADR-0019): read-only tools,
 	// team_diff, team_verdict and team_github (ADR-0057), no other team
 	// tool.
@@ -189,6 +193,10 @@ type Engine interface {
 	// it, and says whether it did (ADR-0060): the caller decides which
 	// sessions get it (team.MaySchedule).
 	SetScheduleTool(ctx context.Context, id int64) (bool, error)
+	// SetWatchTool gives team_watch to a session made before it that has
+	// the team's tools (team_memory), and says whether it did (ADR-0073):
+	// the caller decides which sessions get it (team.MayWatch).
+	SetWatchTool(ctx context.Context, id int64) (bool, error)
 	// MCPProfiles are the profiles with an MCP server pocketd connects,
 	// as it read them at start (ADR-0063); ConnectMCP connects each
 	// server, or reads its tools again, and returns once each answered or
@@ -614,6 +622,32 @@ type Server struct {
 	// GitHub to its record: two reads of one never cross (ADR-0016). A
 	// wait for one ends with its context.
 	pullLocks ctxLocks
+	// watchMu runs the watches' passes one at a time (ADR-0073), and
+	// guards watchBudget, the GitHub requests the passes may still make
+	// (team.ReadBudget), and watchNext, the watch the next pass starts at:
+	// the first one the last could not read for the budget, 0 for the
+	// first.
+	watchMu     sync.Mutex
+	watchBudget team.ReadBudget
+	watchNext   int64
+	// goWatch runs a watch pass's goroutine (watchSoon), which a pull
+	// round starts and never waits for; tests run it when they choose.
+	// watching says a pass runs, watchAgain that one was asked for
+	// meanwhile; sessionMu guards both.
+	goWatch              func(f func())
+	watching, watchAgain bool
+	// watchAdmitMu orders a watch's admission (its last check and its
+	// insert) with StartPulls(0), which sets watchesOff under it before it
+	// ends the live watches: an add commits before that sweep reads, or
+	// sees watchesOff and is refused (ADR-0073; Codex review of #173,
+	// round 1). afterWatchRead, in tests, runs in an add between its
+	// reads of GitHub and its admission.
+	watchAdmitMu   sync.Mutex
+	watchesOff     bool
+	afterWatchRead func()
+	// beforeUncheckedEnd, in tests, sees each watch the -pr-every 0 sweep
+	// is about to end (endUncheckedWatches).
+	beforeUncheckedEnd func(id int64)
 	// pullEvery is how often open pull requests are read again
 	// (StartPulls), 0 for never; pullsStarted says StartPulls ran, so
 	// team_inbox tells rounds not begun from none (ADR-0046); sessionMu
@@ -837,7 +871,7 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		launchTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goLaunch:      func(f func()) { go f() },
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
-		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
+		goShift: func(f func()) { go f() }, goWatch: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal, launchStarting: map[int64]bool{}, launchSettle: map[int64]string{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,

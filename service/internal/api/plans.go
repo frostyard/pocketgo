@@ -1078,11 +1078,33 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 			return s.reconfigureStanding(ctx, row.SessionID)
 		}
 	}
-	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
+	idle := false
+	if strings.HasPrefix(row.Key, store.WatchNotePrefix) {
+		// A watch's note starts its session's next run (ADR-0073): it goes
+		// only to an idle session, never into PiG's queue, and only while
+		// the session's thread, if any, is open, read right before it is
+		// submitted. A close drops it in its transaction, and no queued
+		// copy outlives the close.
+		idle = true
+		check = func(ctx context.Context) error {
+			if err := s.watchNoteGoes(ctx, row.SessionID); err != nil {
+				return err
+			}
+			// Idle means no run and no input in PiG's inbox, which
+			// WhenBusyReject does not look at: after a failed run an older
+			// input may wait there, and PiG would start it and queue the
+			// note behind it (Codex review of #173, round 3).
+			return s.specialistIdle(ctx, row.SessionID)
+		}
+	}
+	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check, idleOnly: idle},
 		func(sub int64) error { return s.store.NoteSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.NoteWithdrawn(ctx, row.Key, attempt) })
-	if errors.Is(err, errStandingProfile) || errors.Is(err, errStandingDeferred) {
+	if errors.Is(err, errStandingProfile) || errors.Is(err, errStandingDeferred) || (idle && errors.Is(err, errSpecialistBusy)) {
 		return false, true, nil
+	}
+	if errors.Is(err, errWatchClosed) {
+		return true, true, s.store.DropNote(ctx, row.Key)
 	}
 	if err != nil || !placed {
 		return false, true, err

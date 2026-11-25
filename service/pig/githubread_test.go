@@ -191,9 +191,9 @@ func TestSetGitHubToolUpgradesAnOlderPlanLead(t *testing.T) {
 		want []string
 	}{
 		"a plan's lead": {api.SessionSpec{Profile: &profiles.Profile{ID: "duncan", Role: profiles.RoleAgent}, Thread: 4, Plan: 1},
-			[]string{"read", toolMessage, toolPlan, toolGitHub, toolMemory}},
+			[]string{"read", toolMessage, toolPlan, toolGitHub, toolMemory, toolWatch}},
 		"a supervisor's plan lead": {api.SessionSpec{Profile: &profiles.Profile{ID: "odrade", Role: profiles.RoleSupervisor}, Thread: 5, Plan: 2},
-			[]string{"read", toolDelegate, toolMessage, toolClose, toolPlan, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolGitHub, toolMemory}},
+			[]string{"read", toolDelegate, toolMessage, toolClose, toolPlan, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolGitHub, toolMemory, toolWatch}},
 		"a consult": {api.SessionSpec{Profile: &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent}, Consult: 3},
 			[]string{"read", toolFinding, toolGitHub}},
 		"a cross-review": {api.SessionSpec{Profile: &profiles.Profile{ID: "vera", Role: profiles.RoleAgent, Tools: []string{"read", "bash"}}, Thread: 7, Review: true},

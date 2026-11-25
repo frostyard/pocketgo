@@ -63,13 +63,16 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		want []string
 	}{
 		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
-		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
-		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolQuestion}},
+		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory, toolWatch}},
+		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolWatch, toolQuestion}},
 		// Only a cross-review pocketd started files a verdict, with read-only
 		// tools, whatever its profile allows (ADR-0019).
 		// A thread's specialist has a worker, which has its coding tools
 		// and no team tool (ADR-0021).
-		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolWorker, toolMemory}},
+		"a thread's specialist": {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", "bash", toolMessage, toolWorker, toolMemory, toolWatch}},
+		// A shift's specialist watches nothing: its rounds read CI in code
+		// (ADR-0073).
+		"a shift's specialist":  {api.SessionSpec{Profile: vera, Thread: 3, Shift: true}, []string{"read", "bash", toolMessage, toolWorker, toolMemory}},
 		"a worker":              {api.SessionSpec{Thread: 3, Worker: true, WorkerTools: []string{"read", "bash", toolMessage}}, []string{"read", "bash"}},
 		"a worker of all tools": {api.SessionSpec{Thread: 3, Worker: true}, []string{"read", "write", "edit", "bash"}},
 		// It reads GitHub with GET alone too, for what a pin bump brings in,
@@ -81,9 +84,9 @@ func TestTeamToolsGoByRole(t *testing.T) {
 		// bash, write or edit, whatever its profile (Codex review of #25,
 		// round 2), and no worker, which would build for it (ADR-0020,
 		// ADR-0036).
-		"a plan's lead": {api.SessionSpec{Profile: vera, Thread: 4, Plan: 1}, []string{"read", toolMessage, toolPlan, toolGitHub, toolMemory}},
+		"a plan's lead": {api.SessionSpec{Profile: vera, Thread: 4, Plan: 1}, []string{"read", toolMessage, toolPlan, toolGitHub, toolMemory, toolWatch}},
 		"an all-tools plan's lead": {api.SessionSpec{Profile: &profiles.Profile{ID: "duncan", Role: profiles.RoleAgent}, Thread: 6, Plan: 3},
-			[]string{"read", toolMessage, toolPlan, toolGitHub, toolMemory}},
+			[]string{"read", toolMessage, toolPlan, toolGitHub, toolMemory, toolWatch}},
 		// A consult reads files and GitHub, and files its finding: nothing
 		// else, whatever its profile or its other roles (ADR-0020,
 		// ADR-0036).
@@ -161,7 +164,9 @@ type fakeTeam struct {
 	// TeamThreads answers, "threads" when empty.
 	threads       []team.ThreadsCall
 	threadsResult string
-	fail          error
+	// watches are the team_watch calls, in order (ADR-0073).
+	watches []team.WatchCall
+	fail    error
 	// diff is what TeamDiff answers, a short patch when "".
 	diff string
 	// planResult is team_plan's answer, "Wrote plan P1." when empty.
@@ -267,6 +272,12 @@ func (f *fakeTeam) TeamThreads(_ context.Context, call api.TeamCall, c team.Thre
 		return f.threadsResult, f.fail
 	}
 	return "threads", f.fail
+}
+
+func (f *fakeTeam) TeamWatch(_ context.Context, call api.TeamCall, c team.WatchCall) (string, error) {
+	f.calls = append(f.calls, call)
+	f.watches = append(f.watches, c)
+	return "watching", f.fail
 }
 
 func (f *fakeTeam) TeamPropose(_ context.Context, call api.TeamCall, c team.ProposeCall) (string, error) {
@@ -1240,7 +1251,7 @@ func TestSetSupervisorToolsUpgradesAnOlderSupervisor(t *testing.T) {
 	if changed, err := e.SetSupervisorTools(ctx, id); err != nil || !changed {
 		t.Fatalf("the upgrade: %v %v", changed, err)
 	}
-	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolQuestion}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolWatch, toolQuestion}
 	if got := agentTools(t, e, id); !slices.Equal(got, want) {
 		t.Fatalf("tools %q, want %q", got, want)
 	}
@@ -1289,7 +1300,7 @@ func TestSetSupervisorToolsUpgradesASupervisorWithItsSchedules(t *testing.T) {
 	if changed, err := e.SetSupervisorTools(ctx, id); err != nil || !changed {
 		t.Fatalf("the upgrade: %v %v", changed, err)
 	}
-	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolQuestion}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolWatch, toolQuestion}
 	if got := agentTools(t, e, id); !slices.Equal(got, want) {
 		t.Fatalf("tools %q, want %q", got, want)
 	}
@@ -1537,7 +1548,7 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 	if added, err := e.SetVerdictTool(ctx, specialist, true); err != nil || !added {
 		t.Fatalf("added %v, %v", added, err)
 	}
-	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolVerdict, toolWorker, toolMemory}; !slices.Equal(got, want) {
+	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolVerdict, toolWorker, toolMemory, toolWatch}; !slices.Equal(got, want) {
 		t.Errorf("tools %q, want %q", got, want)
 	}
 	if added, err := e.SetVerdictTool(ctx, specialist, true); err != nil || added {
@@ -1547,7 +1558,7 @@ func TestAnOlderSpecialistSessionGetsTheVerdictTool(t *testing.T) {
 	if removed, err := e.SetVerdictTool(ctx, specialist, false); err != nil || !removed {
 		t.Fatalf("removed %v, %v", removed, err)
 	}
-	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolWorker, toolMemory}; !slices.Equal(got, want) {
+	if got, want := agentTools(t, e, specialist), []string{"read", "bash", toolMessage, toolWorker, toolMemory, toolWatch}; !slices.Equal(got, want) {
 		t.Errorf("tools after the removal %q, want %q", got, want)
 	}
 	if removed, err := e.SetVerdictTool(ctx, agent, false); err != nil || removed {

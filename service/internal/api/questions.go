@@ -114,7 +114,8 @@ func (s *Server) sessionCaller(ctx context.Context, session int64) (*profiles.Pr
 }
 
 // sessionRole is what session works as: a thread's specialist (a review
-// included), a thread's worker, a consult or a gather's proposal session.
+// and a shift's included), a thread's worker, a consult or a gather's
+// proposal session.
 func (s *Server) sessionRole(ctx context.Context, session int64) (team.SessionRole, error) {
 	var role team.SessionRole
 	thread, err := s.store.ThreadOfSession(ctx, session)
@@ -123,6 +124,12 @@ func (s *Server) sessionRole(ctx context.Context, session int64) (team.SessionRo
 		role.Thread, role.Review = true, thread.ReviewPull != 0
 		// A plan thread's specialist is its plan's lead (ADR-0020).
 		role.Plan = thread.IsPlanThread()
+		// A shift's specialist works in its rounds (ADR-0024).
+		if _, err := s.store.Shift(ctx, thread.ID); err == nil {
+			role.Shift = true
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return role, err
+		}
 	case !errors.Is(err, store.ErrNotFound):
 		return role, err
 	}

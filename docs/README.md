@@ -85,6 +85,7 @@ Docs are split by the question they answer:
 - [0070 — Ship NSGo as the default Linux client](adr/0070-ship-nsgo-as-the-default-linux-client.md)
 - [0071 — Make the NSGo client the only client](adr/0071-make-the-nsgo-client-the-only-client.md)
 - [0072 — Let the supervisor read the threads, and hear each answer to an ask, in code](adr/0072-let-the-supervisor-read-the-threads-and-hear-each-answer-in-code.md)
+- [0073 — Watch a pull request in code and tell the session once](adr/0073-watch-a-pull-request-in-code-and-tell-the-session-once.md)
 
 ### Org-wide decisions
 

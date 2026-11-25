@@ -114,6 +114,10 @@ type fakeEngine struct {
 	// ownScheduleTool are the sessions SetScheduleTool gave the schedule
 	// tool (ADR-0060).
 	ownScheduleTool map[int64]bool
+	// watchTool are the sessions SetWatchTool gave team_watch (ADR-0073);
+	// watchLate those that had been sent a message when it was called.
+	watchTool map[int64]bool
+	watchLate map[int64]bool
 	// mcpProfiles are the profiles MCPProfiles names; mcpConnects counts
 	// ConnectMCP's calls, and mcpTools are the profiles SetMCPTools gave
 	// each session, in order (ADR-0063).
@@ -489,6 +493,25 @@ func (f *fakeEngine) SetQuestionTool(_ context.Context, id int64) (bool, error) 
 		return false, nil
 	}
 	f.questionTool[id] = true
+	return true, nil
+}
+
+// SetWatchTool records the sessions given team_watch, each once.
+func (f *fakeEngine) SetWatchTool(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.watchTool == nil {
+		f.watchTool, f.watchLate = map[int64]bool{}, map[int64]bool{}
+	}
+	for _, to := range f.to {
+		if to == id {
+			f.watchLate[id] = true
+		}
+	}
+	if f.watchTool[id] {
+		return false, nil
+	}
+	f.watchTool[id] = true
 	return true, nil
 }
 
@@ -950,6 +973,9 @@ type harness struct {
 	// (runSchedulePasses, fireScheduleWakes). shiftMu guards both.
 	schedulePasses []func()
 	scheduleWakes  []shiftWake
+	// watchPasses are the watch passes the server started (watchSoon);
+	// each waits for the test (runWatchPasses). shiftMu guards it.
+	watchPasses []func()
 	// gatherWakes are the gathers' wakes (armGathers); each waits for the
 	// test (fireGatherWakes). shiftMu guards them.
 	gatherWakes []shiftWake
@@ -1091,6 +1117,24 @@ type shiftWake struct {
 	cancelled *bool
 }
 
+// runWatchPasses runs the watch passes the server started, and those they
+// start, and says how many ran (ADR-0073).
+func (h *harness) runWatchPasses() int {
+	n := 0
+	for {
+		h.shiftMu.Lock()
+		if len(h.watchPasses) == 0 {
+			h.shiftMu.Unlock()
+			return n
+		}
+		f := h.watchPasses[0]
+		h.watchPasses = h.watchPasses[1:]
+		h.shiftMu.Unlock()
+		f()
+		n++
+	}
+}
+
 // runShiftPasses runs the shift passes the server started, and those they
 // start, and says how many ran.
 func (h *harness) runShiftPasses() int {
@@ -1228,6 +1272,12 @@ func newHarness(t *testing.T) *harness {
 		defer h.shiftMu.Unlock()
 		h.shiftPasses = append(h.shiftPasses, f)
 	}
+	// A watch pass a pull round starts waits for the test too (ADR-0073).
+	server.goWatch = func(f func()) {
+		h.shiftMu.Lock()
+		defer h.shiftMu.Unlock()
+		h.watchPasses = append(h.watchPasses, f)
+	}
 	server.shiftTimer = func(d time.Duration, f func()) func() {
 		h.shiftMu.Lock()
 		defer h.shiftMu.Unlock()
@@ -1286,7 +1336,7 @@ func newHarness(t *testing.T) *harness {
 		}
 	}
 	t.Cleanup(server.Stop)
-	t.Cleanup(func() { h.runShiftPasses(); h.runSchedulePasses(); h.runLaunchPasses() })
+	t.Cleanup(func() { h.runShiftPasses(); h.runSchedulePasses(); h.runLaunchPasses(); h.runWatchPasses() })
 	h.http = &http.Client{Transport: memTransport{server.Handler()}}
 	h.client, _ = proto.NewClient(base, token, h.http)
 	return h
