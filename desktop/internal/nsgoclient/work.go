@@ -146,10 +146,14 @@ func (c *client) inbox(cx *core.Scope) core.Node {
 		for _, l := range d.Lessons() {
 			out = append(out, c.lessonCard(cx, l))
 		}
+		// Merge All Ready heads the pull requests it acts on.
+		if all := c.mergeAll(); all != nil {
+			out = append(out, all)
+		}
 		for _, p := range d.PullsToReview() {
 			out = append(out, c.cardAnchor(state.PullCard(p.ID), c.pull(p)))
 		}
-		return core.Group(append(out, c.mergeAll()))
+		return core.Group(out)
 	})
 	note := core.Text{ContentFunc: func() string { c.revision.Get(); return state.InboxNote(d.Inbox()) }, Style: ui.TypeLabel, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}
 	return workspaceui.Page(note, asks, other, approvals, reviews, c.lessonsInForce())
