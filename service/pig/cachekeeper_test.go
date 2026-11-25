@@ -178,7 +178,17 @@ func TestPayloadHashLeavesOutOnlyTheOutputCaps(t *testing.T) {
 	if _, err := payloadHash(map[string]any{"f": func() {}}); err == nil {
 		t.Error("a payload that cannot be encoded hashes")
 	}
+	// The hash runs inside a provider's request: an encoding that panics
+	// is an error, and the real request goes on.
+	if _, err := payloadHash(map[string]any{"p": panickyPayload{}}); err == nil {
+		t.Error("a payload whose encoding panics hashes")
+	}
 }
+
+// panickyPayload is a payload part whose encoding panics.
+type panickyPayload struct{}
+
+func (panickyPayload) MarshalJSON() ([]byte, error) { panic("an encoder that panics") }
 
 // keeperFakeClock is a keeper clock whose timers a test fires by hand.
 type keeperFakeClock struct {

@@ -132,11 +132,22 @@ var (
 	capParents = map[string]string{"options": "maxTokens", "config": "maxOutputTokens", "inferenceConfig": "maxTokens", "generationConfig": "maxOutputTokens"}
 )
 
+// errUnhashable is a payload whose encoding panicked.
+var errUnhashable = errors.New("the payload cannot be hashed")
+
 // payloadHash is the SHA-256 of a provider payload as JSON with its
 // output-cap fields left out, the top object's members in name order: a
 // warm's payload has the real request's hash, or it is not sent. A
-// payload that is no JSON object is hashed as it encodes.
-func payloadHash(payload any) (string, error) {
+// payload that is no JSON object is hashed as it encodes. It runs inside
+// a provider's request, so an encoding that panics is an error, never a
+// panic: a payload that cannot be hashed is never warmed, and its real
+// request goes as it would have.
+func payloadHash(payload any) (hash string, err error) {
+	defer func() {
+		if recover() != nil {
+			hash, err = "", errUnhashable
+		}
+	}()
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
