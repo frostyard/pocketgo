@@ -9,6 +9,7 @@ import (
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/nsgo-dev/nsgo/core"
+	"github.com/nsgo-dev/nsgo/icons/lucide"
 	"github.com/nsgo-dev/nsgo/ui"
 )
 
@@ -128,10 +129,21 @@ func (c *client) search(cx *core.Scope) core.Node {
 		c.revision.Get()
 		found := c.store.Data.Search()
 		groups := c.store.Data.SearchGroups()
-		out := []core.Node{body(found.Problem)}
-		if found.Loading {
+		var out []core.Node
+		switch {
+		case found.Query == "":
+			return core.View{Style: core.Style{Height: core.Pt(200)}, Children: []core.Node{workspaceui.EmptyState{Icon: lucide.Search, Title: "Search every session",
+				Hint: "Find a past conversation by what was said in it: your messages, the agents' replies, reports and briefs, and the names of the tools they called."}}}
+		case found.Loading:
 			out = append(out, body("Searching…"))
-		} else if found.Answered != "" {
+		case found.Status == state.ListFailed:
+			// A search that failed says so: it does not say nothing was found.
+			return c.problemBanner(workspaceui.Danger, "Searching failed: "+found.Problem, func() { c.store.Search(found.Query) })
+		case found.Answered != "" && len(found.Results.Hits) == 0:
+			out = append(out, body(state.IndexingNote(found.Results)), core.View{Style: core.Style{Height: core.Pt(200)}, Children: []core.Node{
+				workspaceui.EmptyState{Icon: lucide.SearchX, Title: "Nothing found", Hint: "No session says “" + found.Answered + "”."}}})
+			return workspaceui.Stack(out...)
+		case found.Answered != "":
 			out = append(out, body(state.SearchNote(found.Results, len(groups))), body(state.IndexingNote(found.Results)))
 		}
 		for _, g := range groups {

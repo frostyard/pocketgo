@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -97,7 +98,7 @@ func buildClient(cx *core.Scope, transport http.RoundTripper, production bool) c
 		if len(c.log) > 2000 {
 			c.log = c.log[len(c.log)-2000:]
 		}
-		if level == state.LevelError {
+		if level == state.LevelError && !shownInPlace(text) {
 			c.showError(text)
 		}
 	}, SignInChanged: func() {
@@ -386,6 +387,20 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 
 func (c *client) showNotice(kind ui.ToastType, title, detail string) {
 	c.notices.Set(&workspaceui.Notice{Kind: kind, Title: title, Detail: detail, OnDismiss: func() { c.notices.Set(nil) }})
+}
+
+// loadsShownInPlace are the loads whose failure a view shows where the
+// list is, with Try Again. Their error gets no toast as well: it would say
+// the same, and lie over the banner's button. The Activity page keeps the
+// line.
+var loadsShownInPlace = []string{
+	"Loading the sessions", "Loading the approvals", "Loading the asks", "Loading the lessons", "Loading the threads",
+	"Loading the pull requests", "Loading the plans", "Loading the proposals", "Loading the schedules", "Loading the terminals",
+	"Loading the profiles", "Loading session ", "Searching the sessions",
+}
+
+func shownInPlace(message string) bool {
+	return slices.ContainsFunc(loadsShownInPlace, func(load string) bool { return strings.HasPrefix(message, load) })
 }
 
 func (c *client) showError(message string) {
