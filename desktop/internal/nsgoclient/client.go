@@ -63,6 +63,14 @@ type client struct {
 	// proposals: in state.LaunchChoiceHours hours, or until a clock time.
 	launchHours bool
 	launchClock string
+	// newOpen says whether New session's dialog shows, and newForm counts
+	// its openings: each has a form of its own.
+	newOpen *core.Signal[bool]
+	newForm *core.Signal[int]
+	// titleEdit is the edit of the shown session's title, in place of
+	// the title, and titleDraft what its field shows.
+	titleEdit  state.TitleEdit
+	titleDraft *core.Signal[string]
 }
 
 func Root(cx *core.Scope) core.Node { return buildClient(cx, transport(), true) }
@@ -93,6 +101,8 @@ func startClient(cx *core.Scope, transport http.RoundTripper, production bool, a
 		session: core.NewSignal(cx, int64(0)), notices: core.NewSignal(cx, (*workspaceui.Notice)(nil)), filter: core.NewSignal(cx, ""), drafts: map[int64]*core.Signal[string]{}}
 	c.seek = core.NewSignal(cx, int64(0))
 	c.asking = core.NewSignal(cx, (*question)(nil))
+	c.newOpen, c.newForm = core.NewSignal(cx, false), core.NewSignal(cx, 0)
+	c.titleDraft = core.NewSignal(cx, "")
 	if fontErr != nil {
 		c.logLine(state.LevelWarn, "Register the Inter font: "+fontErr.Error())
 	}
@@ -180,6 +190,8 @@ func (c *client) reset() {
 	c.launchHours, c.launchClock = false, proto.DefaultLaunchUntil
 	c.asks.clear()
 	c.asking.Set(nil)
+	c.newOpen.Set(false)
+	c.titleEdit.Cancel()
 	c.noticeCard.Set("")
 	clear(c.reasons)
 	c.groups.Set(map[string]bool{})
@@ -204,6 +216,11 @@ func (c *client) navigate(id string) {
 		if err == nil {
 			c.openSession(n)
 		}
+		return
+	}
+	// New session is a dialog over the place shown, not a place.
+	if id == "New session" {
+		c.showNewSession()
 		return
 	}
 	if id == "search-filter" {
@@ -265,7 +282,6 @@ func (c *client) sections() []ui.SidebarSection {
 		items[4].Text = "Terminal, " + counted(n, "shell running", "shells running")
 		items[4].Content = workspaceui.NavLabel{Icon: lucide.Terminal, Text: "Terminal", Count: n}
 	}
-	items = append(items, place("New session", lucide.SquarePen))
 	if !terminal {
 		items = slices.DeleteFunc(items, func(i ui.SidebarItem) bool { return i.ID == "Terminal" })
 	}
@@ -352,6 +368,8 @@ func (c *client) sections() []ui.SidebarSection {
 			if depth > 0 || status != nil {
 				item.Content = workspaceui.ChildLabel{Text: label, Icon: item.Icon, Depth: depth, Last: last, Trailing: status}
 			}
+			// The row's menu pins and renames.
+			item.Menu = c.sessionMenu(k)
 			section.Items = append(section.Items, item)
 			children := tree.Children(k)
 			for i, kid := range children {
@@ -418,7 +436,11 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 			}
 			return c.page.Get()
 		}, SidebarHeader: []core.Node{core.View{Style: core.Style{Padding: core.All(workspaceui.SpaceS), Gap: workspaceui.SpaceS}, Children: []core.Node{
-			workspaceui.SearchField{Placeholder: "Filter sessions", Value: c.filter.Get, OnChange: c.filter.Set}, c.sidebarNotes()}}},
+			core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceS}, Children: []core.Node{
+				core.View{Style: core.Style{FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(0)}, Children: []core.Node{
+					workspaceui.SearchField{Placeholder: "Filter sessions", Value: c.filter.Get, OnChange: c.filter.Set}}},
+				ui.IconButton{Label: "New session", Icon: lucide.SquarePen, OnPress: c.showNewSession}}},
+			c.sidebarNotes()}}},
 		SidebarFooter: []core.Node{c.sidebarFoot(showSettings)},
 		Header:        []core.Node{c.contentHeader(cx)},
 		Actions:       []core.Node{c.toolbar(cx, launch)},
@@ -428,7 +450,7 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 	compact := core.NewMemo(cx, c.compact)
 	window := core.Show{When: compact.Get, Then: func(cx *core.Scope) core.Node { return c.compactWorkspace(cx, showSettings) },
 		Else: func(*core.Scope) core.Node { return shell }}
-	return core.Group{window, palette, c.settingsDialog(cx, settingsOpen)}
+	return core.Group{window, palette, c.settingsDialog(cx, settingsOpen), c.newSessionDialog(cx)}
 }
 
 // placeView is the view of a page of the window.
@@ -438,8 +460,6 @@ func (c *client) placeView(cx *core.Scope, page string) core.Node {
 		return c.conversation(cx, c.session.Get())
 	case "Work board":
 		return c.board(cx)
-	case "New session":
-		return c.newSession(cx)
 	case "Search":
 		return c.search(cx)
 	case "Files":
@@ -457,13 +477,13 @@ func (c *client) showNotice(kind ui.ToastType, title, detail string) {
 }
 
 // loadsShownInPlace are the loads whose failure a view shows where the
-// list is, with Try Again. Their error gets no toast as well: it would say
-// the same, and lie over the banner's button. The Activity page keeps the
-// line.
+// list is, with Try Again, and the new session's start, whose failure its
+// dialog shows. Their error gets no toast as well: it would say the same,
+// and lie over the banner's button. The Activity page keeps the line.
 var loadsShownInPlace = []string{
 	"Loading the sessions", "Loading the approvals", "Loading the asks", "Loading the lessons", "Loading the threads",
 	"Loading the pull requests", "Loading the plans", "Loading the proposals", "Loading the schedules", "Loading the terminals",
-	"Loading the profiles", "Loading session ", "Searching the sessions",
+	"Loading the profiles", "Loading session ", "Searching the sessions", "Starting a session",
 }
 
 func shownInPlace(message string) bool {

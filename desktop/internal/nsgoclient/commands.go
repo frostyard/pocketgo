@@ -98,6 +98,11 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 			}
 		case "quit":
 			desktop.RequestQuit(c.cx)
+		case "rename":
+			// F2 renames the session shown.
+			if c.page.Get() == "Session" {
+				c.startRename(c.session.Get())
+			}
 		case "abort":
 			if busy() {
 				c.store.Abort(c.store.Data.Open().ID)
@@ -123,6 +128,7 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 		cx.OnKey("mod+q", func() { run("quit") })
 	}
 	cx.OnKey("mod+.", func() { run("abort") })
+	cx.OnKey("f2", func() { run("rename") })
 	cx.OnBackPress(func() bool { return c.move(-1) })
 	return ui.CommandDialog{Style: core.Style{Background: workspaceui.ColorsOf(cx).Panel()}, Open: open.Get, OnOpenChange: func(b bool, _ base.Reason) { open.Set(b) }, Command: ui.Command{Label: "Workspace commands", SearchLabel: "Find command", Items: func() []base.CommandItem {
 		c.revision.Get()
@@ -137,6 +143,17 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 			stop.Disabled, stop.Description = true, "No run works in the session shown"
 		}
 		out = append(out, stop)
+		// Rename session is always listed, and says why it is off.
+		rename := base.CommandItem{ID: "rename", Label: "Rename session", Shortcut: "f2"}
+		switch {
+		case c.page.Get() != "Session":
+			rename.Disabled, rename.Description = true, "No session is shown"
+		case !c.store.Data.Renamable(c.session.Get()):
+			rename.Disabled, rename.Description = true, "pocketd names this session"
+		case !c.store.MayRename(c.session.Get()):
+			rename.Disabled, rename.Description = true, "A rename of it is on its way"
+		}
+		out = append(out, rename)
 		// The zoom's commands say when the zoom is at its end.
 		z := c.zoom.Get()
 		in := base.CommandItem{ID: "zoom-in", Label: "Zoom in", Shortcut: "mod+="}

@@ -213,7 +213,7 @@ func TestSessionCreationAndApproval(t *testing.T) {
 		reqs := s.RequestsTo("POST", "/v1/approvals/a1")
 		return len(reqs) == 1 && strings.Contains(string(reqs[0].Body), "Use the draft folder.")
 	})
-	app.Press("text:New session")
+	app.Press("label:New session")
 	app.WaitFor("text:No profile", 5*time.Second)
 	app.Press("text:No profile")
 	app.WaitFor("text:Maintainer · agent", 5*time.Second)

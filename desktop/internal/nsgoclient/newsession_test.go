@@ -26,7 +26,7 @@ func TestNewSessionShowsItsWorktreeBeforeItGoes(t *testing.T) {
 			{Name: "frostyard/chairlift", Folder: "/var/home/team/projects/frostyard/chairlift"},
 			{Name: "frostyard/snow", Folder: "/var/home/team/projects/frostyard/snow"}}})
 	app := signedInApp(t, s, 1230, 900)
-	app.Press("text:New session")
+	app.Press("label:New session")
 	app.WaitFor("text:No profile", 5*time.Second)
 	app.Press("text:No profile")
 	app.Press("text:Duncan Idaho · agent")
@@ -70,7 +70,7 @@ func TestNewSessionSaysWhatAStandingProfileOpens(t *testing.T) {
 	s.AddModel(proto.Model{ModelRef: model, Name: "Default"})
 	s.AddProfile(proto.Profile{ID: "leto", Name: "Leto", Role: proto.RoleSupervisor, Standing: true, Model: model, Runs: model, Cwd: "/work"})
 	app := signedInApp(t, s, 1230, 900)
-	app.Press("text:New session")
+	app.Press("label:New session")
 	app.WaitFor("text:No profile", 5*time.Second)
 	app.Press("text:No profile")
 	app.Press("text:Leto · supervisor")
@@ -86,7 +86,7 @@ func TestNewSessionSaysWhatAStandingProfileOpens(t *testing.T) {
 func TestNewSessionSaysWhenNoModelRunsAndWhenTheyFailedToLoad(t *testing.T) {
 	s := pocketdtest.New()
 	app := signedInApp(t, s, 1230, 900)
-	app.Press("text:New session")
+	app.Press("label:New session")
 	app.WaitFor("text:pocketd runs no model now: sign it in to a provider (pocketd login PROVIDER), then reload.", 5*time.Second)
 	s.AddModel(proto.Model{ModelRef: proto.ModelRef{Provider: "test", ID: "default"}, Name: "Default"})
 	s.FailOnce(http.MethodGet, proto.PathModels, http.StatusBadGateway)
@@ -95,4 +95,82 @@ func TestNewSessionSaysWhenNoModelRunsAndWhenTheyFailedToLoad(t *testing.T) {
 	app.Press("role:button Try Again")
 	app.WaitForGone("text:Loading the models failed", 5*time.Second)
 	app.WaitForGone("text:pocketd runs no model now", 5*time.Second)
+}
+
+// TestNewSessionIsADialogOverThePlaceShown checks New session's place: a
+// dialog over the place the owner was in, which stays, opened by the
+// sidebar's button and by its key, with Cancel. A form opened again is
+// empty, a start that failed says so in the dialog and keeps the form, and
+// the way back from the new session goes to the place it was started
+// from. It holds for the NSGo client what TestNewSessionSnapshot holds
+// for the MyGo client's dialog.
+func TestNewSessionIsADialogOverThePlaceShown(t *testing.T) {
+	s := pocketdtest.New()
+	model := proto.ModelRef{Provider: "test", ID: "default"}
+	s.AddModel(proto.Model{ModelRef: model, Name: "Default"})
+	s.AddProfile(proto.Profile{ID: "duncan", Name: "Duncan Idaho", Role: proto.RoleAgent, Model: model, Runs: model,
+		Home: "/var/home/team/agents/duncan", Cwd: "/var/home/team/agents/duncan"})
+	app := signedInApp(t, s, 1230, 900)
+	app.Press("text:Work board")
+	app.WaitFor("text:No thread is on the desk", 5*time.Second)
+	// One thing only is named New session, the sidebar's button: a press
+	// of a name that two things have fails.
+	app.Press("label:New session")
+	app.WaitFor("text:An agent session on the service host, in a working directory there.", 5*time.Second)
+	// The place under the dialog stays.
+	app.Find("text:No thread is on the desk")
+	app.Type("label:Title", "Fix CI")
+	app.Press("role:button Cancel")
+	app.WaitForGone("text:An agent session on the service host, in a working directory there.", 5*time.Second)
+	app.Find("text:No thread is on the desk")
+
+	// Its key opens it again, with an empty form.
+	app.Key("mod+n")
+	app.WaitFor("text:An agent session on the service host, in a working directory there.", 5*time.Second)
+	if got := app.Find("label:Title").Text; got != "" {
+		t.Errorf("a form opened again holds the title %q", got)
+	}
+	app.Press("text:No profile")
+	app.Press("text:Duncan Idaho · agent")
+	app.Type("label:Title", "Fix CI")
+	app.Screenshot("new-session")
+
+	// A start that failed says so in the dialog, and the form stays.
+	s.FailOnce(http.MethodPost, proto.PathSessions, http.StatusBadGateway)
+	app.Press("text:Start session")
+	app.WaitFor("text:Internal: made to fail", 5*time.Second)
+	if app.Exists("text:PocketGo error") {
+		t.Error("a failed start shows a notice as well as the dialog's line")
+	}
+	if got := app.Find("label:Title").Text; got != "Fix CI" {
+		t.Errorf("after a failed start the title is %q", got)
+	}
+	app.Press("text:Start session")
+	app.WaitFor("label:Message", 5*time.Second)
+	app.WaitForGone("text:An agent session on the service host, in a working directory there.", 5*time.Second)
+	if posts := s.RequestsTo(http.MethodPost, proto.PathSessions); len(posts) != 2 {
+		t.Errorf("%d requests for a new session, want the failed one and the next", len(posts))
+	}
+	// The way back goes to the place the session was started from.
+	app.Press("label:Back")
+	app.WaitFor("text:No thread is on the desk", 5*time.Second)
+}
+
+// TestNewSessionFitsASmallWindow checks the dialog in a window 760 by 480,
+// the MyGo client's smallest: its fields scroll, and its buttons stay
+// inside the window. It holds for the NSGo client what
+// TestNewSessionFitsTheSmallestWindowSnapshot holds for the MyGo client.
+func TestNewSessionFitsASmallWindow(t *testing.T) {
+	const width, height = 760, 480
+	s := pocketdtest.New()
+	model := proto.ModelRef{Provider: "test", ID: "default"}
+	s.AddModel(proto.Model{ModelRef: model, Name: "Default"})
+	app := signedInApp(t, s, width, height)
+	app.Key("mod+n")
+	app.WaitFor("text:An agent session on the service host, in a working directory there.", 5*time.Second)
+	start := app.Find("text:Start session").Bounds()
+	if bottom := start.Origin.Y + start.Size.Height; bottom > height {
+		t.Errorf("Start session ends at %v in a window %v high", bottom, height)
+	}
+	app.Screenshot("new-session-small")
 }
