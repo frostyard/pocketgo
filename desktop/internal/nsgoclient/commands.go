@@ -3,6 +3,7 @@ package nsgoclient
 import (
 	"fmt"
 	"runtime"
+	"slices"
 
 	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
@@ -15,7 +16,7 @@ import (
 
 // quits says the platform leaves quitting to the app: not a browser, whose
 // page is the browser's, nor a phone or a tablet (state.QuitsItself).
-func quits() bool { return runtime.GOOS != "js" && state.QuitsItself(runtime.GOOS) }
+func (c *client) quits() bool { return c.goos() != "js" && state.QuitsItself(c.goos()) }
 
 func (c *client) setZoom(z float32) { z = state.Zoom(z); c.zoom.Set(z); c.saveJSON("zoom", z) }
 
@@ -118,7 +119,7 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 	cx.OnKey("mod+k", show)
 	// The palette's second key, for a place where an editor takes the first.
 	cx.OnKey("mod+shift+p", show)
-	if quits() {
+	if c.quits() {
 		cx.OnKey("mod+q", func() { run("quit") })
 	}
 	cx.OnKey("mod+.", func() { run("abort") })
@@ -126,6 +127,10 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 	return ui.CommandDialog{Style: core.Style{Background: workspaceui.ColorsOf(cx).Panel()}, Open: open.Get, OnOpenChange: func(b bool, _ base.Reason) { open.Set(b) }, Command: ui.Command{Label: "Workspace commands", SearchLabel: "Find command", Items: func() []base.CommandItem {
 		c.revision.Get()
 		out := append([]base.CommandItem(nil), commands...)
+		// No Terminal where the platform has none (state.HasTerminal).
+		if !state.HasTerminal(c.goos()) {
+			out = slices.DeleteFunc(out, func(i base.CommandItem) bool { return i.ID == "Terminal" })
+		}
 		// Stop run is always listed, and says why it is off.
 		stop := base.CommandItem{ID: "abort", Label: "Stop run", Shortcut: "mod+."}
 		if !busy() {
@@ -148,7 +153,7 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 			out = append(out, base.CommandItem{ID: "github-sign-in", Label: "Sign in to GitHub", Group: "GitHub", Disabled: !g.CanOpenSignIn() || g.Status().SignedIn},
 				base.CommandItem{ID: "github-sign-out", Label: "Sign out of GitHub", Group: "GitHub", Disabled: !g.CanSignOut()})
 		}
-		if quits() {
+		if c.quits() {
 			out = append(out, base.CommandItem{ID: "quit", Label: "Quit", Group: "App", Shortcut: "mod+q"})
 		}
 		for _, s := range c.store.Data.Sessions() {

@@ -29,7 +29,6 @@ func TestTheSignInsAndTheDeviceFlow(t *testing.T) {
 	app.Find("text:Open github.com/login/device")
 	app.Find("text:On another computer, go to https://github.com/login/device and enter the code.")
 	app.WaitFor("text:Waiting for approval… ", 5*time.Second)
-	app.Screenshot("settings-sign-in-code")
 	app.Press("text:Copy code")
 	if app.Clipboard != pocketdtest.UserCode {
 		t.Errorf("Copy code put %q on the clipboard", app.Clipboard)
