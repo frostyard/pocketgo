@@ -112,7 +112,15 @@ func (c *client) terminalPage(cx *core.Scope) core.Node {
 				}
 				c.terminals[id] = term
 			}
-			return terminal.View{Terminal: term, AutoFocus: true, Label: "Terminal input", Style: ui.FillRest, TestID: "remote-terminal"}
+			return terminalView(term)
 		}),
 	}}
+}
+
+// terminalView is the view of a shell on the service host. It leaves
+// NSGo's clipboard permissions off, so a program there can neither read
+// nor write this device's clipboard (OSC 52); copy and paste are the
+// person's own keys.
+func terminalView(term *terminal.Terminal) terminal.View {
+	return terminal.View{Terminal: term, AutoFocus: true, Label: "Terminal input", Style: ui.FillRest, TestID: "remote-terminal"}
 }

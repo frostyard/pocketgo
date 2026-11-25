@@ -1,6 +1,6 @@
 # 0068 — Build a shared NSGo client beside the desktop client
 
-- **Status:** Accepted
+- **Status:** Accepted; the client it was built beside removed by [ADR-0071](0071-make-the-nsgo-client-the-only-client.md)
 - **Date:** 2026-11-23
 
 ## Context

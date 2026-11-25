@@ -279,7 +279,7 @@ The owner's shifts from pi-pocket-team, started by the supervisor first, with no
 ## Later / ideas
 
 - **History migration from pi-pocket.** PiG can probably open `pocket.sqlite`, but pi-pocket's own document kinds need an importer. A fresh start with the profiles and lessons imported is acceptable.
-- **A phone client** on MyGo's iOS target, reusing the client's data layer. Revisit push notifications with it. Investigated on 2026-11-21: its phases are in [Plan: Phone and tablet client](phone-client.md), whose Phase 2, the iPad build, and Phase 3, the iPhone layout, were built on 2026-11-21.
+- **A phone client** on MyGo's iOS target, reusing the client's data layer. Revisit push notifications with it. Investigated on 2026-11-21: its phases are in [Plan: Phone and tablet client](phone-client.md), whose Phase 2, the iPad build, and Phase 3, the iPhone layout, were built on 2026-11-21. ADR-0071 moves it to NSGo's targets: [NSGo as the only client](nsgo-only-client.md), Phase 6.
 
 ## Out of scope
 

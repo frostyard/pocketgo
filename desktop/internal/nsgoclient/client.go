@@ -299,6 +299,35 @@ func (c *client) sections() []ui.SidebarSection {
 	}
 	return sections
 }
+
+// sidebarNotes say when the sessions or the agents' profiles failed to
+// load, with a way to load them again, and when the sessions are loading
+// or there is none: the sidebar says there is none only once they loaded.
+// Without the profiles the team's agents show by their ids, and only
+// those with sessions.
+func (c *client) sidebarNotes() core.Node {
+	return core.Dynamic(func(cx *core.Scope) core.Node {
+		c.revision.Get()
+		d := &c.store.Data
+		var out []core.Node
+		note := func(text string) core.Node {
+			return core.Text{Content: text, Style: ui.TypeCaption, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}
+		}
+		switch status, problem := d.SessionsStatus(); {
+		case status == state.ListFailed:
+			out = append(out, c.listProblem("the sessions", problem, "", c.store.Refresh))
+		case status == state.ListLoading && len(d.Sessions()) == 0:
+			out = append(out, note("Loading the sessions…"))
+		case status == state.ListLoaded && len(d.Sessions()) == 0:
+			out = append(out, note("No sessions yet. Start one with New session."))
+		}
+		if status, problem := d.ProfilesStatus(); status == state.ListFailed {
+			out = append(out, c.listProblem("the agents' profiles", problem, "", c.store.LoadProfiles))
+		}
+		return core.Group(out)
+	})
+}
+
 func (c *client) workspace(cx *core.Scope) core.Node {
 	settingsOpen := core.NewSignal(cx, false)
 	showSettings := func() {
@@ -316,8 +345,8 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 				return fmt.Sprintf("session/%d", c.session.Get())
 			}
 			return c.page.Get()
-		}, SidebarHeader: []core.Node{core.View{Style: core.Style{Padding: core.All(workspaceui.SpaceS)}, Children: []core.Node{
-			workspaceui.SearchField{Placeholder: "Filter sessions", Value: c.filter.Get, OnChange: c.filter.Set}}}},
+		}, SidebarHeader: []core.Node{core.View{Style: core.Style{Padding: core.All(workspaceui.SpaceS), Gap: workspaceui.SpaceS}, Children: []core.Node{
+			workspaceui.SearchField{Placeholder: "Filter sessions", Value: c.filter.Get, OnChange: c.filter.Set}, c.sidebarNotes()}}},
 		SidebarFooter: []core.Node{c.sidebarFoot(showSettings)},
 		Header: []core.Node{core.Text{MaxLines: 1, Style: ui.TypeTitle, ContentFunc: func() string {
 			if c.page.Get() == "Session" {
