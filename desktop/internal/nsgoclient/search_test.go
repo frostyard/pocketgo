@@ -22,7 +22,7 @@ func TestASearchShowsItsHitsBySession(t *testing.T) {
 		proto.Entry{ID: 101, SessionID: 9, Kind: proto.EntryAssistant, Text: "Found it: the flux capacitor in the initramfs drifted out of tune.", At: start.Add(time.Minute)})
 	s.AddSession(proto.Session{ID: 10, Title: "Port the capacitor tests", Cwd: "/home/team/projects/snow", State: proto.SessionIdle, UpdatedAt: start.Add(48 * time.Hour)})
 	app := signedInApp(t, s, 1230, 800)
-	app.Key("ctrl+shift+f")
+	app.Key("mod+shift+f")
 	app.WaitFor("text:Search every session", 5*time.Second)
 	app.Type("label:Search all sessions", "capacitor")
 	app.Press("text:Search sessions")
@@ -50,7 +50,7 @@ func TestTheActivityPlaceShowsEachLinesLevelAndCopies(t *testing.T) {
 	s := pocketdtest.New()
 	s.FailOnce("GET", proto.PathThreads, 502)
 	app := signedInApp(t, s, 1230, 800)
-	app.Key("ctrl+j")
+	app.Key("mod+j")
 	app.WaitFor("label:Copy the activity", 5*time.Second)
 	if n := len(app.Query("label:/^info: Signed in to pocketd/")); n != 1 {
 		t.Errorf("%d lines say the sign-in at the info level, want 1", n)
