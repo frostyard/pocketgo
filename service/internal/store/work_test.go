@@ -198,3 +198,11 @@ func TestADroppedWorkTaskTellsItsCallerOnce(t *testing.T) {
 		t.Fatalf("a sent task's notice: %v", err)
 	}
 }
+
+// The work sessions are migration 27, after the watches' 26 (ADR-0072,
+// ADR-0073): a database at 26 takes them, and the order of the two holds.
+func TestTheWorkSessionsAreMigration27(t *testing.T) {
+	if SchemaVersion < 27 || !strings.Contains(migrations[25], "CREATE TABLE watches") || !strings.Contains(migrations[26], "CREATE TABLE work_sessions") {
+		t.Fatalf("schema version %d: the work sessions are not migration 27, after the watches' 26", SchemaVersion)
+	}
+}

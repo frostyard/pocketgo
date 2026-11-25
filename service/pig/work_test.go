@@ -78,9 +78,9 @@ func TestOnlyASessionThatStartsWorkGetsTheWorkGuide(t *testing.T) {
 }
 
 // An agent's session made before team_work gets it, in the place a new
-// session has it, before team_memory, once; one with no team extension
-// gets the extension too, and team_work alone among its team tools
-// (ADR-0073).
+// session has it, before team_memory and team_watch, once; one with no
+// team extension gets the extension too, and team_work alone among its
+// team tools (ADR-0072, ADR-0073).
 func TestSetWorkToolGivesItToAnOlderAgentSession(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels())
@@ -92,7 +92,7 @@ func TestSetWorkToolGivesItToAnOlderAgentSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := agentTools(t, e, id)
-	if !slices.Equal(want, []string{"read", "bash", toolWork, toolMemory}) {
+	if !slices.Equal(want, []string{"read", "bash", toolWork, toolMemory, toolWatch}) {
 		t.Fatalf("a new agent's session's tools %q", want)
 	}
 	asMadeBefore(t, e, id, []string{toolWork})
@@ -109,7 +109,7 @@ func TestSetWorkToolGivesItToAnOlderAgentSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	asMadeBefore(t, e, bare, []string{toolWork, toolMemory}, e.teamExt.Name)
+	asMadeBefore(t, e, bare, []string{toolWork, toolMemory, toolWatch}, e.teamExt.Name)
 	if changed, err := e.SetWorkTool(ctx, bare); err != nil || !changed {
 		t.Fatalf("SetWorkTool on a session of no team tool = %v, %v", changed, err)
 	}
@@ -141,7 +141,7 @@ func TestAStandingAgentSessionTakesTeamWorkWithItsProfile(t *testing.T) {
 	if err != nil || did != api.ReconfigureApplied {
 		t.Fatalf("Reconfigure = %v, %v", did, err)
 	}
-	if got := agentTools(t, e, id); !slices.Equal(got, []string{"read", toolWork, toolMemory}) {
+	if got := agentTools(t, e, id); !slices.Equal(got, []string{"read", toolWork, toolMemory, toolWatch}) {
 		t.Fatalf("the standing session's tools %q", got)
 	}
 	if got := sessionInstructionsOf(t, e, id); !strings.Contains(got, team.WorkGuide) {
