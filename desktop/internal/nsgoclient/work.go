@@ -11,6 +11,17 @@ import (
 	"github.com/nsgo-dev/nsgo/ui"
 )
 
+// listProblem says a list failed to load and what may be missing for it,
+// with a way to load it again: a view never shows a list it could not
+// load as empty (the kit's standard for an app, rule 6).
+func (c *client) listProblem(what, problem, missing string, retry func()) core.Node {
+	text := "Loading " + what + " failed: " + problem
+	if missing != "" {
+		text += ". " + missing
+	}
+	return workspaceui.Banner{Tone: workspaceui.Danger, Text: text, Action: "Try Again", OnAction: func() { retry(); c.changed() }}
+}
+
 func title(s string) core.Node { return core.Text{Content: s, Style: ui.TypeTitle} }
 func body(s string) core.Node  { return core.Text{Content: s, Selectable: core.SelectableOn} }
 
@@ -61,11 +72,23 @@ func (c *client) inbox(cx *core.Scope) core.Node {
 		c.revision.Get()
 		var out []core.Node
 		loading := false
-		for _, check := range []func() (state.ListStatus, string){d.SessionsStatus, d.ApprovalsStatus, d.AsksStatus, d.LessonsStatus, d.PullsStatus, d.PlansStatus} {
-			status, err := check()
+		// Each list that failed says what may wait unseen, in the Inbox's
+		// order.
+		for _, list := range []struct {
+			status        func() (state.ListStatus, string)
+			what, missing string
+		}{
+			{d.PlansStatus, "the plans", "Plans may wait for your approval that this list does not show."},
+			{d.AsksStatus, "the asks", "Asks may wait for you that this list does not show."},
+			{d.LessonsStatus, "the lessons", "Lessons may wait for you that this list does not show."},
+			{d.PullsStatus, "the pull requests", "Pull requests may wait for your review that this list does not show."},
+			{d.ApprovalsStatus, "the approvals", "Calls may wait for you that this list does not show."},
+			{d.SessionsStatus, "the sessions", "A session may wait for your answer to its question that this list does not show."},
+		} {
+			status, problem := list.status()
 			loading = loading || status == state.ListLoading
-			if err != "" {
-				out = append(out, body(err))
+			if status == state.ListFailed {
+				out = append(out, c.listProblem(list.what, problem, list.missing, c.store.Refresh))
 			}
 		}
 		for _, r := range c.store.AnswerRefusals() {
