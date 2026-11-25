@@ -190,7 +190,8 @@ func (t *sleepyTimer) Stop() bool {
 	return true
 }
 
-// sleep moves the wall clock alone, as a suspend does.
+// sleep moves the wall clock alone, as a suspend does, or back, as a
+// clock set back does.
 func (h *sleepyHost) sleep(d time.Duration) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -260,6 +261,22 @@ func TestTheKeepersTimersCountTimeTheHostSlept(t *testing.T) {
 	host.run(0)
 	if !now {
 		t.Fatal("a timer whose time has passed does not fire")
+	}
+}
+
+// Codex review of #172, round 3: a wall clock that went back would hold a
+// timer to its old time, an hour later; it fires at the next step instead,
+// and what it runs finds the clock earlier than it last saw.
+func TestTheKeepersTimersFireWhenTheClockGoesBack(t *testing.T) {
+	host := &sleepyHost{wall: time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)}
+	clock := wallClock{host: host}
+	fired := false
+	clock.At(host.Now().Add(270*time.Second), func() { fired = true })
+	host.run(10 * time.Second)
+	host.sleep(-time.Hour)
+	host.run(wallStep)
+	if !fired {
+		t.Fatal("a timer waits out a clock that went back an hour")
 	}
 }
 
@@ -443,6 +460,22 @@ func (c *keeperFakeClock) fire() bool {
 	return true
 }
 
+// fireNow runs the soonest timer with the clock left where it is, as a
+// wallClock timer does when the clock went back.
+func (c *keeperFakeClock) fireNow() {
+	c.mu.Lock()
+	soonest := 0
+	for i, timer := range c.timers {
+		if timer.at.Before(c.timers[soonest].at) {
+			soonest = i
+		}
+	}
+	timer := c.timers[soonest]
+	c.timers = slices.Delete(c.timers, soonest, soonest+1)
+	c.mu.Unlock()
+	timer.f()
+}
+
 // shimCall is a request as the shim's provider saw it.
 type shimCall struct {
 	maxTokens  int
@@ -460,12 +493,14 @@ type shimCall struct {
 // OnPayload, sends nothing when the hook fails, and else streams faux's
 // answer. system is a stateful part of every payload, and uncached makes
 // faux cache nothing, as a provider does a prompt below its cacheable
-// minimum.
+// minimum. beforePayload runs as the provider builds the payload, before
+// it hands it to OnPayload.
 type payloadShim struct {
-	mu       sync.Mutex
-	system   string
-	uncached bool
-	calls    []shimCall
+	mu            sync.Mutex
+	system        string
+	uncached      bool
+	beforePayload func()
+	calls         []shimCall
 }
 
 func (s *payloadShim) wrap(inner *ai.ModelsProvider) *ai.ModelsProvider {
@@ -473,8 +508,11 @@ func (s *payloadShim) wrap(inner *ai.ModelsProvider) *ai.ModelsProvider {
 	next := inner.StreamSimple
 	p.StreamSimple = func(ctx context.Context, model *ai.Model, transcript ai.TranscriptContext, options ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
 		s.mu.Lock()
-		system, uncached := s.system, s.uncached
+		system, uncached, before := s.system, s.uncached, s.beforePayload
 		s.mu.Unlock()
+		if before != nil {
+			before()
+		}
 		payload := map[string]any{"model": model.ID, "system": system, "messages": transcript.Messages()}
 		body, err := json.Marshal(payload)
 		if err != nil {
@@ -523,6 +561,12 @@ func (s *payloadShim) setUncached(uncached bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.uncached = uncached
+}
+
+func (s *payloadShim) setBeforePayload(f func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.beforePayload = f
 }
 
 // keptFaux is a catalog of faux models priced as cost behind a payload
@@ -1027,6 +1071,87 @@ func TestARefreshThatFiresLateSendsNothing(t *testing.T) {
 	r.clock.fire()
 	if r.faux.CallCount() != 1 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
 		t.Fatalf("faux calls %d, warming %d, timers %v", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
+	}
+}
+
+func TestRefreshStaleSaysWhyARefreshCannotGo(t *testing.T) {
+	checked := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	started, ttl := checked, 300*time.Second
+	due := checked.Add(270 * time.Second)
+	for _, tc := range []struct {
+		at   time.Time
+		want string
+	}{
+		{due, ""},
+		{checked.Add(-time.Second), "the clock went back"},
+		{started.Add(maxWarmAge), "the age cap"},
+		{due.Add(16 * time.Second), "a late refresh"},
+	} {
+		if got := refreshStale(tc.at, checked, started, due, ttl); got != tc.want {
+			t.Errorf("at %v: %q, want %q", tc.at.Sub(checked), got, tc.want)
+		}
+	}
+}
+
+// Codex review of #172, round 3: the provider builds the warm's payload
+// on its own time, and the host may sleep before it does, so the warm's
+// payload hook checks its refresh again before the warm goes.
+func TestAWarmThatWentStaleBeforeItsPayloadIsNeverSent(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	// The host slept between the refresh point and the provider's payload.
+	r.shim.setBeforePayload(func() { r.clock.set(r.clock.Now().Add(6 * time.Minute)) })
+	r.faux.AppendResponses([]ai.FauxResponseStep{warmAnswer()})
+	r.clock.fire()
+	calls := r.shim.recorded()
+	if len(calls) != 2 || calls[1].sent {
+		t.Fatalf("requests %+v, want the warm refused", calls)
+	}
+	if r.faux.CallCount() != 1 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("faux calls %d, warming %d, timers %v", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
+	}
+}
+
+// Codex review of #172, round 3: a wall clock that went back would hold
+// an entry's refresh to its old time, long after the entry is gone. The
+// keeper's timer fires at the step back, and the keeper retires the
+// entry, whose age it can no longer tell.
+func TestAClockThatWentBackRetiresTheWarm(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	r.clock.set(r.clock.Now().Add(-time.Hour))
+	r.faux.AppendResponses([]ai.FauxResponseStep{warmAnswer()})
+	r.clock.fireNow()
+	if r.faux.CallCount() != 1 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("faux calls %d, warming %d, timers %v after the clock went back", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
+	}
+}
+
+// Codex review of #172, round 3 (P3): a request the keeper starts nothing
+// for, superseding one it followed, leaves the session no token.
+func TestAnIneligibleRequestDropsTheTokenOfTheOneItSupersedes(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	started, release := make(chan struct{}), make(chan struct{})
+	r.faux.AppendResponses([]ai.FauxResponseStep{blocking(started, release, readCall)})
+	done := make(chan struct{})
+	go func() {
+		r.models.StreamSimple(context.Background(), r.model, r.request(), r.realOptions(context.Background(), "s", "")).Result()
+		close(done)
+	}()
+	<-started
+	if r.keeper.token("s") == 0 {
+		t.Fatal("a followed request has no token")
+	}
+	r.faux.AppendResponses([]ai.FauxResponseStep{answer("done")})
+	r.models.StreamSimple(context.Background(), r.faux.GetModel("faux-2"), r.request(), r.realOptions(context.Background(), "s", "")).Result()
+	if got := r.keeper.token("s"); got != 0 {
+		t.Fatalf("token %d after an ineligible request superseded the followed one", got)
+	}
+	close(release)
+	<-done
+	r.keeper.work.Wait()
+	if got := r.keeper.token("s"); got != 0 || r.keeper.warming() != 0 {
+		t.Fatalf("token %d, warming %d after the superseded answer came", got, r.keeper.warming())
 	}
 }
 

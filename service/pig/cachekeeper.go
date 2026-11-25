@@ -231,7 +231,9 @@ const wallStep = 5 * time.Second
 // wallClock is the keeper's clock on host timers. Its times are the
 // host's, and At waits in steps of at most wallStep, comparing wall-clock
 // times, so a refresh due before the host wakes fires on waking, not a
-// suspend's length late.
+// suspend's length late. A timer also fires at once when the wall clock
+// went back since its last step: its time no longer says when it is due,
+// and what it runs finds the clock earlier than it last saw it (fire).
 type wallClock struct{ host hostTimers }
 
 func (c wallClock) Now() time.Time { return c.host.Now() }
@@ -252,12 +254,15 @@ type steppedTimer struct {
 
 	mu   sync.Mutex
 	step keeperTimer
+	// seen is the wall clock at the last step.
+	seen time.Time
 	// done is set when it fired or was stopped.
 	done bool
 }
 
 func (t *steppedTimer) armLocked() {
-	wait := max(0, min(t.at.Sub(t.host.Now()), wallStep))
+	t.seen = t.host.Now()
+	wait := max(0, min(t.at.Sub(t.seen), wallStep))
 	t.step = t.host.AfterFunc(wait, t.wake)
 }
 
@@ -267,7 +272,7 @@ func (t *steppedTimer) wake() {
 		t.mu.Unlock()
 		return
 	}
-	if t.host.Now().Before(t.at) {
+	if now := t.host.Now(); now.Before(t.at) && !now.Before(t.seen) {
 		t.armLocked()
 		t.mu.Unlock()
 		return
@@ -294,6 +299,10 @@ var newKeeperClock = func() keeperClock { return wallClock{host: goTimers{}} }
 // errWarmDiffers fails a warm whose payload is not the real request's, so
 // the provider never sends it.
 var errWarmDiffers = errors.New("the warm's payload differs from the cached request's")
+
+// errWarmStale fails a warm whose refresh went stale (refreshStale) before
+// the provider sent it, so it never pays a rewrite.
+var errWarmStale = errors.New("the warm's refresh went stale before it was sent")
 
 // cacheKeeper keeps the prompt cache entries of runs that wait on a tool
 // call warm (ADR-0074). It is safe for concurrent use.
@@ -364,8 +373,11 @@ type warmEntry struct {
 	// real or warm, went to the provider, and due when the next refresh
 	// should go out: written plus refreshDelay.
 	written, due time.Time
-	timer        keeperTimer
-	deadline     keeperTimer
+	// checked is the clock when the refresh was set: a clock earlier
+	// than it went back, and the entry's age can no longer be told.
+	checked  time.Time
+	timer    keeperTimer
+	deadline keeperTimer
 	// cancel ends the warm in flight, and stopped says why the entry
 	// stopped while one was in flight: its summary waits for that warm's
 	// usage.
@@ -464,6 +476,9 @@ func (k *cacheKeeper) begin(call warmCall) *realRequest {
 	k.seq++
 	delete(k.requests, key)
 	k.dropLocked(key, "the session's next request")
+	// The request or warm it replaced has nothing left to retire, even
+	// when this one starts nothing to follow.
+	k.untrackLocked(key)
 	delay, ok := refreshDelay(ttl)
 	if !cached || k.closed || !ok || delay >= maxWarmAge || !isReplayable(call.model, call.options) {
 		return nil
@@ -524,7 +539,8 @@ func (k *cacheKeeper) await(req *realRequest, stream *ai.AssistantMessageEventSt
 	now := k.clock.Now()
 	// The entry's lifetime counts from the request: an answer that took
 	// long may come when its refresh is late already.
-	if hash == nil || *hash == "" || cached <= 0 || !ok || lateRefresh(now, req.dispatched.Add(delay), req.ttl) {
+	// A clock earlier than the request's went back: its age cannot be told.
+	if hash == nil || *hash == "" || cached <= 0 || !ok || now.Before(req.dispatched) || lateRefresh(now, req.dispatched.Add(delay), req.ttl) {
 		return
 	}
 	e := &warmEntry{call: req.call, hash: *hash, ttl: req.ttl, cached: cached, uncached: u.Input, started: now, written: req.dispatched}
@@ -538,7 +554,25 @@ func (k *cacheKeeper) await(req *realRequest, stream *ai.AssistantMessageEventSt
 func (k *cacheKeeper) scheduleLocked(key string, e *warmEntry) {
 	delay, _ := refreshDelay(e.ttl)
 	e.due = e.written.Add(delay)
+	e.checked = k.clock.Now()
 	e.timer = k.clock.At(minTime(e.due, e.started.Add(maxWarmAge)), func() { k.fire(key, e) })
+}
+
+// refreshStale says why a refresh of an entry cannot go out at now, ""
+// when it can: the clock went back since the refresh was set (checked),
+// so the entry's age can no longer be told and it may be long gone; the
+// age cap, counted from started; or a refresh late past due
+// (lateRefresh).
+func refreshStale(now, checked, started, due time.Time, ttl time.Duration) string {
+	switch {
+	case now.Before(checked):
+		return "the clock went back"
+	case now.Sub(started) >= maxWarmAge:
+		return "the age cap"
+	case lateRefresh(now, due, ttl):
+		return "a late refresh"
+	}
+	return ""
 }
 
 // minTime is the earlier of a and b.
@@ -561,13 +595,8 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 	// fired late would warm an entry that may be gone, whose rewrite costs
 	// what the next request's would.
 	now := k.clock.Now()
-	stop := ""
-	switch worth, _ := decide(e.cached, e.uncached, ratesOf(e.call.model), toolHazard); {
-	case now.Sub(e.started) >= maxWarmAge:
-		stop = "the age cap"
-	case lateRefresh(now, e.due, e.ttl):
-		stop = "a late refresh"
-	case !worth:
+	stop := refreshStale(now, e.checked, e.started, e.due, e.ttl)
+	if worth, _ := decide(e.cached, e.uncached, ratesOf(e.call.model), toolHazard); stop == "" && !worth {
 		stop = "a warm not worth its cost"
 	}
 	if stop != "" {
@@ -578,12 +607,16 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 	ctx, cancel := context.WithCancel(k.life)
 	e.cancel = cancel
 	e.deadline = k.clock.At(e.started.Add(maxWarmAge), func() { k.drop(key, e, "the age cap") })
+	// The provider builds the payload on its own time: the host may sleep
+	// before it does, so the warm's payload hook asks again.
+	checked, started, due, ttl := e.checked, e.started, e.due, e.ttl
+	stale := func() bool { return refreshStale(k.clock.Now(), checked, started, due, ttl) != "" }
 	k.work.Add(1)
 	k.mu.Unlock()
 	defer k.work.Done()
 
 	dispatched := k.clock.Now()
-	message, sent := k.warm(ctx, e)
+	message, sent := k.warm(ctx, e, stale)
 
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -611,7 +644,7 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 	}
 	switch {
 	case !sent:
-		k.dropLocked(key, "a warm that would differ or did not start")
+		k.dropLocked(key, "a warm not sent: its payload differed, its refresh went stale, or its stream did not start")
 	case message == nil || message.StopReason == ai.StopReasonError || message.StopReason == ai.StopReasonAborted:
 		k.dropLocked(key, "a warm that failed")
 	case message.Usage.CacheRead+message.Usage.CacheWrite <= 0:
@@ -628,13 +661,20 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 
 // warm sends e's real request again with a one-token output cap, and
 // returns its answer, nil when it never ended; sent is false when it went
-// unsent, its payload not the real request's, or its stream not started.
-func (k *cacheKeeper) warm(ctx context.Context, e *warmEntry) (message *ai.AssistantMessage, sent bool) {
+// unsent: its payload not the real request's, its refresh stale by the
+// time the provider built it (stale), or its stream not started.
+func (k *cacheKeeper) warm(ctx context.Context, e *warmEntry, stale func() bool) (message *ai.AssistantMessage, sent bool) {
 	var differs atomic.Bool
 	options := warmOptions(ctx, e.call.options, func(payload any, _ *ai.Model) (any, error) {
 		if hash, err := payloadHash(payload); err != nil || hash != e.hash {
 			differs.Store(true)
 			return nil, errWarmDiffers
+		}
+		// The last moment before the provider sends it: a warm that would
+		// find the entry gone pays its rewrite.
+		if stale() {
+			differs.Store(true)
+			return nil, errWarmStale
 		}
 		return nil, nil
 	})
