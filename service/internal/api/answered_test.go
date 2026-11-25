@@ -219,3 +219,39 @@ func TestTheHeldReopenIsToldFromTheNotingsOwnOutcome(t *testing.T) {
 		t.Fatalf("the thread after the next noting %+v", got)
 	}
 }
+
+// A new answer reads its ask again once it holds outboxMu: another
+// device's answer that took the ask meanwhile leaves this one a 409, with
+// no look at PiG's records, which may fail (Codex review of #175, round
+// 5).
+func TestAnAnswerRechecksItsAskUnderTheOutboxLock(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}, team.Report{Message: "A question.", Status: team.StatusBlocked,
+		Asks: []team.Ask{{Question: "Keep the old numbers?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// An owner's message waits in the specialist's queue, so a noting would
+	// look PiG's records up.
+	h.queueOwner(thread.Session)
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "And the index."}); err != nil {
+		t.Fatal(err)
+	}
+	// Another device answers between this answer's read of the ask and its
+	// lock, and PiG's records then cannot be read.
+	h.server.beforeAnswerLock = func() {
+		h.server.beforeAnswerLock = nil
+		if _, _, err := h.store.AnswerAsk(ctx, "u:phone:b1", 1, "Renumber them.", "phone"); err != nil {
+			t.Error(err)
+		}
+		h.engine.mu.Lock()
+		h.engine.placedErr = errors.New("the durable store is busy")
+		h.engine.mu.Unlock()
+	}
+	var refusal *proto.Error
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "Keep them."}); !errors.As(err, &refusal) ||
+		refusal.Status != http.StatusConflict || refusal.Message != "ask 1 is already answered" {
+		t.Fatalf("the second answer: %v", err)
+	}
+}

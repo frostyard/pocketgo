@@ -49,6 +49,10 @@ const (
 	threadsAnswer = 300
 	threadsStop   = 300
 	threadsWhy    = 200
+	// threadsGate is the most entries of a plan's gate a read names; it
+	// counts the rest. MaxAsks bounds a report, not a plan, so a gate grows
+	// across reports (Codex review of #175, round 5).
+	threadsGate = 8
 )
 
 // ThreadsGuide is the line of the supervisor's instructions that names
@@ -126,8 +130,12 @@ func (m Mover) String() string {
 type Board struct {
 	Threads map[int64]proto.Thread
 	Asks    []proto.Ask
-	Pulls   []proto.PullRequest
-	Plans   map[int64]proto.Plan
+	// OpenAsks counts open asks by thread, read as counts rather than as
+	// Asks: a list's board reads the counts of the threads not closed
+	// alone (store.TeamThreads; Codex review of #175, round 5).
+	OpenAsks map[int64]int
+	Pulls    []proto.PullRequest
+	Plans    map[int64]proto.Plan
 	// index, once Indexed made it, holds by thread whether one of its pull
 	// requests waits for review and how many of its asks are open, read in
 	// one pass over Pulls and Asks: a list's movers read it, never a scan
@@ -157,6 +165,9 @@ func (b Board) Indexed() Board {
 		if a.State == proto.AskOpen {
 			ix.openAsks[a.Thread]++
 		}
+	}
+	for thread, n := range b.OpenAsks {
+		ix.openAsks[thread] += n
 	}
 	b.index = ix
 	return b
@@ -252,7 +263,7 @@ func (b Board) openAsks(thread int64) int {
 	if boardScanned != nil {
 		boardScanned()
 	}
-	n := 0
+	n := b.OpenAsks[thread]
 	for _, a := range b.Asks {
 		if a.Thread == thread && a.State == proto.AskOpen {
 			n++
@@ -745,7 +756,10 @@ func planLine(th proto.Thread, p *proto.Plan) string {
 	state := ""
 	if p != nil {
 		state = fmt.Sprintf(" (%q, %s", flat(p.Title, inboxTitle), p.State)
-		if len(p.Waiting) > 0 {
+		switch n := len(p.Waiting); {
+		case n > threadsGate:
+			state += fmt.Sprintf("; its gate waits for %s and %d more", strings.Join(p.Waiting[:threadsGate], ", "), n-threadsGate)
+		case n > 0:
 			state += "; its gate waits for " + strings.Join(p.Waiting, ", ")
 		}
 		state += ")"

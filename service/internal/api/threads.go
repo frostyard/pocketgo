@@ -139,9 +139,7 @@ func (s *Server) threadsOf(rows store.ThreadsRows, now time.Time, caller int64) 
 			t.Reviews[row.ID] = team.ThreadReview{Pull: reviewedPull(rows.ReviewPulls, row.ReviewPull), Head: row.ReviewHead}
 		}
 	}
-	for _, row := range rows.Asks {
-		t.Board.Asks = append(t.Board.Asks, wireAsk(row))
-	}
+	t.Board.OpenAsks = rows.OpenAsks
 	t.Board.Pulls = withReviews(rows.Pulls, rows.Reviews)
 	for id, facts := range rows.Plans {
 		t.Board.Plans[id] = wirePlan(facts)

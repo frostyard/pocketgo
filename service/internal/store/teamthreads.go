@@ -20,8 +20,10 @@ type ThreadsRows struct {
 	// reads its own thread's rounds (TeamThread).
 	Threads []ThreadRow
 	Shifts  map[int64]ShiftRow
-	// Asks are the open asks, oldest first (OpenAsks).
-	Asks []AskRow
+	// OpenAsks counts the open asks of the threads not closed, by thread:
+	// all the list and its movers read of asks, never every open ask in the
+	// database (Codex review of #175, round 5).
+	OpenAsks map[int64]int
 	// Pulls are those threads' pull requests, oldest first, and Reviews
 	// the newest verdict of each one's change set, by pull request.
 	Pulls   []PullRow
@@ -220,8 +222,21 @@ func threadsBoardIn(ctx context.Context, tx *sql.Tx, since time.Time) (ThreadsRo
 	for _, sh := range shifts {
 		rows.Shifts[sh.ThreadID] = sh
 	}
-	if rows.Asks, err = openAsksIn(ctx, tx); err != nil {
+	type count struct {
+		thread int64
+		n      int
+	}
+	counts, err := queryRows(ctx, tx, func(scan func(...any) error) (count, error) {
+		var c count
+		err := scan(&c.thread, &c.n)
+		return c, err
+	}, `SELECT thread_id, COUNT(*) FROM asks WHERE state = ? AND thread_id IN (SELECT id FROM threads WHERE state != 'closed') GROUP BY thread_id`, AskOpen)
+	if err != nil {
 		return ThreadsRows{}, err
+	}
+	rows.OpenAsks = make(map[int64]int, len(counts))
+	for _, c := range counts {
+		rows.OpenAsks[c.thread] = c.n
 	}
 	if rows.Pulls, err = queryRows(ctx, tx, scanPull, `SELECT `+pullColumns+` FROM pull_requests
 		WHERE thread_id IN (SELECT id FROM threads WHERE state != 'closed' OR updated_at >= ?) ORDER BY id`, at); err != nil {

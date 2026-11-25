@@ -4,6 +4,8 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,8 +70,14 @@ func TestTeamThreadsReadsTheBoardAndTheWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The verdict backs the change set GitHub named, at a known merge base
+	// (ADR-0019; Codex review of #175, round 5).
+	mergeBase := strings.Repeat("c", 40)
+	if pull, _, err = s.SetPullMergeBase(ctx, pull.ID, "abc", "main", mergeBase); err != nil || pull.MergeBase != mergeBase {
+		t.Fatalf("the merge base %+v %v", pull, err)
+	}
 	if _, _, _, _, err := s.AddReview(ctx, pull, ReviewRow{Key: "v", PullID: pull.ID, ThreadID: work.ID, SessionID: 9, Agent: "irulan", Provider: "openai",
-		Model: "gpt", Family: "openai", HeadSHA: "abc", Verdict: "ready", Summary: "ok", BaseRef: "main"}, nil); err != nil {
+		Model: "gpt", Family: "openai", HeadSHA: "abc", Verdict: "ready", Summary: "ok", BaseRef: "main", MergeBase: mergeBase}, nil); err != nil {
 		t.Fatal(err)
 	}
 	shift, _, err := s.CreateShiftThread(ctx, ThreadRow{Key: "shift", Title: "Shift", Agent: "vera", SupervisorSession: 1, Task: "x"}, ShiftRow{Stop: "green", MaxRounds: 5})
@@ -103,8 +111,8 @@ func TestTeamThreadsReadsTheBoardAndTheWindow(t *testing.T) {
 	if sh, ok := rows.Shifts[shift.ID]; !ok || sh.MaxRounds != 5 || len(rows.Shifts) != 1 {
 		t.Errorf("shifts %+v", rows.Shifts)
 	}
-	if len(rows.Asks) != 1 || rows.Asks[0].ThreadID != work.ID {
-		t.Errorf("open asks %+v", rows.Asks)
+	if len(rows.OpenAsks) != 1 || rows.OpenAsks[work.ID] != 1 {
+		t.Errorf("open asks by thread %+v", rows.OpenAsks)
 	}
 	if len(rows.Pulls) != 1 || rows.Pulls[0].Number != 12 || rows.Reviews[pull.ID].Verdict != "ready" {
 		t.Errorf("pull requests %+v, reviews %+v", rows.Pulls, rows.Reviews)
@@ -119,6 +127,55 @@ func TestTeamThreadsReadsTheBoardAndTheWindow(t *testing.T) {
 	// closed one are not.
 	if rows.Desk != 3 {
 		t.Errorf("the desk counts %d, want 3", rows.Desk)
+	}
+	// A merge base GitHub no longer names backs no verdict.
+	if _, _, err := s.SetPullMergeBase(ctx, pull.ID, "abc", "main", ""); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err = s.TeamThreads(ctx, now.Add(-team.InboxWindow)); err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := rows.Reviews[pull.ID]; ok {
+		t.Errorf("a verdict with no merge base: %+v", r)
+	}
+}
+
+// The board counts the open asks of the threads not closed, by thread,
+// and reads no ask itself: an open ask of a closed thread, a row no read
+// could scan, breaks no list, and counts nowhere (Codex review of #175,
+// round 5).
+func TestTheBoardCountsTheOpenAsksOfItsThreads(t *testing.T) {
+	s, _ := open(t)
+	report := func(key string, asks ...string) ThreadRow {
+		t.Helper()
+		thread, _, err := s.CreateThread(ctx, ThreadRow{Key: key, Title: key, Agent: "vera", SupervisorSession: 1, Task: "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rows []AskRow
+		for i, q := range asks {
+			rows = append(rows, AskRow{Key: key + ":ask:" + strconv.Itoa(i), SessionID: 9, Question: q})
+		}
+		if _, _, _, err := s.FileReport(ctx, key+":r", thread.ID, ThreadBlocked, "Q", rows, reportText); err != nil {
+			t.Fatal(err)
+		}
+		return thread
+	}
+	open1 := report("open1", "One?", "Two?")
+	open2 := report("open2", "Three?")
+	closed := report("closed", "Old?")
+	if _, err := s.CloseThread(ctx, closed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE asks SET options = 'not json' WHERE thread_id = ?`, closed.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.TeamThreads(ctx, time.Time{})
+	if err != nil {
+		t.Fatalf("the list read an ask it does not count: %v", err)
+	}
+	if len(rows.OpenAsks) != 2 || rows.OpenAsks[open1.ID] != 2 || rows.OpenAsks[open2.ID] != 1 {
+		t.Fatalf("open asks by thread %+v", rows.OpenAsks)
 	}
 }
 

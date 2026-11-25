@@ -2319,7 +2319,20 @@ func (s *Server) noteBeforeAnswer(ctx context.Context, id int64) (facts store.An
 	if thread.SupervisorSession == 0 || thread.SupervisorSession == ask.SessionID {
 		return facts, false, nil
 	}
+	if s.beforeAnswerLock != nil {
+		s.beforeAnswerLock()
+	}
 	s.outboxMu.Lock()
+	// The ask again, under the lock: another device's answer may have taken
+	// it meanwhile, and then this one is refused, with no look at PiG's
+	// records (Codex review of #175, round 5).
+	if ask, err = s.store.Ask(ctx, id); err != nil || ask.State != store.AskOpen {
+		s.outboxMu.Unlock()
+		if errors.Is(err, store.ErrNotFound) {
+			err = nil
+		}
+		return facts, false, err
+	}
 	// The noting's own outcome says whether a placed message's reopen waits
 	// for the close's worker stop (store.ErrWorkerStopping), never a second
 	// look at the thread's flag, which the worker's stop clears outside

@@ -542,6 +542,35 @@ func TestThreadTextIsCutToFitItsBounds(t *testing.T) {
 	}
 }
 
+// A read names the first few entries of a plan's gate and counts the
+// rest: a gate grown across many reports never pushes the plan, the task,
+// the report and the asks out of the answer (Codex review of #175, round
+// 5).
+func TestThreadTextBoundsAPlansGate(t *testing.T) {
+	th, w := wholeFixture()
+	plan := *w.Plan
+	for i := range 3000 {
+		plan.Waiting = append(plan.Waiting, fmt.Sprintf("A%d not written", 1000000+i))
+	}
+	w.Plan = &plan
+	text := ThreadText(th, w)
+	if len(text) > MaxThreadsBytes || strings.Count(text, "\n")+1 > MaxThreadsLines {
+		t.Fatalf("%d bytes and %d lines", len(text), strings.Count(text, "\n")+1)
+	}
+	for _, want := range []string{
+		"its gate waits for A1000000 not written, A1000001 not written",
+		fmt.Sprintf("A%d not written and %d more)", 1000000+threadsGate-1, 3000-threadsGate),
+		"Task:\n  Fix the flaky test.", "Latest report:\n  Round 3: the test is fixed.", "Asks (3):", "Pull requests (1):",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the read lacks %q:\n%.2000s", want, text)
+		}
+	}
+	if strings.Contains(text, fmt.Sprintf("A%d not written", 1000000+threadsGate)) {
+		t.Errorf("the read names a gate entry past its few")
+	}
+}
+
 // The supervisor's instructions name team_threads (ADR-0071).
 func TestThreadsGuideNamesTheTool(t *testing.T) {
 	for _, want := range []string{"team_threads", "before you ask the owner or a specialist where a thread stands", "closed threads whose records changed in the last 7 days"} {

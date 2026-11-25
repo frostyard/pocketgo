@@ -492,6 +492,9 @@ type Server struct {
 	// a standing session's refresh takes refreshMu.
 	afterStandingRead func()
 	onRefreshLock     func()
+	// beforeAnswerLock, in tests, runs once a new answer read its ask and
+	// thread open, right before it takes outboxMu (noteBeforeAnswer).
+	beforeAnswerLock func()
 	// changesSlots holds a place for each read of a session's changes that
 	// runs, at most maxChangesReads (ADR-0053).
 	changesSlots chan struct{}
