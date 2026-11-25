@@ -178,7 +178,7 @@ func (s *Server) mcpWrite(ctx context.Context, id int64, profile string) (bool, 
 // roleOfSpec is what a session made from spec works as.
 func roleOfSpec(spec SessionSpec) team.SessionRole {
 	return team.SessionRole{Thread: spec.Thread != 0, Review: spec.Review, Worker: spec.Worker, Consult: spec.Consult != 0,
-		Gather: spec.Gather != 0, Plan: spec.Plan != 0}
+		Gather: spec.Gather != 0, Plan: spec.Plan != 0, Work: spec.Work}
 }
 
 // threadRole is what thread's specialist session works as, as the work

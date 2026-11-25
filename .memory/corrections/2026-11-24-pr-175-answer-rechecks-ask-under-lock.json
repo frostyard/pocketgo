@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A new answer reads its ask again once it holds outboxMu, before it looks PiG's records up (Server.noteBeforeAnswer): another device's answer that took the ask meanwhile leaves this one a 409, never a 500 from a failed placement lookup.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 5: P2, service/internal/api/team.go: two devices that both read the ask open before outboxMu let the second consult PiG after the first answer committed",
+  "promoted_to": "service/internal/api/answered_test.go"
+}

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A watch pass starts a watch's read only when the budget holds its whole read (team.ReadBudget.Has with Server.watchReadNeed: the pull request and every page of CI), and reads nothing more that pass once one is held back, so the budget builds up for it under any -pr-every.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 3: [P2] Let the read budget refill after a partial CI read",
+  "promoted_to": "service/internal/api/watches_round3_test.go"
+}

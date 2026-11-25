@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The owner's answer to an ask notes the asking thread's messages already in its specialist's transcript (Server.noteSendsPlaced, under outboxMu then workMu) before store.AnswerAsk files the answer's note to the supervisor: a message placed and not yet noted may have reopened the closed thread, and the note's next step reads the thread's state.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 1: P2, service/internal/store/plans.go: answerNote read a closed thread whose placed message had not been noted, and told the supervisor to reopen it or delegate a successor",
+  "promoted_to": "service/internal/api/answered_test.go"
+}

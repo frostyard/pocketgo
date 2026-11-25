@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "team_threads' read of one thread reads that thread and what its mover reads alone (store.TeamThread: a plan lead's delivered tasks' threads, their shifts, open asks and pull requests), in one transaction, never the whole board: a closed thread's mover is nobody.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 2: P2, service/internal/store/teamthreads.go: reading one thread loaded every open and recently changed thread, each pull request's verdict and every open plan",
+  "promoted_to": "service/internal/store/teamthreads_test.go"
+}

@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -202,5 +203,43 @@ func TestStaleReasonIsOneBoundedUTF8Line(t *testing.T) {
 	reason := staleReason("lookup\r\nfailed\n" + strings.Repeat("界", MaxStale))
 	if strings.ContainsAny(reason, "\r\n") || !strings.HasPrefix(reason, "lookup; failed; ") || !utf8.ValidString(reason) || len(reason) > MaxStale || !strings.HasSuffix(reason, "…") {
 		t.Fatalf("reason = %q (%d bytes)", reason, len(reason))
+	}
+}
+
+// AddNewKeepingBase hands its keep the new branch's base, why it starts
+// from HEAD included, before the folder is made or any step recorded; a
+// keep that fails makes nothing, so a retry decides the base again, and a
+// retry from a made worktree decides none (ADR-0073; Codex review of #174,
+// round 2).
+func TestAddNewKeepsTheBaseBeforeItMakesAnything(t *testing.T) {
+	checkout := repo(t)
+	mustGit(t, checkout, "remote", "add", "origin", filepath.Join(t.TempDir(), "absent"))
+	path, branch := checkout+"--owner-kept", "owner/kept"
+	var got steps
+	var kept []Start
+	failed := errors.New("the record failed")
+	keep := func(start Start) error {
+		kept = append(kept, start)
+		if _, err := os.Lstat(path); !os.IsNotExist(err) || len(got) != 0 {
+			t.Fatalf("the base was handed over after the folder (%v) or a step (%v)", err, got)
+		}
+		if len(kept) == 1 {
+			return failed
+		}
+		return nil
+	}
+	if _, err := AddNewKeepingBase(context.Background(), tools, checkout, path, branch, token, StepNone, keep, got.record); !errors.Is(err, failed) {
+		t.Fatalf("a keep that fails: %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) || len(got) != 0 {
+		t.Fatalf("a failed keep made the folder (%v) or recorded %v", err, got)
+	}
+	start, err := AddNewKeepingBase(context.Background(), tools, checkout, path, branch, token, StepNone, keep, got.record)
+	checkFallback(t, checkout, path, start, err)
+	if len(kept) != 2 || kept[1] != start || kept[1].Stale == "" {
+		t.Fatalf("kept %+v, started %+v", kept, start)
+	}
+	if _, err := AddNewKeepingBase(context.Background(), tools, checkout, path, branch, token, got[len(got)-1], keep, got.record); err != nil || len(kept) != 2 {
+		t.Fatalf("a retry from the made worktree: %v, kept %d bases", err, len(kept))
 	}
 }

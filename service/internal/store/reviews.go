@@ -243,6 +243,16 @@ func pullsWithReviewsIn(ctx context.Context, q queryer) ([]PullRow, map[int64]Re
 	if err != nil {
 		return nil, nil, err
 	}
+	reviews, err := reviewsAtChangeSets(ctx, q, pulls)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pulls, reviews, nil
+}
+
+// reviewsAtChangeSets are the newest review of each of pulls' change sets,
+// by pull request, read in q: a pull request with none has no entry.
+func reviewsAtChangeSets(ctx context.Context, q queryer, pulls []PullRow) (map[int64]ReviewRow, error) {
 	reviews := map[int64]ReviewRow{}
 	for _, p := range pulls {
 		r, err := scanReview(q.QueryRowContext(ctx, `SELECT `+reviewColumns+` FROM reviews WHERE `+atChangeSet+` ORDER BY id DESC LIMIT 1`,
@@ -250,12 +260,12 @@ func pullsWithReviewsIn(ctx context.Context, q queryer) ([]PullRow, map[int64]Re
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
-			return nil, nil, err
+			return nil, err
 		default:
 			reviews[p.ID] = r
 		}
 	}
-	return pulls, reviews, nil
+	return reviews, nil
 }
 
 // listedPulls is the predicate of ListPulls' pull requests: every open

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "Server.recheckWork reads the models first, then the profile, and checks the profile and its route against that snapshot, as recheckSpecialist does.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 1: [P2] Read the final profile after enumerating available models",
+  "promoted_to": "service/internal/api/work_test.go"
+}

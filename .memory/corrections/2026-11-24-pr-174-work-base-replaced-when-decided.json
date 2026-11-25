@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "Each base a work's worktree newly decides replaces the kept reason (store.KeepWorkStale), a fresh fetch's clearing an earlier failure's; only a resumed worktree, which decides no base, keeps its own.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 3: [P2] Replace the saved base warning when a retry fetches again",
+  "promoted_to": "service/internal/api/work_test.go"
+}

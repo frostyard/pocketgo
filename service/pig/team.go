@@ -55,6 +55,13 @@ type Team interface {
 	// ctx's error.
 	Question(ctx context.Context, call api.TeamCall, q team.Question) (string, error)
 	TeamInbox(ctx context.Context, call api.TeamCall) (string, error)
+	TeamThreads(ctx context.Context, call api.TeamCall, c team.ThreadsCall) (string, error)
+	// TeamWatch keeps the calling session's watches of pull requests
+	// (ADR-0072).
+	TeamWatch(ctx context.Context, call api.TeamCall, c team.WatchCall) (string, error)
+	// TeamWork starts the calling agent's own work session in a fresh
+	// worktree of one of its repositories (ADR-0073).
+	TeamWork(ctx context.Context, call api.TeamCall, w team.Work) (string, error)
 	// Schedule keeps a private agent's own schedules, to the calling
 	// session, with team_schedule's engine (ADR-0060). It is no team
 	// tool: TeamAllows does not run before it, and it checks its caller
@@ -85,6 +92,9 @@ const (
 	toolGitHub   = "team_github"
 	toolLaunch   = "team_launch"
 	toolInbox    = "team_inbox"
+	toolThreads  = "team_threads"
+	toolWatch    = "team_watch"
+	toolWork     = "team_work"
 )
 
 // proposalProperties are a proposal's fields, as team_propose and
@@ -122,8 +132,21 @@ const launchParameters = `{"type":"object","properties":{` +
 	`"until":{"type":"string","description":"Or the clock time they run until, HH:MM on the 24-hour clock, the next such time. Neither is until the next ` + team.DefaultLaunchUntil + `."}` +
 	`},"required":["rows"],"additionalProperties":false}`
 
+const workParameters = `{"type":"object","properties":{` +
+	`"repository":{"type":"string","description":"owner/name of one of your repositories, as your profile names it; leave it out when you have one."},` +
+	`"task":{"type":"string","description":"The task in full, at most 6000 characters: the work session sees only this, its folder and its instructions."},` +
+	`"title":{"type":"string","description":"A short title, at most 120 characters. Default: the task's first line."}` +
+	`},"required":["task"],"additionalProperties":false}`
+
 // inboxParameters are team_inbox's: none.
 const inboxParameters = `{"type":"object","properties":{},"additionalProperties":false}`
+
+// threadsParameters are team_threads' (ADR-0071).
+var threadsParameters = `{"type":"object","properties":{` +
+	`"action":{"type":"string","enum":["list","read"],"description":"list every thread not closed with who moves it next, and the closed threads whose records changed in the last ` +
+	strconv.Itoa(team.InboxDays) + ` days; or read one thread whole."},` +
+	`"thread":{"type":"integer","minimum":1,"description":"read: the thread's number, 5 for T5."}` +
+	`},"required":["action"],"additionalProperties":false}`
 
 const boardParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["list","read","edit","order","drop"],"description":"list the board's proposals, read one whole, edit or drop one at its rev, or order them."},` +
@@ -235,6 +258,14 @@ const findingParameters = `{"type":"object","properties":{` +
 const closeParameters = `{"type":"object","properties":{` +
 	`"thread":{"type":"integer","description":"The thread's number: 12 for T12."}` +
 	`},"required":["thread"],"additionalProperties":false}`
+
+var watchParameters = `{"type":"object","properties":{` +
+	`"action":{"type":"string","enum":["add","list","cancel"],"description":"add a watch, list this session's, or cancel one of yours."},` +
+	`"pull":{"type":"string","description":"add: the pull request, as owner/name#number."},` +
+	`"until":{"type":"string","enum":["checks","merged","closed"],"description":"add: what to wait for. checks: CI at the pull request's head is done, green, failing or none; merged: it merged; closed: it merged or was closed without merging."},` +
+	`"hours":{"type":"number","description":"add: how long to wait at most, above 0 and at most ` + strconv.Itoa(team.MaxWatchHours) + `; ` + strconv.Itoa(team.DefaultWatchHours) + ` when left out. A few hours suit checks."},` +
+	`"id":{"type":"string","description":"cancel: the watch's id, as W3, from add or list."}` +
+	`},"required":["action"],"additionalProperties":false}`
 
 const sendParameters = `{"type":"object","properties":{` +
 	`"thread":{"type":"integer","description":"The thread's number: 12 for T12. A thread you delegated: open, done, blocked, or closed, which the message reopens."},` +
@@ -452,6 +483,28 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				// After team_inbox, as roleTools and laterSupervisorTools order
+				// them (ADR-0071). The rule to read a thread before asking where
+				// it stands is in its description too, for a supervisor started
+				// before the line in its instructions.
+				ToolSchema: schema(toolThreads, fmt.Sprintf("See the threads: list every thread not closed, grouped by who moves it next as the owner's work board "+
+					"groups it (the owner, its specialist or its supervisor), each with its state, shift, open asks, pull requests with CI and verdict, and "+
+					"who delegated it, then the cross-reviews pocketd runs and the closed threads whose records changed in the last %d days; or read one thread whole, with its task, "+
+					"latest report, asks and answers, pull requests, shift rounds, plan and worker. It reads pocketd's records alone, never GitHub, and "+
+					"changes nothing. Read a thread before you ask the owner or a specialist where it stands.", team.InboxDays), threadsParameters),
+				Replay: durable.ReplaySafe,
+				// A whole answer reaches the supervisor: team.ThreadsText and
+				// team.ThreadText keep it within these bounds, cut as they say.
+				OutputLimits: &durable.ToolOutputLimits{MaxBytes: ptr(team.MaxThreadsBytes), MaxLines: ptr(team.MaxThreadsLines)},
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					c, err := durable.FromJsonValue[team.ThreadsCall](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamThreads(ctx, call, c) })
+				},
+			},
+			{
 				ToolSchema: schema(toolPropose, "File your proposals for the supervisor's gather: add one, edit or drop one of yours at its rev, list yours, "+
 					"and say done when you have no more.", proposeParameters),
 				Replay: durable.ReplaySafe,
@@ -484,6 +537,25 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				// Before team_memory: a session's team tools follow this
+				// list's order (teamTools). An agent's own session's alone
+				// (roleTools, team.MayWork); the rule to change a repository
+				// from a work session is in its description too, which an
+				// older session reads from this registration (ADR-0073).
+				ToolSchema: schema(toolWork, "Start a work session of yours in a fresh git worktree of one of your repositories, on a new branch, with the task "+
+					"as its first message: that repository's own AGENTS.md and skills load there. In a session at your home, change a repository through a work session, "+
+					"never in your home; a session the owner opened in a repository works there. "+
+					"Each answer of the work session comes back to this session as a message. Refused in a work session: report to the session that started you.", workParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					w, err := durable.FromJsonValue[team.Work](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamWork(ctx, call, w) })
+				},
+			},
+			{
 				ToolSchema: schema(toolMemory, "Keep your lessons, across all your sessions: add, update, remove or list them. "+
 					"Every change waits for the owner's approval before your sessions get it.", memoryParameters),
 				Replay: durable.ReplaySafe,
@@ -493,6 +565,25 @@ func (e *Engine) teamExtension() *durable.Extension {
 						return toolText("", err), nil
 					}
 					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamMemory(ctx, call, m) })
+				},
+			},
+			{
+				// After team_memory: a session given it later gets it last
+				// among its team tools (SetWatchTool), as a new one has it
+				// (ADR-0072). How to wait is in its description, which a
+				// session started before the guide in its brief reads too.
+				ToolSchema: schema(toolWatch, "Have pocketd tell you when a pull request reaches a condition: its checks are done, it merged, or it closed. "+
+					"The call returns at once. Only an answer that starts with \"Watching W\" promises a message: end your run then. pocketd checks the pull "+
+					"request on GitHub itself, in each of its rounds, and sends this session one message when the condition holds, when it no longer can, "+
+					"or when the time is up, which starts your next run. Any other answer (the pull request is there already, or a refusal) comes with "+
+					"no message: act on it now. Never sleep or poll for CI or a merge: watch it. list shows your watches, and cancel ends one.", watchParameters),
+				Replay: durable.ReplaySafe,
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					c, err := durable.FromJsonValue[team.WatchCall](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamWatch(ctx, call, c) })
 				},
 			},
 		},
@@ -530,9 +621,12 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // (ADR-0033). A consult, a gather's agent, a plan's lead and a
 // cross-review read GitHub with GET alone, too (team_github, ADR-0036,
 // ADR-0057), and no other session does. A supervisor alone reads the
-// owner's Inbox (team_inbox, ADR-0046). A private agent has no team tool
-// at all (ADR-0042): it keeps its own schedules with the schedule tool,
-// which is none (toolsOf, ADR-0060).
+// owner's Inbox (team_inbox, ADR-0046) and the threads (team_threads,
+// ADR-0071). Every session that keeps lessons but a shift's specialist
+// watches pull requests (team_watch, ADR-0072). An agent's own session
+// starts its work sessions (team_work, team.MayWork, ADR-0073). A private
+// agent has no team tool at all (ADR-0042): it keeps its own schedules
+// with the schedule tool, which is none (toolsOf, ADR-0060).
 func roleTools(spec api.SessionSpec) []string {
 	// A private agent has no team: no team tool, team_memory and
 	// team_schedule included, whatever its role (ADR-0042, ADR-0060).
@@ -564,8 +658,8 @@ func roleTools(spec api.SessionSpec) []string {
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
 		// A supervisor keeps its own reminders and repeats too (ADR-0030),
 		// sends to the threads it delegated (ADR-0032), gathers proposals
-		// and keeps their board (ADR-0033), launches them (ADR-0034), and
-		// reads the owner's Inbox (ADR-0046).
+		// and keeps their board (ADR-0033), launches them (ADR-0034), reads
+		// the owner's Inbox (ADR-0046) and reads the threads (ADR-0071).
 		out = append(out, toolDelegate, toolClose)
 		out = append(out, laterSupervisorTools...)
 	}
@@ -579,8 +673,19 @@ func roleTools(spec api.SessionSpec) []string {
 		// A thread's specialist reports, and has a worker (ADR-0021).
 		out = append(out, toolMessage, toolWorker)
 	}
+	// An agent's own session starts work sessions in fresh worktrees of
+	// its repositories; a work session itself does not (ADR-0073).
+	if team.MayWork(spec.Profile, roleOf(spec)) {
+		out = append(out, toolWork)
+	}
 	if spec.Profile != nil {
 		out = append(out, toolMemory)
+	}
+	// Every session that keeps lessons watches pull requests too, but a
+	// shift's specialist, whose rounds read CI in code (team.MayWatch,
+	// ADR-0072).
+	if team.MayWatch(spec.Profile, roleOf(spec)) {
+		out = append(out, toolWatch)
 	}
 	return out
 }
@@ -1295,13 +1400,15 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 // laterSupervisorTools are the supervisor's team tools after team_close,
 // in roleTools' order, which a session started before them lacks:
 // team_schedule (ADR-0030), team_send (ADR-0032), team_gather and
-// team_board (ADR-0033), team_launch (ADR-0034), team_inbox (ADR-0046).
-var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox}
+// team_board (ADR-0033), team_launch (ADR-0034), team_inbox (ADR-0046),
+// team_threads (ADR-0071).
+var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads}
 
 // SetSupervisorTools gives a supervisor's session started before them the
 // supervisor's later team tools (laterSupervisorTools), in the order
 // roleTools places them, after its other tools, and says whether it did
-// (ADR-0030, ADR-0032, ADR-0033, ADR-0046; Codex review of #51, round 1).
+// (ADR-0030, ADR-0032, ADR-0033, ADR-0046, ADR-0071; Codex review of #51,
+// round 1).
 // A session that has them all, or that has no team_delegate, is left as it
 // is.
 func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error) {
@@ -1356,16 +1463,83 @@ func (e *Engine) SetGitHubTool(ctx context.Context, id int64) (bool, error) {
 	return true, conversation.Configure(ctx, harness.AgentChange{Tools: harness.SetTo(harness.ToolChange{List: list})})
 }
 
+// SetWatchTool gives team_watch, and the team's extension if the session
+// lacks it, to a session made before it (ADR-0072), in the place roleTools
+// gives it among its team tools, after its other tools, and says whether
+// it did. Its caller decides which sessions get it (team.MayWatch): a
+// session made before team_memory, with other team tools or none, gets
+// it too (Codex review of #173, round 4). Its tools become an exact list
+// of the ones it is offered and team_watch, so a new extension offers no
+// other team tool. A session that has it is left as it is.
+func (e *Engine) SetWatchTool(ctx context.Context, id int64) (bool, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return false, err
+	}
+	hasExt := slices.Contains(extensionNames(agent.Extensions), e.teamExt.Name)
+	hasTool := slices.Contains(toolNames(agent.Tools), toolWatch)
+	if hasExt && hasTool {
+		return false, nil
+	}
+	change := harness.AgentChange{}
+	if !hasExt {
+		change.Extensions = harness.SetTo(harness.ExtensionChange{List: append(slices.Clone(agent.Extensions), e.teamExt)})
+	}
+	if !hasTool {
+		own, team, tail := e.splitTools(agent.Tools)
+		change.Tools = harness.SetTo(harness.ToolChange{List: slices.Concat(own, e.teamTools(append(team, toolWatch)), tail)})
+	}
+	return true, conversation.Configure(ctx, change)
+}
+
+// SetWorkTool gives team_work to session id made before it (ADR-0073),
+// among its team tools in the order roleTools places it, after its other
+// tools, with the team extension when the session has none, and says
+// whether it did. Its caller decides which sessions get it
+// (team.MayWork); a session that has it is left as it is.
+func (e *Engine) SetWorkTool(ctx context.Context, id int64) (bool, error) {
+	conversation, err := e.conversation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	agent, err := conversation.Agent(ctx)
+	if err != nil {
+		return false, err
+	}
+	names := extensionNames(agent.Extensions)
+	own, team, tail := e.splitTools(agent.Tools)
+	has := slices.Contains(team, toolWork)
+	if has && slices.Contains(names, e.teamExt.Name) {
+		return false, nil
+	}
+	change := harness.AgentChange{}
+	if !slices.Contains(names, e.teamExt.Name) {
+		change.Extensions = harness.SetTo(harness.ExtensionChange{List: append(slices.Clone(agent.Extensions), e.teamExt)})
+	}
+	// The agent's tools are the ones it is offered, resolved: the tool is
+	// named in the list always, as the question tool is.
+	if !has {
+		list := append(append(own, e.teamTools(append(team, toolWork))...), tail...)
+		change.Tools = harness.SetTo(harness.ToolChange{List: list})
+	}
+	return true, conversation.Configure(ctx, change)
+}
+
 // splitTools splits a session's tools into its own (the coding tools),
 // the names of its team tools and its tail, the question and schedule
-// tools, which come after the team tools (toolsOf, ADR-0048, ADR-0060): a
-// team tool given later goes among the team tools, before the tail.
+// tools and the MCP tools, which come after the team tools in that order
+// (toolsOf, ADR-0048, ADR-0060, ADR-0063): a team tool given later goes
+// among the team tools, before the tail.
 func (e *Engine) splitTools(tools []*durable.ToolRegistration) (own []*durable.ToolRegistration, team []string, tail []*durable.ToolRegistration) {
 	for _, tool := range tools {
 		switch {
 		case e.isTeamTool(tool.Name):
 			team = append(team, tool.Name)
-		case tool.Name == toolQuestion || tool.Name == toolOwnSchedule:
+		case tool.Name == toolQuestion || tool.Name == toolOwnSchedule || strings.HasPrefix(tool.Name, mcpToolPrefix):
 			tail = append(tail, tool)
 		default:
 			own = append(own, tool)

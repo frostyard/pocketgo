@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A team_watch add takes its last check of watchesOff and its insert under watchAdmitMu, under which StartPulls(0) sets watchesOff before it ends the live watches: an add either commits before that sweep reads, or is refused, so no watch is kept that nothing checks.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 1: [P1] Serialize watch admission with disabling pull rounds",
+  "promoted_to": "service/internal/api/watches_round1_test.go"
+}

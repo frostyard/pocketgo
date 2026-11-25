@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "team_threads' list moves each thread from the board's facts by thread, indexed once (team.Board.Indexed: whether a pull request of it waits for review, how many of its asks are open), never a scan of every pull request and ask for each thread, and keeps the work board's precedence.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 4: P2, service/internal/team/threads.go: NextMover called pullsOf, which scanned, copied and sorted every pull request of the board for each listed thread",
+  "promoted_to": "service/internal/team/threads_test.go"
+}

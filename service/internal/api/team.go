@@ -404,11 +404,14 @@ func (s *Server) startThread(ctx context.Context, thread store.ThreadRow) (store
 		}
 	}
 	// A shift's brief is its round 1, and says how its rounds go
-	// (ADR-0024).
+	// (ADR-0024). Any other building thread's says how to wait for CI
+	// with team_watch (ADR-0072).
 	if sh, err := s.store.Shift(db, thread.ID); err == nil {
 		brief += "\n\n" + team.ShiftRules(team.ShiftPlan{Stop: sh.Stop, MaxRounds: sh.MaxRounds, CI: sh.CI}, sh.Deadline)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.ThreadRow{}, err
+	} else if !thread.IsPlanThread() {
+		brief += "\n" + team.WatchGuide
 	}
 	if thread.ReviewPull != 0 {
 		// A review's brief is pocketd's, read from the worktree before the
@@ -511,6 +514,15 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 	if thread.IsPlanThread() || thread.ReviewPull != 0 {
 		if _, err := s.engine.SetGitHubTool(db, id); err != nil {
 			return store.ThreadRow{}, fmt.Errorf("give the session team_github: %w", err)
+		}
+	}
+	// One made by a run before team_watch gets it before the brief that
+	// names it: the work database does not know the session yet, so the
+	// start's upgrade passed it by (ADR-0072; Codex review of #173, round
+	// 1).
+	if spec.Profile == nil {
+		if err := s.recoveredWatchTool(db, id, current, profile); err != nil {
+			return store.ThreadRow{}, fmt.Errorf("give the session team_watch: %w", err)
 		}
 	}
 	brief := newBrief
@@ -801,6 +813,13 @@ func (s *Server) newSpecialist(ctx context.Context, thread store.ThreadRow) (Ses
 		Profile: &target, Route: string(choice.Rule), Thread: thread.ID}
 	if thread.IsPlanThread() {
 		spec.Plan = thread.Plan
+	}
+	// A shift's specialist watches nothing: its rounds read CI in code
+	// (ADR-0072). The shift is recorded with its thread.
+	if _, err := s.store.Shift(ctx, thread.ID); err == nil {
+		spec.Shift = true
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return SessionSpec{}, "", "", "", err
 	}
 	return spec, cwd, branch, stale, nil
 }
@@ -1367,6 +1386,12 @@ func (s *Server) deliverAll(ctx context.Context) (done bool, err error) {
 	// Workers whose replies or stop could not be done are read again
 	// (ADR-0021).
 	if !s.followDueWorkers(ctx) {
+		done = false
+	}
+	// Work sessions whose answers could not be read or kept are read
+	// again, and every one at the first pass after a start; the answers go
+	// with the notes below (ADR-0073).
+	if !s.followDueWork(ctx) {
 		done = false
 	}
 	// The owner's messages to threads' specialists are noted once placed:
@@ -2134,9 +2159,12 @@ func (s *Server) publishAsk(row store.AskRow) {
 	if row.Plan != 0 {
 		// A plan whose read fails here goes at the next pass (publishPlan).
 		s.publishPlan(context.Background(), row.Plan)
-		if row.State == store.AskAnswered {
-			s.deliverLater() // its answer may have cleared the plan's gate (store.askCleared)
-		}
+	}
+	if row.State == store.AskAnswered {
+		// Its answer filed a note to the thread's supervisor, which names the
+		// plan's ready tasks when it cleared its gate (store.answerNote,
+		// ADR-0071).
+		s.deliverLater()
 	}
 }
 
@@ -2263,6 +2291,87 @@ func (s *Server) asks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// noteSendsPlacedHeld is noteSendsPlaced that also says whether the
+// noting of a placed message found its reopen held back by the close's
+// worker stop (store.ErrWorkerStopping): that message reopens the thread
+// at a later noting, with no second message. outboxMu is held.
+func (s *Server) noteSendsPlacedHeld(ctx context.Context, thread int64) (held bool, err error) {
+	if _, err := s.noteOwner(ctx, thread, func(ctx context.Context, m store.OwnerMessage) error {
+		s.workMu.Lock()
+		defer s.workMu.Unlock()
+		err := s.ownerMessagePlaced(ctx, m)
+		held = held || errors.Is(err, store.ErrWorkerStopping)
+		return err
+	}); err != nil {
+		return false, err
+	}
+	err = s.noteSends(ctx, thread, func(ctx context.Context, row store.ReportRow) (store.ThreadRow, store.SendNoted, error) {
+		t, change, err := s.sendDelivered(ctx, row)
+		held = held || errors.Is(err, store.ErrWorkerStopping)
+		return t, change, err
+	})
+	return held, err
+}
+
+// noteBeforeAnswer notes, for a new answer to ask id that may file a note
+// to its thread's supervisor (an open ask of a thread whose delegating
+// session is neither none nor the asking one), the thread's messages
+// already in its specialist's transcript, as every read of a thread's
+// state does: one may have reopened the closed thread, and the note says
+// what the thread's state lets the supervisor do (ADR-0061, ADR-0071;
+// Codex review of #175, round 1). It then holds outboxMu, which the caller
+// releases after the answer's filing, and locked says so. A message placed
+// whose reopen waits for the close's worker stop is told
+// (AnswerFacts.ReopenHeld, as reportRefused tells its specialist; rounds
+// 2 and 3), from the noting's own outcome (noteSendsPlacedHeld). An ask or
+// thread that cannot be found is left to AnswerAsk.
+func (s *Server) noteBeforeAnswer(ctx context.Context, id int64) (facts store.AnswerFacts, locked bool, err error) {
+	ask, err := s.store.Ask(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return facts, false, nil
+	} else if err != nil {
+		return facts, false, err
+	}
+	if ask.State != store.AskOpen {
+		return facts, false, nil
+	}
+	thread, err := s.store.Thread(ctx, ask.ThreadID)
+	if errors.Is(err, store.ErrNotFound) {
+		return facts, false, nil
+	} else if err != nil {
+		return facts, false, err
+	}
+	if thread.SupervisorSession == 0 || thread.SupervisorSession == ask.SessionID {
+		return facts, false, nil
+	}
+	if s.beforeAnswerLock != nil {
+		s.beforeAnswerLock()
+	}
+	s.outboxMu.Lock()
+	// The ask again, under the lock: another device's answer may have taken
+	// it meanwhile, and then this one is refused, with no look at PiG's
+	// records (Codex review of #175, round 5).
+	if ask, err = s.store.Ask(ctx, id); err != nil || ask.State != store.AskOpen {
+		s.outboxMu.Unlock()
+		if errors.Is(err, store.ErrNotFound) {
+			err = nil
+		}
+		return facts, false, err
+	}
+	// The noting's own outcome says whether a placed message's reopen waits
+	// for the close's worker stop (store.ErrWorkerStopping), never a second
+	// look at the thread's flag, which the worker's stop clears outside
+	// outboxMu; the reopen itself needs a noting, under outboxMu, which the
+	// filing holds (Codex review of #175, round 3).
+	held, err := s.noteSendsPlacedHeld(ctx, thread.ID)
+	if err != nil {
+		s.outboxMu.Unlock()
+		return facts, false, err
+	}
+	facts.ReopenHeld = held
+	return facts, true, nil
+}
+
 // answer answers an ask once and sends the answer to the asking session.
 // Ask events leave in the order the asks changed (workMu). An ask a
 // supervisor's message withdrew first takes no answer, and the refusal
@@ -2284,12 +2393,35 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	key := requestKey(r, request.RequestID)
 	defer s.keys.lock(key)()
+	// The request's receipt first, under its key's lock: a replay answers as
+	// it did and a reused request id is refused, whatever PiG's records say
+	// now; only a new answer notes the thread's placed messages (Codex
+	// review of #175, round 2).
+	_, existed, err := s.store.LookupRequest(ctx, key, store.AnswerKind(id))
+	if errors.Is(err, store.ErrRequestReused) {
+		reused(w)
+		return
+	} else if err != nil {
+		s.internal(w, "look up the answer's request", err)
+		return
+	}
+	var facts store.AnswerFacts
+	locked := false
+	if !existed {
+		if facts, locked, err = s.noteBeforeAnswer(ctx, id); err != nil {
+			s.internal(w, "note the asking thread's placed messages", err)
+			return
+		}
+	}
 	s.workMu.Lock()
-	row, replayed, err := s.store.AnswerAsk(ctx, key, id, text, deviceOf(r).Name)
+	row, replayed, err := s.store.AnswerAskWith(ctx, key, id, text, deviceOf(r).Name, facts)
 	if err == nil && !replayed {
 		s.publishAsk(row)
 	}
 	s.workMu.Unlock()
+	if locked {
+		s.outboxMu.Unlock()
+	}
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)

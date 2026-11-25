@@ -46,9 +46,9 @@ func TestOnlyAPrivateAgentsSessionGetsTheScheduleTool(t *testing.T) {
 	}{
 		"a private agent": {api.SessionSpec{Profile: chani}, []string{"read", toolQuestion, toolOwnSchedule}},
 		"the supervisor": {api.SessionSpec{Profile: odrade},
-			[]string{"read", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory, toolQuestion}},
-		"an agent":                      {api.SessionSpec{Profile: vera}, []string{"read", toolMemory}},
-		"a thread's specialist":         {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", toolMessage, toolWorker, toolMemory}},
+			[]string{"read", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolWatch, toolQuestion}},
+		"an agent":                      {api.SessionSpec{Profile: vera}, []string{"read", toolWork, toolMemory, toolWatch}},
+		"a thread's specialist":         {api.SessionSpec{Profile: vera, Thread: 3}, []string{"read", toolMessage, toolWorker, toolMemory, toolWatch}},
 		"a private thread's specialist": {api.SessionSpec{Profile: chani, Thread: 4}, []string{"read"}},
 		"a plain session":               {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
 	} {

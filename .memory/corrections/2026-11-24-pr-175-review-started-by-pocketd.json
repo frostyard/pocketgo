@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A cross-review copies its author's thread's supervisor session, but pocketd started it: team_threads' read names pocketd as its starter, never a delegating session, and no supervisor sends to it or closes it.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 1: P2, service/internal/team/threads.go: a review read whole said Delegated by: session N, this session",
+  "promoted_to": "service/internal/team/threads_test.go"
+}

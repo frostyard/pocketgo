@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The -pr-every 0 sweep of the live watches wakes the delivery pass as each EndWatch files a note, as the watch pass does, not after the other watches' ends.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 5: [P2] Wake delivery when the disabled-watch sweep files a note",
+  "promoted_to": "service/internal/api/watches_round5_test.go"
+}

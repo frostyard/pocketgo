@@ -327,10 +327,8 @@ func (s *Server) sendDeliveredLocked(ctx context.Context, row store.ReportRow) (
 // The owner's messages to the thread's specialist are noted first the same
 // way (noteOwnerMessages): one placed reopens a closed thread (ADR-0061).
 func (s *Server) noteSendsPlaced(ctx context.Context, thread int64) error {
-	if _, err := s.noteOwnerMessages(ctx, thread); err != nil {
-		return err
-	}
-	return s.noteSends(ctx, thread, s.sendDelivered)
+	_, err := s.noteSendsPlacedHeld(ctx, thread)
+	return err
 }
 
 // noteSendsPlacedLocked is noteSendsPlaced with workMu held, as a close

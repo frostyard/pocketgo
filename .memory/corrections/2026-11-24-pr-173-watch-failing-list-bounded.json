@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A watch's text lists the failing checks' names within team.MaxWatchFailingBytes all together and says how many were left out, so the outcome and the line that ends an answer at once or a note stay whole.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 4: [P2] Bound the complete list of failing checks in watch messages",
+  "promoted_to": "service/internal/team/watch_test.go"
+}

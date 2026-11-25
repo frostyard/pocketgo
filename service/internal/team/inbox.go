@@ -154,14 +154,23 @@ func (b inboxBounds) fits(text string) bool {
 
 // text is InboxText within maxBytes and maxLines.
 func (in Inbox) text(maxBytes, maxLines int) string {
-	bounds := inboxBounds{maxBytes, maxLines}
 	since := InboxSince(in.Now)
 	waiting, settled := in.lists(since)
+	return fitLists(inboxBounds{maxBytes, maxLines}, slices.Concat(waiting, settled), func(keep int, cut *inboxBounds) string {
+		return in.render(waiting, settled, since, keep, cut)
+	}, "[team_inbox: cut at a whole line to fit its bounds.]")
+}
+
+// fitLists is render's answer within bounds: whole when it fits, else
+// with every one of lists cut to its first keep items, the largest keep
+// that fits, and render told the bounds it was cut to. An answer whose
+// headings alone do not fit keeps its whole lines that fit, and note.
+func fitLists(bounds inboxBounds, lists []inboxList, render func(keep int, cut *inboxBounds) string, note string) string {
 	most := 0
-	for _, l := range slices.Concat(waiting, settled) {
+	for _, l := range lists {
 		most = max(most, len(l.items))
 	}
-	if text := in.render(waiting, settled, since, most, nil); bounds.fits(text) {
+	if text := render(most, nil); bounds.fits(text) {
 		return text
 	}
 	// Every list keeps its first keep items: the largest keep that fits.
@@ -170,22 +179,21 @@ func (in Inbox) text(maxBytes, maxLines int) string {
 	lo, hi := 0, most
 	for lo < hi {
 		mid := (lo + hi + 1) / 2
-		if bounds.fits(in.render(waiting, settled, since, mid, &bounds)) {
+		if bounds.fits(render(mid, &bounds)) {
 			lo = mid
 		} else {
 			hi = mid - 1
 		}
 	}
-	text := in.render(waiting, settled, since, lo, &bounds)
+	text := render(lo, &bounds)
 	if bounds.fits(text) {
 		return text
 	}
-	// Even the headings do not fit, which team_inbox's own bounds never
-	// let happen: the whole lines that fit, and a note.
-	note := "[team_inbox: cut at a whole line to fit its bounds.]"
+	// Even the headings do not fit, which the tools' own bounds never let
+	// happen: the whole lines that fit, and a note.
 	var b strings.Builder
 	for i, line := range strings.Split(text, "\n") {
-		if b.Len()+len(line)+1+len(note) > maxBytes || i+2 > maxLines {
+		if b.Len()+len(line)+1+len(note) > bounds.bytes || i+2 > bounds.lines {
 			break
 		}
 		b.WriteString(line + "\n")
@@ -247,14 +255,18 @@ func writeList(b *strings.Builder, l inboxList, keep int) {
 }
 
 // freshness says how fresh pocketd's pull requests are.
-func (in Inbox) freshness() string {
+func (in Inbox) freshness() string { return pullFreshness(in.PullsStarted, in.PullEvery) }
+
+// pullFreshness says how fresh pocketd's pull requests are: started says
+// its rounds of reads began since it started, every how often one runs.
+func pullFreshness(started bool, every time.Duration) string {
 	switch {
-	case !in.PullsStarted:
+	case !started:
 		return "pocketd's rounds of pull request reads have not begun since it started; each pull request says when pocketd last read it on GitHub."
-	case in.PullEvery <= 0:
+	case every <= 0:
 		return "pocketd reads pull requests in no rounds (-pr-every 0), only when a report links one, a cross-review pass reads one, or the owner's desktop opens one; each says when pocketd last read it on GitHub."
 	}
-	return fmt.Sprintf("pocketd reads each open pull request on GitHub again every %s; each says when pocketd last read it, and a merge or close since then is not here yet.", span(in.PullEvery))
+	return fmt.Sprintf("pocketd reads each open pull request on GitHub again every %s; each says when pocketd last read it, and a merge or close since then is not here yet.", span(every))
 }
 
 func (in Inbox) askLines() []string {
@@ -439,30 +451,48 @@ func (in Inbox) agent(id int64) string {
 }
 
 // ago is t as people read it from now: "3h ago (Sat 21 Nov 12:00 UTC)".
-func (in Inbox) ago(t time.Time) string {
+func (in Inbox) ago(t time.Time) string { return readClock{in.Now, in.Zone}.ago(t) }
+
+// when is t in the service's zone, as schedule.When writes it.
+func (in Inbox) when(t time.Time) string { return readClock{in.Now, in.Zone}.when(t) }
+
+// readClock writes times as the supervisor's reads show them: from now,
+// in the service's zone (nil for UTC).
+type readClock struct {
+	now  time.Time
+	zone *time.Location
+}
+
+// ago is t as people read it from now: "3h ago (Sat 21 Nov 12:00 UTC)".
+func (c readClock) ago(t time.Time) string {
 	if t.IsZero() {
 		return "at no time pocketd recorded"
 	}
-	d := in.Now.Sub(t)
-	var rel string
-	switch {
-	case d < 0:
-		rel = "later than now"
-	case d < time.Minute:
-		rel = "just now"
-	case d < time.Hour:
-		rel = fmt.Sprintf("%dm ago", int(d/time.Minute))
-	case d < 48*time.Hour:
-		rel = fmt.Sprintf("%dh ago", int(d/time.Hour))
-	default:
-		rel = fmt.Sprintf("%dd ago", int(d/(24*time.Hour)))
+	return c.rel(t) + " (" + c.when(t) + ")"
+}
+
+// rel is how long before now t was: "3h ago", "just now".
+func (c readClock) rel(t time.Time) string {
+	if t.IsZero() {
+		return "at no time pocketd recorded"
 	}
-	return rel + " (" + in.when(t) + ")"
+	switch d := c.now.Sub(t); {
+	case d < 0:
+		return "later than now"
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d/time.Minute))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%dd ago", int(d/(24*time.Hour)))
+	}
 }
 
 // when is t in the service's zone, as schedule.When writes it.
-func (in Inbox) when(t time.Time) string {
-	zone := in.Zone
+func (c readClock) when(t time.Time) string {
+	zone := c.zone
 	if zone == nil {
 		zone = time.UTC
 	}

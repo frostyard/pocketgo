@@ -68,6 +68,8 @@ func TestOnlyTheSupervisorAndAPrivateAgentMayQuestion(t *testing.T) {
 		"a private worker":         {private, SessionRole{Worker: true}, false},
 		"a consult":                {supervisor, SessionRole{Consult: true}, false},
 		"a gather's session":       {private, SessionRole{Gather: true}, false},
+		// pocketd started it, and no one watches its runs (ADR-0073).
+		"a work session": {private, SessionRole{Work: true}, false},
 	} {
 		if got := MayQuestion(tc.p, tc.role); got != tc.want {
 			t.Errorf("%s: MayQuestion %v, want %v", name, got, tc.want)

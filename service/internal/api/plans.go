@@ -1067,6 +1067,14 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 		}
 		check = gatherCheck
 	}
+	if isWorkTask(row.Key) {
+		// A work session's task goes only to a watched session, so the end
+		// of each of its runs reaches pocketd and its answer its caller
+		// (ADR-0073); a watch that fails holds it until one works. Each new
+		// submission checks its worktree again, which the task names
+		// (workTaskCheck; Codex review of #174, round 1).
+		check = s.workTaskCheck(row.SessionID)
+	}
 	if strings.HasPrefix(row.Key, store.ScheduleNotePrefix) {
 		// An owner's scheduled message is the owner's word: a standing
 		// session takes what its profile says now before it, and one whose
@@ -1078,11 +1086,40 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 			return s.reconfigureStanding(ctx, row.SessionID)
 		}
 	}
-	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check},
+	idle := false
+	if strings.HasPrefix(row.Key, store.WatchNotePrefix) {
+		// A watch's note starts its session's next run (ADR-0072): it goes
+		// only to an idle session, never into PiG's queue, and only while
+		// the session's thread, if any, is open, read right before it is
+		// submitted. A close drops it in its transaction, and no queued
+		// copy outlives the close.
+		idle = true
+		check = func(ctx context.Context) error {
+			if err := s.watchNoteGoes(ctx, row.SessionID); err != nil {
+				return err
+			}
+			// Idle means no run and no input in PiG's inbox, which
+			// WhenBusyReject does not look at: after a failed run an older
+			// input may wait there, and PiG would start it and queue the
+			// note behind it (Codex review of #173, round 3).
+			return s.specialistIdle(ctx, row.SessionID)
+		}
+	}
+	placed, err = s.place(ctx, outgoing{session: row.SessionID, key: row.Key, text: row.Text, submission: row.Submission, attempt: row.Attempt, check: check, idleOnly: idle},
 		func(sub int64) error { return s.store.NoteSubmitted(ctx, row.Key, sub) },
 		func(attempt int) (bool, error) { return s.store.NoteWithdrawn(ctx, row.Key, attempt) })
-	if errors.Is(err, errStandingProfile) || errors.Is(err, errStandingDeferred) {
+	if errors.Is(err, errStandingProfile) || errors.Is(err, errStandingDeferred) || (idle && errors.Is(err, errSpecialistBusy)) {
 		return false, true, nil
+	}
+	if errors.Is(err, errWatchClosed) {
+		return true, true, s.store.DropNote(ctx, row.Key)
+	}
+	// A work session's task whose worktree is no longer the one its work
+	// made never reached it: it goes to no one, and its caller hears so
+	// (dropWorkTask). A check that could not tell is tried again.
+	var moved folderChanged
+	if isWorkTask(row.Key) && errors.As(err, &moved) {
+		return true, true, s.dropWorkTask(ctx, row.SessionID, moved)
 	}
 	if err != nil || !placed {
 		return false, true, err

@@ -66,6 +66,10 @@ type SessionSpec struct {
 	// lessons section (team.LessonsSection), at the end of its
 	// instructions (ADR-0015).
 	Lessons string
+	// Shift says the thread's specialist works in a shift's rounds
+	// (ADR-0024): it gets no team_watch, since the rounds read CI in code
+	// (ADR-0072).
+	Shift bool
 	// Review is a cross-review's session (ADR-0019): read-only tools,
 	// team_diff, team_verdict and team_github (ADR-0057), no other team
 	// tool.
@@ -75,6 +79,16 @@ type SessionSpec struct {
 	// names its thread; Profile is nil.
 	Worker      bool
 	WorkerTools []string
+	// Work is an agent's work session, which team_work started
+	// (ADR-0073): a session of its caller's profile, with no team_work,
+	// whose answers go back to its caller.
+	Work bool
+	// Repository is the repository the owner opened the session on
+	// (CreateSession.repository, ADR-0027), "" for none: such a session
+	// works where the owner placed it, its checkout or a worktree of it,
+	// and gets no guide to work elsewhere (team.WorkGuideFor), its
+	// checkout the profile's home too.
+	Repository string
 	// StandingKey, for a profile's standing session (ADR-0026), is the key
 	// every request that opens it finds it by: the engine records the
 	// session under it as well as under the request's own key, and a
@@ -173,8 +187,9 @@ type Engine interface {
 	SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error)
 	// SetSupervisorTools gives a supervisor's session started before
 	// them the supervisor's later team tools it lacks (team_schedule,
-	// team_send, team_gather, team_board, team_launch, team_inbox), and
-	// says whether it did (ADR-0030, ADR-0046).
+	// team_send, team_gather, team_board, team_launch, team_inbox,
+	// team_threads), and says whether it did (ADR-0030, ADR-0046,
+	// ADR-0071).
 	SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	// SetGitHubTool gives team_github to a plan's lead, a consult or a
 	// cross-review whose session was made before it existed, and says
@@ -188,6 +203,14 @@ type Engine interface {
 	// it, and says whether it did (ADR-0060): the caller decides which
 	// sessions get it (team.MaySchedule).
 	SetScheduleTool(ctx context.Context, id int64) (bool, error)
+	// SetWatchTool gives team_watch to a session made before it that has
+	// the team's tools (team_memory), and says whether it did (ADR-0072):
+	// the caller decides which sessions get it (team.MayWatch).
+	SetWatchTool(ctx context.Context, id int64) (bool, error)
+	// SetWorkTool gives team_work to a session made before it, among its
+	// team tools, and says whether it did (ADR-0073): the caller decides
+	// which sessions get it (team.MayWork).
+	SetWorkTool(ctx context.Context, id int64) (bool, error)
 	// MCPProfiles are the profiles with an MCP server pocketd connects,
 	// as it read them at start (ADR-0063); ConnectMCP connects each
 	// server, or reads its tools again, and returns once each answered or
@@ -481,6 +504,22 @@ type Server struct {
 	// workerStops hold one worker each (stopWorker), from the look at its
 	// thread to the note that its stop is done (ADR-0061).
 	workerStops keyLocks
+	// worksDue are the work sessions whose answers could not be read or
+	// kept, and workScanDue says the next delivery pass reads every work
+	// session, as the first after a start does (ADR-0073); workDueMu
+	// guards both. workFollows hold one work session each while its
+	// answers are read and kept (queueWorkReplies).
+	workDueMu   sync.Mutex
+	worksDue    map[int64]bool
+	workScanDue bool
+	workFollows keyLocks
+	// workPendingDue says the next delivery pass records the sessions of
+	// the works whose record failed or was cut off (reconcileWork), as the
+	// first after a start does; workDueMu guards it. recordWorkSession
+	// records a work's session (store.RecordWorkSession); tests make it
+	// fail.
+	workPendingDue    bool
+	recordWorkSession func(ctx context.Context, key string, session store.SessionRow, task store.NoteRow) (store.WorkRow, error)
 	// standingDue says a delivery pass looks after every standing session
 	// (standingPass): the first after start, as a run's end may have gone
 	// unseen while pocketd stopped. standingMu guards it.
@@ -491,6 +530,9 @@ type Server struct {
 	// a standing session's refresh takes refreshMu.
 	afterStandingRead func()
 	onRefreshLock     func()
+	// beforeAnswerLock, in tests, runs once a new answer read its ask and
+	// thread open, right before it takes outboxMu (noteBeforeAnswer).
+	beforeAnswerLock func()
 	// changesSlots holds a place for each read of a session's changes that
 	// runs, at most maxChangesReads (ADR-0053).
 	changesSlots chan struct{}
@@ -610,6 +652,32 @@ type Server struct {
 	// GitHub to its record: two reads of one never cross (ADR-0016). A
 	// wait for one ends with its context.
 	pullLocks ctxLocks
+	// watchMu runs the watches' passes one at a time (ADR-0072), and
+	// guards watchBudget, the GitHub requests the passes may still make
+	// (team.ReadBudget), and watchNext, the watch the next pass starts at:
+	// the first one the last could not read for the budget, 0 for the
+	// first.
+	watchMu     sync.Mutex
+	watchBudget team.ReadBudget
+	watchNext   int64
+	// goWatch runs a watch pass's goroutine (watchSoon), which a pull
+	// round starts and never waits for; tests run it when they choose.
+	// watching says a pass runs, watchAgain that one was asked for
+	// meanwhile; sessionMu guards both.
+	goWatch              func(f func())
+	watching, watchAgain bool
+	// watchAdmitMu orders a watch's admission (its last check and its
+	// insert) with StartPulls(0), which sets watchesOff under it before it
+	// ends the live watches: an add commits before that sweep reads, or
+	// sees watchesOff and is refused (ADR-0072; Codex review of #173,
+	// round 1). afterWatchRead, in tests, runs in an add between its
+	// reads of GitHub and its admission.
+	watchAdmitMu   sync.Mutex
+	watchesOff     bool
+	afterWatchRead func()
+	// beforeUncheckedEnd, in tests, sees each watch the -pr-every 0 sweep
+	// is about to end (endUncheckedWatches).
+	beforeUncheckedEnd func(id int64)
 	// pullEvery is how often open pull requests are read again
 	// (StartPulls), 0 for never; pullsStarted says StartPulls ran, so
 	// team_inbox tells rounds not begun from none (ADR-0046); sessionMu
@@ -758,6 +826,9 @@ type Server struct {
 	// markWorktree records a step of a session's worktree
 	// (store.MarkWorktree); tests make it fail.
 	markWorktree func(ctx context.Context, key string, step int) error
+	// keepWorkStale keeps why a work's branch starts from its checkout's
+	// HEAD (store.KeepWorkStale; ADR-0073); tests make it fail.
+	keepWorkStale func(ctx context.Context, key, stale string) error
 	// sessionMu orders session events: each is read and published under
 	// it, so the last one carries every change made before it was read. It
 	// also guards retries, untouched and stopped.
@@ -833,11 +904,11 @@ func New(s *store.Store, hub *events.Hub, version string, now func() time.Time, 
 		launchTimer:   func(d time.Duration, f func()) func() { t := time.AfterFunc(d, f); return func() { t.Stop() } },
 		goLaunch:      func(f func()) { go f() },
 		goSchedule:    func(f func()) { go f() }, zone: time.UTC,
-		goShift: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
+		goShift: func(f func()) { go f() }, goWatch: func(f func()) { go f() }, shiftWakes: map[int64]pendingWake{}, threadRetry: map[int64]bool{}, ciWaits: map[int64]ciWait{},
 		gatherRead: s.GatherSummary, gatherRetry: map[string]bool{}, proposalRetry: map[int64]bool{}, gatherStartedAt: s.GatherStartedAt, startGather: s.StartGather,
 		launchUnstarted: s.UnstartedLaunchThreads, dropChange: s.ChangeProposal, launchStarting: map[int64]bool{}, launchSettle: map[int64]string{},
 		planRead: s.PlanFacts, planRetry: map[int64]bool{}, openConsults: s.OpenConsults, holdIfFull: s.HoldIfFull, passCtx: passCtx, passCancel: passCancel, withTimeout: context.WithTimeout, reviewAsync: true, repoURL: repositoryURL,
-		standingDue: true, markWorktree: s.MarkWorktree, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
+		standingDue: true, workScanDue: true, workPendingDue: true, recordWorkSession: s.RecordWorkSession, markWorktree: s.MarkWorktree, keepWorkStale: s.KeepWorkStale, claimsDue: true, uploadsDue: true, finishUpload: s.FinishUpload, run: proto.NewRequestID(), maxComposed: proto.MaxComposedMessage, maxImages: uploads.MaxMessageImages, prepareImage: uploads.PrepareImage, linkUpload: (*uploads.Staged).Link, uploadDeadline: uploadBodyDeadline, startedAt: now()}
 	server.reviewGit = sandboxGit{server}
 	server.changesSlots = make(chan struct{}, maxChangesReads)
 	server.filesSlots = make(chan struct{}, proto.MaxFileReads)
@@ -971,6 +1042,9 @@ func (s *Server) PublishEntry(entry proto.Entry) {
 // replies of the runs before go to its specialist.
 func (s *Server) runStarted(id int64) {
 	s.followWorker(id)
+	// And a work session's answers of the runs before go to the session
+	// that started it (ADR-0073).
+	s.followWork(id)
 	if s.afterRunStarted != nil {
 		s.afterRunStarted(id)
 	}
@@ -1647,7 +1721,7 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 		}
 	}
 	spec := SessionSpec{Title: strings.TrimSpace(request.Title), Cwd: cwd, Model: choice.Model, Thinking: request.Thinking,
-		Profile: profile, Route: string(choice.Rule)}
+		Profile: profile, Route: string(choice.Rule), Repository: request.Repository}
 	if profile != nil && profile.Role == profiles.RoleSupervisor {
 		if spec.Roster, err = s.roster(models); err != nil {
 			s.internal(w, "read profiles", err)
@@ -1974,6 +2048,15 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if waits {
 		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("G%d's agent %s does not have its brief yet: send once it has", ask.GatherID, ask.Agent))
+		return
+	}
+	// Nor does an agent's work session before its task, which it works on
+	// first (ADR-0073).
+	if waits, err := s.workTaskWaits(r.Context(), id); err != nil {
+		s.internal(w, "read the session's work", err)
+		return
+	} else if waits {
+		writeError(w, http.StatusConflict, proto.ErrorCodeConflict, fmt.Sprintf("work session %d does not have its task yet: send once it has", id))
 		return
 	}
 	key := requestKey(r, request.RequestID)

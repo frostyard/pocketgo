@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A pull round starts the watch pass on a goroutine of its own, one at a time (Server.watchSoon, goWatch), and schedules the next round without waiting for it, so slow reads of watched pull requests never put off linked pull requests' refresh.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 4: [P2] Keep slow watch reads from delaying linked pull refreshes",
+  "promoted_to": "service/internal/api/watches_round4_test.go"
+}

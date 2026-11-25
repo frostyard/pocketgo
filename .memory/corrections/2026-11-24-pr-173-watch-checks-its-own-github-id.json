@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The watch pass caches GitHub's read of a pull request by its ref with no id check, and compares the read's id with each watch's own GitHubID, so one watch's mismatch never becomes another's.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 1: [P2] Validate the cached pull's GitHub ID for each watch",
+  "promoted_to": "service/internal/api/watches_round1_test.go"
+}
