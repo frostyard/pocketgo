@@ -257,3 +257,42 @@ func TestTeamThreadsWritesNothing(t *testing.T) {
 		t.Fatalf("the reads sent %d events, %d messages and ran gh %d times", len(h.events)-events, len(h.engine.order)-sent, len(h.engine.ghCalls)-gh)
 	}
 }
+
+// A read of a plan's own thread reads its building plan's delivered tasks'
+// threads to say who moves it next, as the work board does: the owner
+// while a task's thread waits for an answer, its tasks' specialists
+// otherwise (Codex review of #175, round 2).
+func TestAPlanLeadsReadMovesWithItsTasks(t *testing.T) {
+	h := newPlanHarness(t)
+	ctx := context.Background()
+	h.settled()
+	h.approve("a1")
+	for _, d := range []struct{ call, task, agent, repository string }{{"d1", "t1", "vera", "frostyard/example"}, {"d3", "t3", "duncan", ""}} {
+		if _, err := h.server.TeamDelegate(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: d.call},
+			team.Delegation{Agent: d.agent, Task: "Build it.", Repository: d.repository, Plan: &team.PlanRef{ID: h.plan, Task: d.task}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() string {
+		t.Helper()
+		text, err := h.threadsCall(h.super.ID, team.ThreadsCall{Action: team.ThreadsRead, Thread: h.thread.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return text
+	}
+	if text := read(); !strings.Contains(text, `T1 "Signing" · duncan · open · next: its specialist`) {
+		t.Fatalf("a lead whose tasks work:\n%s", text)
+	}
+	keys, err := h.store.ThreadByKey(ctx, TeamCall{Session: h.super.ID, Task: 5, CallID: "d1"}.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: keys.Session, Task: 6, CallID: "q1"}, team.Report{Message: "A question.", Status: team.StatusWorking,
+		Asks: []team.Ask{{Question: "Which key size?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if text := read(); !strings.Contains(text, `T1 "Signing" · duncan · open · next: the owner`) {
+		t.Fatalf("a lead whose task waits for the owner:\n%s", text)
+	}
+}

@@ -42,10 +42,12 @@ type Answered struct {
 	Thread int64
 	Title  string
 	// Agent is the thread's specialist, who asked; Closed says the thread
-	// is closed.
-	Agent  string
-	Closed bool
-	Ask    int64
+	// is closed, and ReopenHeld that a message already in its specialist's
+	// session reopens it once the close's worker stop is done (ADR-0061).
+	Agent      string
+	Closed     bool
+	ReopenHeld bool
+	Ask        int64
 	// Question and Answer are the ask's, whole: the note cuts them short.
 	Question, Answer string
 	// Open are the thread's other asks that still wait for the owner, by
@@ -83,12 +85,19 @@ func AnsweredNote(a Answered) string {
 }
 
 // next is the thread's next step once the answer is in: the first that
-// holds of a closed thread, the thread's other open asks, a plan in
+// holds of a closed thread a placed message reopens, a closed thread, the
+// thread's other open asks, a plan in
 // drafting, an approved plan the answer cleared, and the specialist going
 // on.
 func (a Answered) next() string {
 	thread := "T" + strconv.FormatInt(a.Thread, 10)
 	switch p := a.Plan; {
+	case a.Closed && a.ReopenHeld:
+		// Not a closed thread to carry on: the message that reached it
+		// reopens it, with no second message (Codex review of #175, round
+		// 2).
+		return fmt.Sprintf("%s is closed, but a message already in %s's session reopens it once its worker has stopped; then %s goes on with %s, and its next report comes to you.",
+			thread, a.Agent, a.Agent, thread)
 	case a.Closed:
 		return fmt.Sprintf("%s is closed, so %s files no report on it: if the answer needs more work, team_send reopens %s where pocketd allows it, or delegate a thread that follows %s.",
 			thread, a.Agent, thread, thread)

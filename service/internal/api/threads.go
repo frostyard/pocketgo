@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/frostyard/pocketgo/proto"
@@ -12,13 +13,14 @@ import (
 )
 
 // TeamThreads is team_threads (ADR-0071): every thread not closed, with
-// who moves it next as the desktop's work board groups it, and the threads
-// closed in the last team.InboxWindow (list); or one thread whole (read).
-// It is a supervisor's session's alone, which roleTools offers it and this
-// checks again (team.CheckThreadsCaller). It reads pocketd's records
-// alone, in one read transaction a call (store.TeamThreads,
-// store.TeamThread), and runs no gh: each pull request is as pocketd last
-// read it. It writes nothing, so a call run again reads again.
+// who moves it next as the desktop's work board groups it, and the closed
+// threads whose records changed in the last team.InboxWindow (list); or
+// one thread whole (read). It is a supervisor's session's alone, which
+// roleTools offers it and this checks again (team.CheckThreadsCaller). It
+// reads pocketd's records alone, in one read transaction a call
+// (store.TeamThreads; store.TeamThread, which reads one thread and what
+// its mover reads alone), and runs no gh: each pull request is as pocketd
+// last read it. It writes nothing, so a call run again reads again.
 func (s *Server) TeamThreads(ctx context.Context, call TeamCall, c team.ThreadsCall) (string, error) {
 	caller, err := s.callerProfile(ctx, call.Session)
 	if err != nil {
@@ -31,21 +33,20 @@ func (s *Server) TeamThreads(ctx context.Context, call TeamCall, c team.ThreadsC
 		return "", err
 	}
 	now := s.now()
-	since := team.InboxSince(now)
 	if c.Action == team.ThreadsList {
-		rows, err := s.store.TeamThreads(ctx, since)
+		rows, err := s.store.TeamThreads(ctx, team.InboxSince(now))
 		if err != nil {
 			return "", err
 		}
 		return team.ThreadsText(s.threadsOf(rows, now, call.Session)), nil
 	}
-	rows, whole, err := s.store.TeamThread(ctx, c.Thread, since)
+	whole, err := s.store.TeamThread(ctx, c.Thread)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", fmt.Errorf("there is no thread T%d", c.Thread)
 	} else if err != nil {
 		return "", err
 	}
-	view := s.threadsOf(rows, now, call.Session)
+	view := s.threadsView(now, call.Session)
 	thread := wireThread(whole.Thread)
 	if whole.Shift != nil {
 		thread.Shift = wireShift(*whole.Shift)
@@ -69,17 +70,50 @@ func (s *Server) TeamThreads(ctx context.Context, call TeamCall, c team.ThreadsC
 		plan := wirePlan(*whole.Plan)
 		w.Plan = &plan
 	}
+	// Who moves it next reads the thread, its open asks, its pull requests
+	// and plan, and a plan lead's tasks' threads alone (store.TeamThread).
+	view.Board.Threads[thread.ID] = thread
+	for _, a := range w.Asks {
+		if a.State == proto.AskOpen {
+			view.Board.Asks = append(view.Board.Asks, a.Ask)
+		}
+	}
+	view.Board.Pulls = slices.Clone(w.Pulls)
+	if w.Plan != nil {
+		view.Board.Plans[w.Plan.ID] = *w.Plan
+	}
+	for _, row := range whole.TaskThreads {
+		task := wireThread(row)
+		if sh, ok := whole.TaskShifts[row.ID]; ok {
+			task.Shift = wireShift(sh)
+		}
+		view.Board.Threads[row.ID] = task
+	}
+	for _, row := range whole.TaskAsks {
+		view.Board.Asks = append(view.Board.Asks, wireAsk(row))
+	}
+	for _, row := range whole.TaskPulls {
+		view.Board.Pulls = append(view.Board.Pulls, wireRow(row))
+	}
 	return team.ThreadText(view, w), nil
 }
 
-// threadsOf is what team_threads shows of rows, read at now for the
-// calling session caller.
-func (s *Server) threadsOf(rows store.ThreadsRows, now time.Time, caller int64) team.Threads {
-	t := team.Threads{Now: now, Zone: s.zone, Caller: caller, Desk: rows.Desk, DeskCap: s.deskCap, Reviews: map[int64]team.ThreadReview{},
+// threadsView is an empty team_threads view, read at now for the calling
+// session caller, with how fresh pocketd's pull requests are.
+func (s *Server) threadsView(now time.Time, caller int64) team.Threads {
+	t := team.Threads{Now: now, Zone: s.zone, Caller: caller, DeskCap: s.deskCap, Reviews: map[int64]team.ThreadReview{},
 		Board: team.Board{Threads: map[int64]proto.Thread{}, Plans: map[int64]proto.Plan{}}}
 	s.sessionMu.Lock()
 	t.PullsStarted, t.PullEvery = s.pullsStarted, s.pullEvery
 	s.sessionMu.Unlock()
+	return t
+}
+
+// threadsOf is what team_threads' list shows of rows, read at now for the
+// calling session caller.
+func (s *Server) threadsOf(rows store.ThreadsRows, now time.Time, caller int64) team.Threads {
+	t := s.threadsView(now, caller)
+	t.Desk = rows.Desk
 	for _, row := range rows.Threads {
 		thread := wireThread(row)
 		if sh, ok := rows.Shifts[row.ID]; ok {

@@ -2266,6 +2266,51 @@ func (s *Server) asks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// noteBeforeAnswer notes, for a new answer to ask id that may file a note
+// to its thread's supervisor (an open ask of a thread whose delegating
+// session is neither none nor the asking one), the thread's messages
+// already in its specialist's transcript, as every read of a thread's
+// state does: one may have reopened the closed thread, and the note says
+// what the thread's state lets the supervisor do (ADR-0061, ADR-0071;
+// Codex review of #175, round 1). It then holds outboxMu, which the caller
+// releases after the answer's filing, and locked says so. A message placed
+// whose reopen waits for the close's worker stop is told
+// (AnswerFacts.ReopenHeld, as reportRefused tells its specialist; round
+// 2). An ask or thread that cannot be found is left to AnswerAsk.
+func (s *Server) noteBeforeAnswer(ctx context.Context, id int64) (facts store.AnswerFacts, locked bool, err error) {
+	ask, err := s.store.Ask(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return facts, false, nil
+	} else if err != nil {
+		return facts, false, err
+	}
+	if ask.State != store.AskOpen {
+		return facts, false, nil
+	}
+	thread, err := s.store.Thread(ctx, ask.ThreadID)
+	if errors.Is(err, store.ErrNotFound) {
+		return facts, false, nil
+	} else if err != nil {
+		return facts, false, err
+	}
+	if thread.SupervisorSession == 0 || thread.SupervisorSession == ask.SessionID {
+		return facts, false, nil
+	}
+	s.outboxMu.Lock()
+	if err := s.noteSendsPlaced(ctx, thread.ID); err != nil {
+		s.outboxMu.Unlock()
+		return facts, false, err
+	}
+	if thread, err = s.store.Thread(ctx, thread.ID); err != nil {
+		s.outboxMu.Unlock()
+		return facts, false, err
+	}
+	if thread.State == store.ThreadClosed && thread.WorkerStopDue {
+		facts.ReopenHeld = s.placedToReopen(ctx, thread.ID)
+	}
+	return facts, true, nil
+}
+
 // answer answers an ask once and sends the answer to the asking session.
 // Ask events leave in the order the asks changed (workMu). An ask a
 // supervisor's message withdrew first takes no answer, and the refusal
@@ -2287,32 +2332,35 @@ func (s *Server) answer(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	key := requestKey(r, request.RequestID)
 	defer s.keys.lock(key)()
-	// The asking thread's messages already in its specialist's transcript
-	// are noted first, under outboxMu held through the answer's filing, as
-	// every read of a thread's state does: one may have reopened the closed
-	// thread, and the answer's note to its supervisor says what the thread's
-	// state lets it do (ADR-0061, ADR-0071; Codex review of #175, round 1).
-	// An ask that cannot be found is left to AnswerAsk, which claims the
-	// request first.
-	s.outboxMu.Lock()
-	if ask, err := s.store.Ask(ctx, id); err == nil {
-		if err := s.noteSendsPlaced(ctx, ask.ThreadID); err != nil {
-			s.outboxMu.Unlock()
+	// The request's receipt first, under its key's lock: a replay answers as
+	// it did and a reused request id is refused, whatever PiG's records say
+	// now; only a new answer notes the thread's placed messages (Codex
+	// review of #175, round 2).
+	_, existed, err := s.store.LookupRequest(ctx, key, store.AnswerKind(id))
+	if errors.Is(err, store.ErrRequestReused) {
+		reused(w)
+		return
+	} else if err != nil {
+		s.internal(w, "look up the answer's request", err)
+		return
+	}
+	var facts store.AnswerFacts
+	locked := false
+	if !existed {
+		if facts, locked, err = s.noteBeforeAnswer(ctx, id); err != nil {
 			s.internal(w, "note the asking thread's placed messages", err)
 			return
 		}
-	} else if !errors.Is(err, store.ErrNotFound) {
-		s.outboxMu.Unlock()
-		s.internal(w, "read the ask", err)
-		return
 	}
 	s.workMu.Lock()
-	row, replayed, err := s.store.AnswerAsk(ctx, key, id, text, deviceOf(r).Name)
+	row, replayed, err := s.store.AnswerAskWith(ctx, key, id, text, deviceOf(r).Name, facts)
 	if err == nil && !replayed {
 		s.publishAsk(row)
 	}
 	s.workMu.Unlock()
-	s.outboxMu.Unlock()
+	if locked {
+		s.outboxMu.Unlock()
+	}
 	switch {
 	case errors.Is(err, store.ErrRequestReused):
 		reused(w)

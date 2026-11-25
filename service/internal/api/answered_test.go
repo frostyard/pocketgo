@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -89,6 +91,74 @@ func TestTheAnswersNoteReadsTheThreadAfterItsPlacedMessages(t *testing.T) {
 	}
 	note, err := h.store.Note(ctx, team.AnsweredKey(thread.Owner, "team:"+fmt.Sprint(thread.Session)+":5:m1:ask:0", "Keep them."))
 	if err != nil || strings.Contains(note.Text, "is closed") || !strings.Contains(note.Text, "duncan goes on with T1 once the answer is in its session") {
+		t.Fatalf("the note %+v %v", note, err)
+	}
+}
+
+// An answer's request is looked up first, under its key's lock: a replay
+// answers with the answered ask and a reused request id is refused with
+// 409, even when PiG's records cannot be read, since only a new answer
+// notes its thread's placed messages (Codex review of #175, round 2).
+func TestAnAnswersReceiptComesBeforeItsThreadsPlacements(t *testing.T) {
+	h := newTeamHarness(t)
+	ctx := context.Background()
+	thread := homeThread(t, h, "d1")
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}, team.Report{Message: "Two questions.", Status: team.StatusBlocked,
+		Asks: []team.Ask{{Question: "Keep the old numbers?"}, {Question: "Renumber the drafts too?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "Keep them."}); err != nil {
+		t.Fatal(err)
+	}
+	// An owner's message waits in the specialist's queue, and PiG's records
+	// cannot be read.
+	h.queueOwner(thread.Session)
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "And the index."}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	h.engine.placedErr = errors.New("the durable store is busy")
+	h.engine.mu.Unlock()
+	got, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "Keep them."})
+	if err != nil || got.State != proto.AskAnswered || got.Answer != "Keep them." {
+		t.Fatalf("the replay: %+v, %v", got, err)
+	}
+	var refusal *proto.Error
+	if _, err := h.client.AnswerAsk(ctx, 2, proto.AnswerAsk{RequestID: "a1", Answer: "Yes."}); !errors.As(err, &refusal) ||
+		refusal.Status != http.StatusConflict || refusal.Message != store.ErrRequestReused.Error() {
+		t.Fatalf("the reused request id: %v", err)
+	}
+}
+
+// A message already in a closed thread's specialist's session whose reopen
+// waits for the close's worker stop reopens it with no second message:
+// the answer's note says so, and sends the supervisor to no team_send or
+// successor (ADR-0061; Codex review of #175, round 2).
+func TestTheAnswersNoteTellsAReopenTheWorkerStopHolds(t *testing.T) {
+	h, thread := workerHarness(t)
+	ctx := context.Background()
+	if _, err := h.server.TeamMessage(ctx, TeamCall{Session: thread.Session, Task: 5, CallID: "m1"}, team.Report{Message: "A question.", Status: team.StatusBlocked,
+		Asks: []team.Ask{{Question: "Squash?"}}}); err != nil {
+		t.Fatal(err)
+	}
+	startedWorker(t, h, thread)
+	if _, err := h.store.CloseThread(ctx, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.queueOwner(thread.Session)
+	if _, err := h.client.Send(ctx, thread.Session, proto.SendMessage{RequestID: "o1", Text: "One more thing."}); err != nil {
+		t.Fatal(err)
+	}
+	h.placeQueued(requestKeyOf(h.harness, "o1"), thread.Session)
+	if _, err := h.client.AnswerAsk(ctx, 1, proto.AnswerAsk{RequestID: "a1", Answer: "Yes."}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.store.Thread(ctx, thread.ID); got.State != store.ThreadClosed || !got.WorkerStopDue {
+		t.Fatalf("the thread %+v: its reopen waits for the worker's stop", got)
+	}
+	note, err := h.store.Note(ctx, team.AnsweredKey(thread.Owner, "team:"+fmt.Sprint(thread.Session)+":5:m1:ask:0", "Yes."))
+	if err != nil || !strings.Contains(note.Text, "T1 is closed, but a message already in vera's session reopens it once its worker has stopped") ||
+		strings.Contains(note.Text, "team_send") || strings.Contains(note.Text, "follows") {
 		t.Fatalf("the note %+v %v", note, err)
 	}
 }

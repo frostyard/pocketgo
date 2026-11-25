@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A closed thread whose placed message waits for the close's worker stop to reopen it is no ordinary closed thread: the answer's note says that message reopens it with no second message (store.AnswerFacts.ReopenHeld, read with Server.placedToReopen as reportRefused does), never to team_send again or delegate a successor.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 2: P2, service/internal/store/plans.go: a reopen held by WorkerStopDue left the note telling the supervisor to send again or delegate a successor",
+  "promoted_to": "service/internal/api/answered_test.go"
+}

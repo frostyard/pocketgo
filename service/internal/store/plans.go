@@ -1041,10 +1041,11 @@ func gateCleared(facts PlanFacts) (ready []team.Task, cleared bool) {
 // the ask's key and a digest of the answer (team.AnsweredKey), which the
 // outbox places as it places every note. A thread with no such session,
 // or whose delegating session asked itself, gets none. A closed thread's
-// supervisor is told too: its specialist cannot report the answer. When
-// the answer clears an approved plan's gate, the note names the plan's
-// ready tasks: no other note is filed for the answer.
-func answerNote(ctx context.Context, tx *sql.Tx, id, now int64) error {
+// supervisor is told too: its specialist cannot report the answer, unless
+// a message in its transcript reopens it once its worker stopped (facts).
+// When the answer clears an approved plan's gate, the note names the
+// plan's ready tasks: no other note is filed for the answer.
+func answerNote(ctx context.Context, tx *sql.Tx, id, now int64, facts AnswerFacts) error {
 	ask, err := scanAsk(tx.QueryRowContext(ctx, `SELECT `+askColumns+` FROM asks WHERE id = ?`, id).Scan)
 	if err != nil {
 		return err
@@ -1065,8 +1066,10 @@ func answerNote(ctx context.Context, tx *sql.Tx, id, now int64) error {
 	if err != nil {
 		return err
 	}
-	a := team.Answered{Thread: thread.ID, Title: thread.Title, Agent: thread.Agent, Closed: thread.State == ThreadClosed,
-		Ask: ask.ID, Question: ask.Question, Answer: ask.Answer, Open: open}
+	closed := thread.State == ThreadClosed
+	a := team.Answered{Thread: thread.ID, Title: thread.Title, Agent: thread.Agent, Closed: closed,
+		ReopenHeld: closed && thread.WorkerStopDue && facts.ReopenHeld,
+		Ask:        ask.ID, Question: ask.Question, Answer: ask.Answer, Open: open}
 	if thread.IsPlanThread() {
 		facts, err := loadPlanFacts(ctx, tx, thread.Plan)
 		if err != nil && !errors.Is(err, ErrNotFound) {

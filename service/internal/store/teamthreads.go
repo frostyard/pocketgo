@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/frostyard/pocketgo/service/internal/team"
 )
 
 // ThreadsRows are what team_threads reads (ADR-0071), from one read
@@ -33,7 +35,9 @@ type ThreadsRows struct {
 	Desk int
 }
 
-// ThreadWholeRows are one thread as team_threads' read reads it.
+// ThreadWholeRows are one thread as team_threads' read reads it, with
+// what its mover reads (team.Board.NextMover) and nothing else of the
+// board.
 type ThreadWholeRows struct {
 	Thread ThreadRow
 	// Shift is its shift, nil for none.
@@ -52,6 +56,16 @@ type ThreadWholeRows struct {
 	// Sessions are its delegating, specialist's and worker's sessions, by
 	// id, those recorded.
 	Sessions map[int64]SessionRow
+	// TaskThreads are the threads of the delivered tasks of the approved
+	// or building plan that a plan's own thread not closed leads, with
+	// TaskShifts their shifts without rounds, TaskAsks their open asks and
+	// TaskPulls their pull requests: who moves such a thread follows its
+	// tasks' threads. Empty for any other thread, a closed one's mover
+	// being nobody.
+	TaskThreads []ThreadRow
+	TaskShifts  map[int64]ShiftRow
+	TaskAsks    []AskRow
+	TaskPulls   []PullRow
 }
 
 // TeamThreads reads ThreadsRows in one read transaction, so a thread, its
@@ -67,47 +81,44 @@ func (s *Store) TeamThreads(ctx context.Context, since time.Time) (ThreadsRows, 
 	return threadsBoardIn(ctx, tx, since)
 }
 
-// TeamThread reads thread id whole, with the board ThreadsRows holds, in
-// one read transaction: who moves it next is read from the same commit
-// as the thread. ErrNotFound says there is no thread id.
-func (s *Store) TeamThread(ctx context.Context, id int64, since time.Time) (ThreadsRows, ThreadWholeRows, error) {
+// TeamThread reads thread id whole in one read transaction: its asks,
+// pull requests, plan, shift with its rounds and sessions, and only what
+// its mover reads, never the rest of the board (Codex review of #175,
+// round 2). ErrNotFound says there is no thread id.
+func (s *Store) TeamThread(ctx context.Context, id int64) (ThreadWholeRows, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return ThreadsRows{}, ThreadWholeRows{}, err
+		return ThreadWholeRows{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	var w ThreadWholeRows
 	w.Thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ThreadsRows{}, ThreadWholeRows{}, ErrNotFound
+		return ThreadWholeRows{}, ErrNotFound
 	} else if err != nil {
-		return ThreadsRows{}, ThreadWholeRows{}, err
-	}
-	board, err := threadsBoardIn(ctx, tx, since)
-	if err != nil {
-		return ThreadsRows{}, ThreadWholeRows{}, err
+		return ThreadWholeRows{}, err
 	}
 	switch sh, err := loadShift(ctx, tx, id); {
 	case errors.Is(err, ErrNotFound):
 	case err != nil:
-		return ThreadsRows{}, ThreadWholeRows{}, err
+		return ThreadWholeRows{}, err
 	default:
 		w.Shift = &sh
 	}
 	if w.Asks, err = queryRows(ctx, tx, scanAsk, `SELECT `+askColumns+` FROM asks WHERE thread_id = ? ORDER BY id`, id); err != nil {
-		return ThreadsRows{}, ThreadWholeRows{}, err
+		return ThreadWholeRows{}, err
 	}
 	if w.Pulls, err = queryRows(ctx, tx, scanPull, `SELECT `+pullColumns+` FROM pull_requests WHERE thread_id = ? ORDER BY id`, id); err != nil {
-		return ThreadsRows{}, ThreadWholeRows{}, err
+		return ThreadWholeRows{}, err
 	}
 	if w.Reviews, err = reviewsAtChangeSets(ctx, tx, w.Pulls); err != nil {
-		return ThreadsRows{}, ThreadWholeRows{}, err
+		return ThreadWholeRows{}, err
 	}
 	if w.Thread.ReviewPull != 0 {
 		switch p, err := scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ?`, w.Thread.ReviewPull).Scan); {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
-			return ThreadsRows{}, ThreadWholeRows{}, err
+			return ThreadWholeRows{}, err
 		default:
 			w.ReviewPull = &p
 		}
@@ -116,7 +127,7 @@ func (s *Store) TeamThread(ctx context.Context, id int64, since time.Time) (Thre
 		switch facts, err := loadPlanFacts(ctx, tx, w.Thread.Plan); {
 		case errors.Is(err, ErrNotFound):
 		case err != nil:
-			return ThreadsRows{}, ThreadWholeRows{}, err
+			return ThreadWholeRows{}, err
 		default:
 			w.Plan = &facts
 		}
@@ -130,11 +141,58 @@ func (s *Store) TeamThread(ctx context.Context, id int64, since time.Time) (Thre
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		} else if err != nil {
-			return ThreadsRows{}, ThreadWholeRows{}, err
+			return ThreadWholeRows{}, err
 		}
 		w.Sessions[session] = row
 	}
-	return board, w, nil
+	if err := taskThreadsIn(ctx, tx, &w); err != nil {
+		return ThreadWholeRows{}, err
+	}
+	return w, nil
+}
+
+// taskThreadsIn reads into w the delivered tasks' threads of the approved
+// or building plan its thread leads, when it is a plan's own thread not
+// closed, with their shifts, open asks and pull requests: what
+// team.Board.NextMover reads of them (state.Data.taskMover). Any other
+// thread needs none of them.
+func taskThreadsIn(ctx context.Context, tx *sql.Tx, w *ThreadWholeRows) error {
+	w.TaskShifts = map[int64]ShiftRow{}
+	f := w.Plan
+	if w.Thread.State == ThreadClosed || !w.Thread.IsPlanThread() || f == nil || f.Graph == nil ||
+		(f.Plan.State != team.PlanApproved && f.Plan.State != team.PlanBuilding) {
+		return nil
+	}
+	for _, task := range f.Graph.Tasks {
+		if task.State != team.TaskDelegated || task.Thread == 0 {
+			continue
+		}
+		t, err := scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, task.Thread).Scan)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		w.TaskThreads = append(w.TaskThreads, t)
+		switch sh, err := scanShift(tx.QueryRowContext(ctx, `SELECT `+shiftColumns+` FROM shifts WHERE thread_id = ?`, t.ID).Scan); {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return err
+		default:
+			w.TaskShifts[t.ID] = sh
+		}
+		asks, err := queryRows(ctx, tx, scanAsk, `SELECT `+askColumns+` FROM asks WHERE thread_id = ? AND state = ? ORDER BY id`, t.ID, AskOpen)
+		if err != nil {
+			return err
+		}
+		w.TaskAsks = append(w.TaskAsks, asks...)
+		pulls, err := queryRows(ctx, tx, scanPull, `SELECT `+pullColumns+` FROM pull_requests WHERE thread_id = ? ORDER BY id`, t.ID)
+		if err != nil {
+			return err
+		}
+		w.TaskPulls = append(w.TaskPulls, pulls...)
+	}
+	return nil
 }
 
 // threadsBoardIn reads ThreadsRows in tx, a read transaction.

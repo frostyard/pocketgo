@@ -42,6 +42,8 @@ func TestAnsweredNote(t *testing.T) {
 	}{
 		"closed": {func(a *Answered) { a.Closed, a.Open = true, []int64{4} },
 			"T5 is closed, so vera files no report on it: if the answer needs more work, team_send reopens T5 where pocketd allows it, or delegate a thread that follows T5."},
+		"closed, a placed message reopens it": {func(a *Answered) { a.Closed, a.ReopenHeld, a.Open = true, true, []int64{4} },
+			"T5 is closed, but a message already in vera's session reopens it once its worker has stopped; then vera goes on with T5, and its next report comes to you."},
 		"one more ask":   {func(a *Answered) { a.Open = []int64{4} }, "A4 of T5 still waits for the owner."},
 		"two more asks":  {func(a *Answered) { a.Open = []int64{4, 6} }, "A4 and A6 of T5 still wait for the owner."},
 		"a plan drafted": {func(a *Answered) { a.Plan = &AnsweredPlan{ID: 2, State: PlanDrafting} }, "vera writes the answer into plan P2 with team_plan;"},

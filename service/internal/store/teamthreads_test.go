@@ -147,7 +147,7 @@ func TestTeamThreadReadsOneThreadWhole(t *testing.T) {
 	if _, _, err := s.AnswerAsk(ctx, "a", asks[0].ID, "yes", "laptop"); err != nil {
 		t.Fatal(err)
 	}
-	board, whole, err := s.TeamThread(ctx, thread.ID, time.Time{})
+	whole, err := s.TeamThread(ctx, thread.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,10 +158,7 @@ func TestTeamThreadReadsOneThreadWhole(t *testing.T) {
 	if whole.Sessions[1].Profile != "odrade" || whole.Sessions[14].Model != "faux-2" || len(whole.Sessions) != 2 {
 		t.Fatalf("sessions %+v", whole.Sessions)
 	}
-	if !slices.Contains(threadIDs(board.Threads), thread.ID) || len(board.Asks) != 1 {
-		t.Fatalf("the board %+v", board)
-	}
-	if _, _, err := s.TeamThread(ctx, 999, time.Time{}); !errors.Is(err, ErrNotFound) {
+	if _, err := s.TeamThread(ctx, 999); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("no thread: %v", err)
 	}
 }
@@ -210,11 +207,55 @@ func TestTheBoardReadsOnlyItsThreadsShifts(t *testing.T) {
 	if _, ok := rows.Shifts[old.ID]; ok || len(rows.Shifts) != 2 || len(rows.Shifts[listed.ID].Rounds) != 0 || len(rows.Shifts[read.ID].Rounds) != 0 {
 		t.Fatalf("the board's shifts %+v", rows.Shifts)
 	}
-	_, whole, err := s.TeamThread(ctx, read.ID, since)
+	whole, err := s.TeamThread(ctx, read.ID)
 	if err != nil {
 		t.Fatalf("a read of another thread: %v", err)
 	}
 	if whole.Shift == nil || len(whole.Shift.Rounds) != 1 || whole.Shift.Rounds[0].Reason != "still red" {
 		t.Fatalf("the read's shift %+v", whole.Shift)
+	}
+}
+
+// A read of one thread reads that thread and what its mover reads alone,
+// never the rest of the board: an unrelated open thread's pull request,
+// a row no read could scan, breaks no read of another thread. A plan's
+// own thread whose plan is building reads its delivered tasks' threads,
+// with their open asks; a closed thread reads none (Codex review of #175,
+// round 2).
+func TestAReadReadsOnlyItsThreadAndWhatItsMoverReads(t *testing.T) {
+	s, _ := open(t)
+	other, _, err := s.CreateThread(ctx, ThreadRow{Key: "other", Title: "Other", Agent: "vera", SupervisorSession: 1, Task: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := s.FileReportWithPulls(ctx, "r", other.ID, ThreadOpen, "A pull request.", nil,
+		[]PullRow{{GitHubID: 7, Repository: "frostyard/example", Number: 12, Title: "Fix", URL: "u", State: PullOpen, Head: "b", HeadSHA: "abc", Base: "main"}},
+		func([]int64, []PullRow) string { return "r" }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE pull_requests SET checked_at = 'not a time' WHERE thread_id = ?`, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	planThread, facts := approvedPlan(t, s, "p1")
+	t1 := deliver(t, s, facts.Plan.ID, "d1", "t1")
+	ask, err := s.CreateAsk(ctx, AskRow{Key: "t1:ask", ThreadID: t1.ID, SessionID: t1.Session, Question: "Which key size?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	whole, err := s.TeamThread(ctx, planThread.ID)
+	if err != nil {
+		t.Fatalf("a read of the plan's thread read another thread's pull request: %v", err)
+	}
+	if len(whole.TaskThreads) != 1 || whole.TaskThreads[0].ID != t1.ID || len(whole.TaskAsks) != 1 || whole.TaskAsks[0].ID != ask.ID || len(whole.TaskPulls) != 0 {
+		t.Fatalf("the lead's tasks %+v, asks %+v, pulls %+v", whole.TaskThreads, whole.TaskAsks, whole.TaskPulls)
+	}
+	if whole, err = s.TeamThread(ctx, t1.ID); err != nil || len(whole.TaskThreads) != 0 {
+		t.Fatalf("a task's thread read %+v, %v", whole.TaskThreads, err)
+	}
+	if _, err := s.CloseThread(ctx, planThread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if whole, err = s.TeamThread(ctx, planThread.ID); err != nil || len(whole.TaskThreads) != 0 {
+		t.Fatalf("a closed lead read %+v, %v", whole.TaskThreads, err)
 	}
 }
