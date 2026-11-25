@@ -740,7 +740,7 @@ func TestSenderOfNamesTheOwnerTheSupervisorAndTheService(t *testing.T) {
 		{ptr("team:5:3:c1:report"), &proto.Sender{Kind: proto.SenderService}},
 		{ptr("plan:abc:done"), &proto.Sender{Kind: proto.SenderService}},
 		{ptr("team:5:3:c1:ask:0:answer:abcd"), &proto.Sender{Kind: proto.SenderService}},
-		// The note that tells the supervisor of an answer (ADR-0071).
+		// The note that tells the supervisor of an answer (ADR-0072).
 		{ptr(team.AnsweredKey("abc", "team:5:3:c1:ask:0", "Yes.")), &proto.Sender{Kind: proto.SenderService}},
 	} {
 		got := senderOf(tc.key)

@@ -14,7 +14,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
-// The supervisor's view of the threads (ADR-0071): team_threads lists,
+// The supervisor's view of the threads (ADR-0072): team_threads lists,
 // from pocketd's own records alone, every thread not closed with who
 // moves it next, as the desktop's work board groups it, and the threads
 // closed in the last InboxWindow; and it reads one thread whole. The
@@ -27,7 +27,7 @@ const (
 	ThreadsRead = "read"
 )
 
-// The bounds of team_threads' answers (ADR-0071).
+// The bounds of team_threads' answers (ADR-0072).
 const (
 	// MaxThreadsBytes and MaxThreadsLines bound a whole answer, as
 	// MaxInboxBytes and MaxInboxLines bound team_inbox's: when it would
@@ -56,7 +56,7 @@ const (
 )
 
 // ThreadsGuide is the line of the supervisor's instructions that names
-// team_threads (ADR-0071).
+// team_threads (ADR-0072).
 var ThreadsGuide = fmt.Sprintf("Before you ask the owner or a specialist where a thread stands, read it with team_threads: list shows every thread not closed with who moves it next, and the closed threads whose records changed in the last %d days; read shows one whole, with its asks, pull requests and shift. ", InboxDays)
 
 // ThreadsCall is a team_threads call.
@@ -179,7 +179,7 @@ var boardScanned func()
 
 // NextMover is who moves t next. It mirrors the desktop's work board,
 // state.Data.NextMover in desktop/internal/state/board.go, rule for rule:
-// a change to one is made to the other (ADR-0071). Nobody once t is
+// a change to one is made to the other (ADR-0072). Nobody once t is
 // closed; else the owner while one of its asks is open, one of its pull
 // requests waits for review (PullWaits), or the plan it plans waits for
 // the owner's approval (PlanWaits). A plan's own thread whose plan is

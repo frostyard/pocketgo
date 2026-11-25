@@ -1077,7 +1077,7 @@ func TestThePlanRoutesRefuseAWrongMethod(t *testing.T) {
 // An answer that clears the last open ask of an approved plan tells the
 // supervisor, once, that its ready tasks may go: the gate refused them
 // for that ask (Codex review of #25, round 2). The answer's own note says
-// it, and no other message tells the same answer (ADR-0071); an answer
+// it, and no other message tells the same answer (ADR-0072); an answer
 // that leaves an ask open says that one still waits.
 func TestAnAnswerThatClearsTheGateTellsTheSupervisor(t *testing.T) {
 	h := newPlanHarness(t)

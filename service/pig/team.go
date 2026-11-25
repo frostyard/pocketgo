@@ -127,7 +127,7 @@ const launchParameters = `{"type":"object","properties":{` +
 // inboxParameters are team_inbox's: none.
 const inboxParameters = `{"type":"object","properties":{},"additionalProperties":false}`
 
-// threadsParameters are team_threads' (ADR-0071).
+// threadsParameters are team_threads' (ADR-0072).
 var threadsParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["list","read"],"description":"list every thread not closed with who moves it next, and the closed threads whose records changed in the last ` +
 	strconv.Itoa(team.InboxDays) + ` days; or read one thread whole."},` +
@@ -462,7 +462,7 @@ func (e *Engine) teamExtension() *durable.Extension {
 			},
 			{
 				// After team_inbox, as roleTools and laterSupervisorTools order
-				// them (ADR-0071). The rule to read a thread before asking where
+				// them (ADR-0072). The rule to read a thread before asking where
 				// it stands is in its description too, for a supervisor started
 				// before the line in its instructions.
 				ToolSchema: schema(toolThreads, fmt.Sprintf("See the threads: list every thread not closed, grouped by who moves it next as the owner's work board "+
@@ -562,7 +562,7 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // cross-review read GitHub with GET alone, too (team_github, ADR-0036,
 // ADR-0057), and no other session does. A supervisor alone reads the
 // owner's Inbox (team_inbox, ADR-0046) and the threads (team_threads,
-// ADR-0071). A private agent has no team tool
+// ADR-0072). A private agent has no team tool
 // at all (ADR-0042): it keeps its own schedules with the schedule tool,
 // which is none (toolsOf, ADR-0060).
 func roleTools(spec api.SessionSpec) []string {
@@ -597,7 +597,7 @@ func roleTools(spec api.SessionSpec) []string {
 		// A supervisor keeps its own reminders and repeats too (ADR-0030),
 		// sends to the threads it delegated (ADR-0032), gathers proposals
 		// and keeps their board (ADR-0033), launches them (ADR-0034), reads
-		// the owner's Inbox (ADR-0046) and reads the threads (ADR-0071).
+		// the owner's Inbox (ADR-0046) and reads the threads (ADR-0072).
 		out = append(out, toolDelegate, toolClose)
 		out = append(out, laterSupervisorTools...)
 	}
@@ -1328,13 +1328,13 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 // in roleTools' order, which a session started before them lacks:
 // team_schedule (ADR-0030), team_send (ADR-0032), team_gather and
 // team_board (ADR-0033), team_launch (ADR-0034), team_inbox (ADR-0046),
-// team_threads (ADR-0071).
+// team_threads (ADR-0072).
 var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads}
 
 // SetSupervisorTools gives a supervisor's session started before them the
 // supervisor's later team tools (laterSupervisorTools), in the order
 // roleTools places them, after its other tools, and says whether it did
-// (ADR-0030, ADR-0032, ADR-0033, ADR-0046, ADR-0071; Codex review of #51,
+// (ADR-0030, ADR-0032, ADR-0033, ADR-0046, ADR-0072; Codex review of #51,
 // round 1).
 // A session that has them all, or that has no team_delegate, is left as it
 // is.

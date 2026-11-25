@@ -2138,7 +2138,7 @@ func (s *Server) publishAsk(row store.AskRow) {
 	if row.State == store.AskAnswered {
 		// Its answer filed a note to the thread's supervisor, which names the
 		// plan's ready tasks when it cleared its gate (store.answerNote,
-		// ADR-0071).
+		// ADR-0072).
 		s.deliverLater()
 	}
 }
@@ -2293,7 +2293,7 @@ func (s *Server) noteSendsPlacedHeld(ctx context.Context, thread int64) (held bo
 // session is neither none nor the asking one), the thread's messages
 // already in its specialist's transcript, as every read of a thread's
 // state does: one may have reopened the closed thread, and the note says
-// what the thread's state lets the supervisor do (ADR-0061, ADR-0071;
+// what the thread's state lets the supervisor do (ADR-0061, ADR-0072;
 // Codex review of #175, round 1). It then holds outboxMu, which the caller
 // releases after the answer's filing, and locked says so. A message placed
 // whose reopen waits for the close's worker stop is told

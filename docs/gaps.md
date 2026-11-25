@@ -61,9 +61,9 @@ The roadmap's "What carries over" names each of these.
   - **Now:** no brief (`team.Brief`), report, answer or scheduled message carries one, and PiG adds none that the survey found. Shift deadlines show in UTC alone (`team/shift.go`).
   - **Docs:** none. pi-pocket-team's beacon ran a trial of the clock line, due for review on 2026-11-25.
 
-- [x] **G10. The supervisor lists and reads its threads.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#175](https://github.com/frostyard/pocketgo/pull/175), ADR-0071, roadmap item 41.
+- [x] **G10. The supervisor lists and reads its threads.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#175](https://github.com/frostyard/pocketgo/pull/175), ADR-0072, roadmap item 41.
 
-- [x] **G11. The supervisor is told when the owner answers an ask.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#175](https://github.com/frostyard/pocketgo/pull/175), ADR-0071, roadmap item 41.
+- [x] **G11. The supervisor is told when the owner answers an ask.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#175](https://github.com/frostyard/pocketgo/pull/175), ADR-0072, roadmap item 41.
 
 - [ ] **G12. The owner adds a lesson that holds at once.** Missing.
   - **Was:** the owner wrote a lesson for an agent from the Team panel, in force with no approval step (`team.ts`).
