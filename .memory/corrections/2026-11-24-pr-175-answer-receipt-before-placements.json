@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The owner's answer looks up its request's receipt first, under its key's lock (store.LookupRequest, store.AnswerKind): a replay answers with the answered ask and a reused request id is 409 whatever PiG's records say; only a new answer that can file a note notes its thread's placed messages (Server.noteBeforeAnswer).",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 2: P2, service/internal/api/team.go: noteSendsPlaced ran before AnswerAsk recognized a replay, so a failed placement lookup answered 500 and could mask a reused request id",
+  "promoted_to": "service/internal/api/answered_test.go"
+}

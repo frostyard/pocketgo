@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "team_threads lists the closed threads by their record's last change (updated_at), not by a close time pocketd does not keep: the heading, team.ThreadsGuide and the tool's description say closed threads whose records changed in the last 7 days.",
+  "evidence": "frostyard/pocketgo#175, Codex review, round 1: P2, service/internal/team/threads.go: the heading said Closed in the last 7 days, which a later note on an old closed thread's report would make false",
+  "promoted_to": "service/internal/team/threads_test.go"
+}

@@ -1,6 +1,6 @@
 # 0046 — Let the supervisor read the owner's Inbox from pocketd's records, in code
 
-- **Status:** Accepted
+- **Status:** Accepted; its rejected alternative of telling the supervisor of every answer as a message superseded in part by [ADR-0071](0071-let-the-supervisor-read-the-threads-and-hear-each-answer-in-code.md), which tells the supervisor of each answer in one note; merges are still not told
 - **Date:** 2026-11-21
 
 ## Context
