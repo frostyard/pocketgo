@@ -13,19 +13,19 @@ Built and merged on 2026-11-24 and 2026-11-25, each with its tests in `desktop/i
 | 4. What waits and runs | #181: a status bar under the content | the usage tooltips' text has no test |
 | 5. New session | #181; a dialog, as the owner chose (#195) | |
 | 6, 7. The board, proposals, schedules | #185; the groups by who moves next, the report on its card, a plan on its thread's card (#197) | a plan's consults; "Dropping #N…" has no test; the kit's shell cannot open the session's details from the changes' count |
-| 8. The sidebar | #181: the counts, the search offer, a group's role and problem, the New mark; a row's menu with Pinned and Rename… (#195) | a session's tag and its dimming |
+| 8. The sidebar | #181: the counts, the search offer, a group's role and problem, the New mark; a row's menu with Pinned and Rename… (#195); a session's tag, its count of waiting approvals and its dimming (#201) | a row under its agent's own group has no tag, unlike MyGo |
 | 9. A session | #186 | a failed copy's note (NSGo reports none); the unfolded service messages kept |
 | 10. The Terminal place | #186 | a refused `file:` link's toast (NSGo treats it as no link); the terminal's zoom zooming the window |
 | 11. Approve and merge | #199: why it is off, each phase of a card, Check again, the results' texts, the single confirmation's text, Merge All's card, confirmation, progress, end and rebase wait | a Sign In button on the card (it points to Settings); the names of the pull requests Merge All leaves out (a count, as MyGo); the Merge All list in a dialog that does not scroll, not tried with a long list; nothing run against the real GitHub or a real keyring |
 | 12. Sign-ins and the sign-in screen | #184: pocketd's sign-ins; #198: the sign-in screen's texts, on the screen in place of toasts, its guide, the plain-HTTP question's warning, and Return from either field | the GitHub Save Again banner on the sign-in screen; MyGo also ends an earlier automatic sign-in when the keyring will not keep the token, and the NSGo client does not (the owner's decision); nothing run with a real keyring or a real pocketd |
-| 13. Search | #180, #184 | the opened entry's highlight |
+| 13. Search | #180, #184; the opened entry's highlight (#201) | |
 | 14. Zoom that fits | #182 | |
 | 15. A notification clicked at start | #182 | it runs headless only: a press did not reach the client in the real window |
-| 16. Commands | #182; Rename session, with F2 (#195) | Insert Prompt as a command; Show or Hide the Sessions |
+| 16. Commands | #182; Rename session, with F2 (#195); Insert prompt (#201) | Show or Hide the Sessions: the kit's shell keeps its sidebar's toggle to itself |
 | 17. The Activity place | #184 | |
 | The terminal's clipboard | #177: 3 tests | |
 | The preferences' move | #182 | not run on a real `settings.json` with a real keyring |
-| A phone's and a tablet's rules | #187, #190: the bar of tabs, a session over its tab, More, the board's order, no Terminal and no Quit on iOS, the held GitHub refresh, tested headless with a phone's and a tablet's environment | the touch size; a tab chosen in the simulator (Phase 6's first runs); everything on a real device |
+| A phone's and a tablet's rules | #187, #190: the bar of tabs, a session over its tab, More, the board's order, no Terminal and no Quit on iOS, the held GitHub refresh, tested headless with a phone's and a tablet's environment | the touch size: the composer's buttons measure 26 points in a phone's window, and NSGo's `chat.IconAction` takes no size from the app; a tab chosen in the simulator (Phase 6's first runs); everything on a real device |
 | What a removal must change first | #183: the state tests' loop | the Makefile, CI, the lint rules and 2 script tests still name MyGo |
 
 **The owner answered the 6 design questions on 2026-11-25,** each from the 2 clients' pictures side by side (the table of choices under [What the NSGo client lacks](#what-the-nsgo-client-lacks)). Until then the NSGo client's own layout was kept in each. New session as a dialog, and pin and rename on the row and the title, are built (#195). The board's groups, the report on its card and a plan on its thread's card are built too (#197). The palette stays as it is.
