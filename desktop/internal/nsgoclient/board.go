@@ -11,6 +11,7 @@ import (
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/nsgo-dev/nsgo/core"
+	"github.com/nsgo-dev/nsgo/icons/lucide"
 	"github.com/nsgo-dev/nsgo/ui"
 )
 
@@ -49,6 +50,34 @@ func (c *client) board(cx *core.Scope) core.Node {
 		}}
 	}
 	nodes := []core.Node{core.Text{ContentFunc: func() string { c.revision.Get(); return d.BoardNote() }, Style: ui.TypeLabel, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}}
+	// What the board could not load, and a board with no thread: loading,
+	// or none yet. It says there is none only once the threads loaded.
+	nodes = append(nodes, core.Dynamic(func(*core.Scope) core.Node {
+		c.revision.Get()
+		var out []core.Node
+		for _, list := range []struct {
+			status        func() (state.ListStatus, string)
+			what, missing string
+		}{
+			{d.ThreadsStatus, "the threads", "Threads may be missing or out of date."},
+			{d.AsksStatus, "the asks", "A thread may wait for your answer and not say so."},
+			{d.PullsStatus, "the pull requests", "A thread may wait for your review and not say so."},
+		} {
+			if status, problem := list.status(); status == state.ListFailed {
+				out = append(out, c.listProblem(list.what, problem, list.missing, c.store.Refresh))
+			}
+		}
+		if status, _ := d.ThreadsStatus(); len(d.Threads()) == 0 {
+			switch status {
+			case state.ListLoading:
+				out = append(out, body("Loading the threads…"))
+			case state.ListLoaded:
+				out = append(out, core.View{Style: core.Style{Height: core.Pt(180)}, Children: []core.Node{workspaceui.EmptyState{Icon: lucide.Columns3, Title: "No threads yet",
+					Hint: "When a supervisor delegates work to a specialist, its thread shows here."}}})
+			}
+		}
+		return core.Group(out)
+	}))
 	openBoard := core.Show{When: func() bool { return len(byState.Get()[proto.ThreadClosed]) < len(d.Threads()) },
 		Then: func(cx *core.Scope) core.Node { return c.threadLanes(cx, byState.Get) }}
 	closed := func() []proto.Thread { return byState.Get()[proto.ThreadClosed] }
@@ -62,10 +91,20 @@ func (c *client) board(cx *core.Scope) core.Node {
 			}
 			return workspaceui.Stack(cards...)
 		})
-	}), section("Schedules", true, func() int { c.revision.Get(); return len(d.Schedules().Schedules) }, nil, func(*core.Scope) core.Node {
+	}), section("Schedules", true, func() int { c.revision.Get(); return len(d.Schedules().Schedules) }, func() bool {
+		c.revision.Get()
+		status, _ := d.SchedulesStatus()
+		return len(d.Schedules().Schedules) > 0 || status == state.ListFailed || d.Schedules().Problem != ""
+	}, func(*core.Scope) core.Node {
 		return core.Dynamic(func(*core.Scope) core.Node {
 			c.revision.Get()
 			var cards []core.Node
+			if status, problem := d.SchedulesStatus(); status == state.ListFailed {
+				cards = append(cards, c.listProblem("the schedules", problem, "Schedules may be missing or out of date.", c.store.Refresh))
+			}
+			if problem := d.Schedules().Problem; problem != "" {
+				cards = append(cards, workspaceui.Banner{Tone: workspaceui.Warning, Text: "None of your schedules file goes out: " + problem})
+			}
 			for _, s := range d.Schedules().Schedules {
 				r := state.ScheduleRowOf(s, time.Now())
 				cards = append(cards, workspaceui.Card{Children: []core.Node{title(r.ID), body(strings.Join(nonempty(r.When, r.Next, r.Action, r.Last, r.Problem), " · "))}})
@@ -75,7 +114,8 @@ func (c *client) board(cx *core.Scope) core.Node {
 	}))
 	proposals := func() int { c.revision.Get(); return len(d.BoardProposals()) }
 	nodes = append(nodes, section("Night shift", true, proposals, func() bool {
-		return proposals() > 0 || c.store.LaunchUncertain() || c.store.Launching().Err != "" || c.launchNote() != ""
+		status, _ := d.ProposalsStatus()
+		return proposals() > 0 || status == state.ListFailed || c.store.LaunchUncertain() || c.store.Launching().Err != "" || c.launchNote() != ""
 	}, c.nightShift))
 	return core.Scroll{Style: ui.FillRest, Children: []core.Node{core.View{
 		Style: core.Style{Width: core.Pct(100), MaxWidth: core.Pt(1560), AlignSelf: core.AlignCenter, Padding: core.All(workspaceui.SpaceL), Gap: 14}, Children: nodes,
@@ -302,6 +342,9 @@ func (c *client) nightShift(cx *core.Scope) core.Node {
 	rows := core.Dynamic(func(*core.Scope) core.Node {
 		c.revision.Get()
 		var cards []core.Node
+		if status, problem := c.store.Data.ProposalsStatus(); status == state.ListFailed {
+			cards = append(cards, c.listProblem("the proposals", problem, "Proposals may be missing or out of date.", c.store.Refresh))
+		}
 		for _, p := range c.store.Data.BoardProposals() {
 			label := "Pick"
 			if c.store.Picked(p.ID) {
