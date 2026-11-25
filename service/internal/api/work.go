@@ -257,8 +257,15 @@ func (s *Server) startWork(ctx context.Context, row store.WorkRow, fresh bool) (
 		// A session PiG made all the same, its answer lost to the stop, is
 		// recorded as it was made: no work names a session the work
 		// database lacks.
-		if made, exists, lookErr := s.engine.Created(db, row.Key); lookErr == nil && exists {
+		made, exists, lookErr := s.engine.Created(db, row.Key)
+		switch {
+		case lookErr == nil && exists:
 			return s.recordMadeWork(db, row, made)
+		case lookErr != nil:
+			// Whether PiG made it cannot be told now: the delivery pass
+			// looks again, and records one it made, with its task (Codex
+			// review of #174, round 4).
+			s.workPending()
 		}
 		return store.WorkRow{}, err
 	}
@@ -660,7 +667,10 @@ func (s *Server) workPending() {
 // pass after a start and after a record that failed (Codex review of #174,
 // round 3). It creates no session: a work the engine made none for, as a
 // call stopped before the session's creation, stays as it is. A work a
-// call holds now is left to that call. done says nothing failed.
+// call holds now is left to that call for this pass, and done is false,
+// so a later pass looks again once the call let it go: a record that
+// failed in that call asked for this pass while it held the key (round
+// 4). done says nothing failed and nothing was skipped.
 func (s *Server) reconcileWork(ctx context.Context) bool {
 	keys, err := s.store.PendingWorkKeys(ctx)
 	if err != nil {
@@ -671,6 +681,7 @@ func (s *Server) reconcileWork(ctx context.Context) bool {
 	for _, key := range keys {
 		unlock, ok := s.keys.tryLock(key)
 		if !ok {
+			done = false
 			continue
 		}
 		if err := s.reconcileOne(ctx, key); err != nil {

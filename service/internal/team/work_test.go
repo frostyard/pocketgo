@@ -182,28 +182,33 @@ func TestWorkTexts(t *testing.T) {
 
 // The work guide goes to a session that may call team_work at the agent's
 // home alone: one the owner opened in a checkout or a worktree keeps the
-// tool, and works where the owner placed it (Codex review of #174, round
-// 3).
+// tool, and works where the owner placed it, one opened on a repository
+// whose checkout is the home too included (Codex review of #174, rounds
+// 3 and 4).
 func TestWorkGuideFor(t *testing.T) {
 	vera := &profiles.Profile{ID: "vera", Role: profiles.RoleAgent, Home: "/home/vera", Repositories: map[string]string{"frostyard/example": "/src/example"}}
 	teg := &profiles.Profile{ID: "teg", Role: profiles.RoleAgent, Workspace: "/work"}
+	home := &profiles.Profile{ID: "irulan", Role: profiles.RoleAgent, Home: "/src/notes", Repositories: map[string]string{"frostyard/notes": "/src/notes"}}
 	for name, tc := range map[string]struct {
-		p    *profiles.Profile
-		role SessionRole
-		cwd  string
-		want bool
+		p               *profiles.Profile
+		role            SessionRole
+		cwd, repository string
+		want            bool
 	}{
-		"at its home":               {vera, SessionRole{}, "/home/vera", true},
-		"at its home, spelled long": {vera, SessionRole{}, "/home/vera/./", true},
-		"in its checkout":           {vera, SessionRole{}, "/src/example", false},
-		"in a worktree":             {vera, SessionRole{}, "/src/example--vera-fix-abc123", false},
-		"below its home":            {vera, SessionRole{}, "/home/vera/notes", false},
-		"a profile with no home":    {teg, SessionRole{}, "/work", false},
-		"a work session at home":    {vera, SessionRole{Work: true}, "/home/vera", false},
-		"no folder":                 {vera, SessionRole{}, "", false},
-		"no profile":                {nil, SessionRole{}, "/home/vera", false},
+		"at its home":                   {vera, SessionRole{}, "/home/vera", "", true},
+		"at its home, spelled long":     {vera, SessionRole{}, "/home/vera/./", "", true},
+		"in its checkout":               {vera, SessionRole{}, "/src/example", "frostyard/example", false},
+		"in a worktree":                 {vera, SessionRole{}, "/src/example--vera-fix-abc123", "frostyard/example", false},
+		"in its checkout, typed":        {vera, SessionRole{}, "/src/example", "", false},
+		"below its home":                {vera, SessionRole{}, "/home/vera/notes", "", false},
+		"a profile with no home":        {teg, SessionRole{}, "/work", "", false},
+		"a work session at home":        {vera, SessionRole{Work: true}, "/home/vera", "", false},
+		"no folder":                     {vera, SessionRole{}, "", "", false},
+		"no profile":                    {nil, SessionRole{}, "/home/vera", "", false},
+		"at a home that is a checkout":  {home, SessionRole{}, "/src/notes", "", true},
+		"on the repository at its home": {home, SessionRole{}, "/src/notes", "frostyard/notes", false},
 	} {
-		if got := WorkGuideFor(tc.p, tc.role, tc.cwd); (got == WorkGuide) != tc.want || (got != "" && got != WorkGuide) {
+		if got := WorkGuideFor(tc.p, tc.role, tc.cwd, tc.repository); (got == WorkGuide) != tc.want || (got != "" && got != WorkGuide) {
 			t.Errorf("%s: %q, want the guide %v", name, got, tc.want)
 		}
 	}

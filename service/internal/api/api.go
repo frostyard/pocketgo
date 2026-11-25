@@ -79,6 +79,12 @@ type SessionSpec struct {
 	// (ADR-0073): a session of its caller's profile, with no team_work,
 	// whose answers go back to its caller.
 	Work bool
+	// Repository is the repository the owner opened the session on
+	// (CreateSession.repository, ADR-0027), "" for none: such a session
+	// works where the owner placed it, its checkout or a worktree of it,
+	// and gets no guide to work elsewhere (team.WorkGuideFor), its
+	// checkout the profile's home too.
+	Repository string
 	// StandingKey, for a profile's standing session (ADR-0026), is the key
 	// every request that opens it finds it by: the engine records the
 	// session under it as well as under the request's own key, and a
@@ -1677,7 +1683,7 @@ func (s *Server) validCreate(w http.ResponseWriter, r *http.Request, request pro
 		}
 	}
 	spec := SessionSpec{Title: strings.TrimSpace(request.Title), Cwd: cwd, Model: choice.Model, Thinking: request.Thinking,
-		Profile: profile, Route: string(choice.Rule)}
+		Profile: profile, Route: string(choice.Rule), Repository: request.Repository}
 	if profile != nil && profile.Role == profiles.RoleSupervisor {
 		if spec.Roster, err = s.roster(models); err != nil {
 			s.internal(w, "read profiles", err)

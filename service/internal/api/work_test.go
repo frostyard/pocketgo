@@ -948,3 +948,113 @@ func TestANewBaseReplacesTheKeptOne(t *testing.T) {
 		t.Fatalf("the task after a fresh fetch:\n%s", task)
 	}
 }
+
+// A pass that finds a pending work's key held by a call skips it, and a
+// later pass looks again: the record that failed in that call asked for
+// the pass while it held the key (Codex review of #174, round 4).
+func TestAPendingWorkHeldByACallIsReconciledLater(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	failed := false
+	h.server.recordWorkSession = func(ctx context.Context, key string, session store.SessionRow, task store.NoteRow) (store.WorkRow, error) {
+		if !failed {
+			failed = true
+			return store.WorkRow{}, errors.New("the work database refused the write")
+		}
+		return h.store.RecordWorkSession(ctx, key, session, task)
+	}
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil {
+		t.Fatal("a failed record answered")
+	}
+	unlock := h.server.keys.lock(workKey(call))
+	if done, _ := h.server.deliverAll(ctx); done {
+		t.Fatal("a pass that skipped a held key said it was done")
+	}
+	if row, err := h.store.WorkByKey(ctx, workKey(call)); err != nil || row.Session != 0 {
+		t.Fatalf("the held work %+v, %v", row, err)
+	}
+	unlock()
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	row, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil || row.Session == 0 {
+		t.Fatalf("the work once its key was free %+v, %v", row, err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if h.engine.to[workTaskKey(row.Key)] != row.Session {
+		t.Fatal("the reconciled work session got no task")
+	}
+}
+
+// A create whose answer was lost, and whose look at the engine's creation
+// record failed, has the delivery pass look again, which records the
+// session the engine made, with its task (Codex review of #174, round 4).
+func TestALostCreateWhoseLookFailedIsReconciled(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	h.server.workDueMu.Lock()
+	h.server.workPendingDue = false
+	h.server.workDueMu.Unlock()
+	h.engine.mu.Lock()
+	h.engine.createLost = errors.New("pocketd stopped")
+	h.engine.mu.Unlock()
+	h.engine.onCreate = func(spec SessionSpec) {
+		if spec.Work {
+			h.engine.mu.Lock()
+			h.engine.createdErr = errors.New("the durable store is busy")
+			h.engine.mu.Unlock()
+		}
+	}
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil {
+		t.Fatal("a lost create whose look failed answered")
+	}
+	h.engine.onCreate = nil
+	h.engine.mu.Lock()
+	h.engine.createdErr = nil
+	made := h.engine.byKey[workKey(call)]
+	h.engine.mu.Unlock()
+	if row, err := h.store.WorkByKey(ctx, workKey(call)); err != nil || row.Session != 0 || made == 0 {
+		t.Fatalf("the work %+v, %v; the engine's session %d", row, err, made)
+	}
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	row, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil || row.Session != made {
+		t.Fatalf("the work after the pass %+v, %v; the engine's session %d", row, err, made)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if h.engine.to[workTaskKey(row.Key)] != made {
+		t.Fatal("the reconciled work session got no task")
+	}
+}
+
+// A session the owner opens on a repository carries that choice to the
+// engine, so a checkout that is the agent's home too gets no guide to
+// work elsewhere (team.WorkGuideFor; Codex review of #174, round 4).
+func TestASessionOnARepositoryCarriesItsChoice(t *testing.T) {
+	h, _ := workHarness(t)
+	ctx := context.Background()
+	h.addProfiles(map[string]string{"irulan.md": "---\nmodel: faux/faux-1\nhome: " + h.checkout + "\nrepositories:\n  frostyard/example: " + h.checkout + "\n---\n# Irulan\n"})
+	if _, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "on-repo", Profile: "irulan", Repository: "frostyard/example"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "at-home", Profile: "irulan"}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	specs := h.engine.specs[len(h.engine.specs)-2:]
+	if specs[0].Repository != "frostyard/example" || specs[0].Cwd != h.checkout || specs[1].Repository != "" || specs[1].Cwd != h.checkout {
+		t.Fatalf("the specs %+v and %+v", specs[0], specs[1])
+	}
+	if team.WorkGuideFor(specs[0].Profile, team.SessionRole{}, specs[0].Cwd, specs[0].Repository) != "" ||
+		team.WorkGuideFor(specs[1].Profile, team.SessionRole{}, specs[1].Cwd, specs[1].Repository) != team.WorkGuide {
+		t.Fatal("the guide does not follow the owner's choice")
+	}
+}

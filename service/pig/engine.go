@@ -585,7 +585,7 @@ func sessionInstructions(spec api.SessionSpec, loaded team.Loaded) string {
 	// A session at the agent's home that starts work sessions is told
 	// where it changes a repository; one the owner opened in a repository
 	// is not (team.WorkGuideFor, ADR-0073).
-	guide := team.WorkGuideFor(spec.Profile, roleOf(spec), spec.Cwd)
+	guide := team.WorkGuideFor(spec.Profile, roleOf(spec), spec.Cwd, spec.Repository)
 	// The lessons last: pocketd owns the instructions from their marker on
 	// (SetLessons).
 	return team.Instructions(spec.Lessons, text, loaded.Global, identity, spec.Roster, guide, loaded.Folder, loaded.Skills)

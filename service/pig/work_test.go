@@ -54,10 +54,13 @@ func TestOnlyASessionThatStartsWorkGetsTheWorkGuide(t *testing.T) {
 		"a clerk's own session at its home": {api.SessionSpec{Profile: &profiles.Profile{ID: "clerk", Name: "Clerk", Role: profiles.RoleClerk, Home: "/home/clerk"},
 			Cwd: "/home/clerk"}, true},
 		"an agent's session in a checkout": {api.SessionSpec{Profile: vera, Cwd: "/src/example"}, false},
-		"an agent's session in a worktree": {api.SessionSpec{Profile: vera, Cwd: "/src/example--vera-fix-abc123"}, false},
-		"an agent with no home":            {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Name: "Teg", Role: profiles.RoleAgent}, Cwd: "/work"}, false},
-		"a work session":                   {api.SessionSpec{Profile: vera, Work: true, Cwd: "/home/vera"}, false},
-		"a thread's specialist":            {api.SessionSpec{Profile: vera, Thread: 3, Cwd: "/home/vera"}, false},
+		// The owner opened the repository whose checkout is the home: the
+		// session works there (Codex review of #174, round 4).
+		"an agent's session on a repository at its home": {api.SessionSpec{Profile: vera, Cwd: "/home/vera", Repository: "frostyard/notes"}, false},
+		"an agent's session in a worktree":               {api.SessionSpec{Profile: vera, Cwd: "/src/example--vera-fix-abc123"}, false},
+		"an agent with no home":                          {api.SessionSpec{Profile: &profiles.Profile{ID: "teg", Name: "Teg", Role: profiles.RoleAgent}, Cwd: "/work"}, false},
+		"a work session":                                 {api.SessionSpec{Profile: vera, Work: true, Cwd: "/home/vera"}, false},
+		"a thread's specialist":                          {api.SessionSpec{Profile: vera, Thread: 3, Cwd: "/home/vera"}, false},
 		"a supervisor": {api.SessionSpec{Profile: &profiles.Profile{ID: "odrade", Name: "Odrade", Role: profiles.RoleSupervisor, Home: "/home/odrade"},
 			Roster: "R", Cwd: "/home/odrade"}, false},
 		"a private agent": {api.SessionSpec{Profile: &profiles.Profile{ID: "chani", Name: "Chani", Role: profiles.RoleAgent, Private: true, Home: "/home/chani"},

@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A work session's create whose answer was lost and whose follow-up Engine.Created lookup failed, as opposed to a confirmed absence, queues the key's reconciliation (Server.workPending), so a session PiG committed is recorded with its task once the store answers.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 4: [P2] Schedule recovery when a creation lookup fails",
+  "promoted_to": "service/internal/api/work_test.go"
+}

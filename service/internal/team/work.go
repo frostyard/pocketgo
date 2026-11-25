@@ -185,9 +185,11 @@ func WorkStarted(session int64, model, repository, path, branch string) string {
 // session the owner opened in a checkout or a worktree of a repository
 // (ADR-0027) works there, as the owner placed it: it keeps team_work, but
 // is never told to move its changes to a work session (Codex review of
-// #174, round 3).
-func WorkGuideFor(p *profiles.Profile, role SessionRole, cwd string) string {
-	if !MayWork(p, role) || p.Home == "" || cwd == "" || filepath.Clean(cwd) != filepath.Clean(p.Home) {
+// #174, round 3). repository is the repository the owner opened the
+// session on, "" for none: one opened on a repository whose checkout is
+// the agent's home too works there all the same (round 4).
+func WorkGuideFor(p *profiles.Profile, role SessionRole, cwd, repository string) string {
+	if !MayWork(p, role) || repository != "" || p.Home == "" || cwd == "" || filepath.Clean(cwd) != filepath.Clean(p.Home) {
 		return ""
 	}
 	return WorkGuide
