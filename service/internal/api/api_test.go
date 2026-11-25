@@ -114,6 +114,8 @@ type fakeEngine struct {
 	// ownScheduleTool are the sessions SetScheduleTool gave the schedule
 	// tool (ADR-0060).
 	ownScheduleTool map[int64]bool
+	// watchTool are the sessions SetWatchTool gave team_watch (ADR-0072).
+	watchTool map[int64]bool
 	// mcpProfiles are the profiles MCPProfiles names; mcpConnects counts
 	// ConnectMCP's calls, and mcpTools are the profiles SetMCPTools gave
 	// each session, in order (ADR-0063).
@@ -489,6 +491,20 @@ func (f *fakeEngine) SetQuestionTool(_ context.Context, id int64) (bool, error) 
 		return false, nil
 	}
 	f.questionTool[id] = true
+	return true, nil
+}
+
+// SetWatchTool records the sessions given team_watch, each once.
+func (f *fakeEngine) SetWatchTool(_ context.Context, id int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.watchTool == nil {
+		f.watchTool = map[int64]bool{}
+	}
+	if f.watchTool[id] {
+		return false, nil
+	}
+	f.watchTool[id] = true
 	return true, nil
 }
 

@@ -1497,7 +1497,7 @@ func TestASessionFromAProfileHasItsIdentityAndTools(t *testing.T) {
 	for _, tool := range agent.Tools {
 		tools = append(tools, tool.Name)
 	}
-	if !slices.Equal(tools, []string{"read", "bash", toolMemory}) {
+	if !slices.Equal(tools, []string{"read", "bash", toolMemory, toolWatch}) {
 		t.Errorf("tools %q, want read and bash, and team_memory by its role", tools)
 	}
 	if !slices.Equal(e.Tools(), []string{"read", "write", "edit", "bash"}) {
@@ -1536,7 +1536,7 @@ func TestAProfileWithNoToolsGetsNone(t *testing.T) {
 	for _, tool := range agent.Tools {
 		names = append(names, tool.Name)
 	}
-	if !slices.Equal(names, []string{toolMemory}) {
+	if !slices.Equal(names, []string{toolMemory, toolWatch}) {
 		t.Fatalf("a profile with no tools got %q", names)
 	}
 	// The engine keeps what the session was created from, for a retry.

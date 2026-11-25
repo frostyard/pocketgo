@@ -443,9 +443,15 @@ func (s *Server) refreshPulls(ctx context.Context) (fresh map[int64]int64, done 
 }
 
 // StartPulls reads the open pull requests again every interval, in rounds
-// that Stop ends; 0 starts none. The service calls it once, after
-// StartDelivery.
+// that Stop ends; 0 starts none, and ends every live watch with its note,
+// since nothing would check it (ADR-0072). The service calls it once,
+// after StartDelivery.
 func (s *Server) StartPulls(every time.Duration) {
+	if every <= 0 {
+		if err := s.endUncheckedWatches(s.passCtx); err != nil {
+			s.log.Warn("end the watches no round checks", "err", err)
+		}
+	}
 	// Reviews start, and settle, whether or not pull requests are read in
 	// rounds (ADR-0019; Codex review of #26, round 6).
 	s.startReviews()
@@ -486,6 +492,10 @@ func (s *Server) pullRound() {
 	// Each round starts, follows and ends the cross-reviews, after the
 	// heads were read, starting reviews only of those read (ADR-0019).
 	s.reviewPassOf(s.passCtx, reviewWork{fresh: fresh, read: map[int64]bool{}})
+	// Each round checks the watches, after its reads (ADR-0072).
+	if err := s.watchPass(s.passCtx); err != nil {
+		s.log.Warn("check watches", "err", err)
+	}
 	// A shift whose done waits on CI reads it again (ADR-0024).
 	s.shiftSoon()
 	s.sessionMu.Lock()

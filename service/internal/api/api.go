@@ -66,6 +66,10 @@ type SessionSpec struct {
 	// lessons section (team.LessonsSection), at the end of its
 	// instructions (ADR-0015).
 	Lessons string
+	// Shift says the thread's specialist works in a shift's rounds
+	// (ADR-0024): it gets no team_watch, since the rounds read CI in code
+	// (ADR-0072).
+	Shift bool
 	// Review is a cross-review's session (ADR-0019): read-only tools,
 	// team_diff, team_verdict and team_github (ADR-0057), no other team
 	// tool.
@@ -188,6 +192,10 @@ type Engine interface {
 	// it, and says whether it did (ADR-0060): the caller decides which
 	// sessions get it (team.MaySchedule).
 	SetScheduleTool(ctx context.Context, id int64) (bool, error)
+	// SetWatchTool gives team_watch to a session made before it that has
+	// the team's tools (team_memory), and says whether it did (ADR-0072):
+	// the caller decides which sessions get it (team.MayWatch).
+	SetWatchTool(ctx context.Context, id int64) (bool, error)
 	// MCPProfiles are the profiles with an MCP server pocketd connects,
 	// as it read them at start (ADR-0063); ConnectMCP connects each
 	// server, or reads its tools again, and returns once each answered or
@@ -610,6 +618,8 @@ type Server struct {
 	// GitHub to its record: two reads of one never cross (ADR-0016). A
 	// wait for one ends with its context.
 	pullLocks ctxLocks
+	// watchMu runs the watches' passes one at a time (ADR-0072).
+	watchMu sync.Mutex
 	// pullEvery is how often open pull requests are read again
 	// (StartPulls), 0 for never; pullsStarted says StartPulls ran, so
 	// team_inbox tells rounds not begun from none (ADR-0046); sessionMu

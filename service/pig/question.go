@@ -64,7 +64,7 @@ func (e *Engine) questionExtension() *durable.Extension {
 // team.MayQuestion and team.MaySchedule.
 func roleOf(spec api.SessionSpec) team.SessionRole {
 	return team.SessionRole{Thread: spec.Thread != 0, Review: spec.Review, Worker: spec.Worker, Consult: spec.Consult != 0, Gather: spec.Gather != 0,
-		Plan: spec.Plan != 0}
+		Plan: spec.Plan != 0, Shift: spec.Shift}
 }
 
 // RunStarter is the request key of the submission that placed the first
