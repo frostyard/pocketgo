@@ -71,7 +71,11 @@ func (c *client) keep(server, token string) {
 				return
 			}
 			if err != nil {
-				c.result(err)
+				// connected-server is not set, so no start signs in to
+				// server by itself.
+				c.logLine(state.LevelWarn, "Keeping the token: "+err.Error())
+				c.showNotice(ui.ToastWarning, keyringNote, "You will sign in again next time. The keyring said: "+err.Error()+".")
+				c.changed()
 				return
 			}
 			_ = c.cx.Storage().SetItem("connected-server", server)
@@ -83,7 +87,21 @@ func (c *client) forget(server string) {
 	if c.creds != nil {
 		c.credentialJob(func() {
 			if err := c.creds.Forget(server); err != nil {
-				c.cx.Post(func() { c.result(err) })
+				c.cx.Post(func() {
+					// Signed out, the sign-in screen says so, after the
+					// reason pocketd gave when it signed the device out.
+					if c.store.SignedIn() {
+						c.result(err)
+						return
+					}
+					c.logLine(state.LevelError, "Forgetting the token: "+err.Error())
+					if p := c.signInProblem.Get(); p != "" {
+						c.signInProblem.Set(p + " " + capitalize(forgetProblem(err)))
+					} else {
+						c.signInProblem.Set("Signed out, but " + forgetProblem(err))
+					}
+					c.changed()
+				})
 			}
 		})
 	}
