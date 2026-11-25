@@ -7,6 +7,7 @@ import (
 	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
+	"github.com/nsgo-dev/nsgo/base"
 	"github.com/nsgo-dev/nsgo/core"
 	"github.com/nsgo-dev/nsgo/icons/lucide"
 	"github.com/nsgo-dev/nsgo/ui"
@@ -131,13 +132,39 @@ func (c *client) searchHit(cx *core.Scope, g state.SearchGroup, h proto.SearchHi
 			core.Text{Content: where, MaxLines: 1, Style: ui.TypeCaption, StyleFunc: ui.Colored(colors.Muted)}}}
 }
 
-func (c *client) newSession(cx *core.Scope) core.Node {
+// showNewSession opens New session's dialog over the place shown, with a
+// form of its own: what the last one held is gone.
+func (c *client) showNewSession() {
+	c.store.LoadModels()
+	c.store.LoadProfiles()
+	c.newForm.Update(func(n int) int { return n + 1 })
+	c.newOpen.Set(true)
+	c.changed()
+}
+
+// newSessionDialog is New session: a dialog on a desktop and a sheet on a
+// touch screen (ui.Dialog), over the place the owner was in, which stays.
+func (c *client) newSessionDialog(*core.Scope) core.Node {
+	return core.Dynamic(func(cx *core.Scope) core.Node {
+		// Each opening builds the form anew.
+		return c.newSession(cx, c.newForm.Get())
+	})
+}
+
+// newSession is opening number form of New session's dialog. Its fields
+// scroll when the window is too short for them, and its buttons, with what
+// went wrong, stay at the bottom.
+func (c *client) newSession(cx *core.Scope, form int) core.Node {
 	name := core.NewSignal(cx, "")
 	id := core.NewSignal(cx, "")
 	model := core.NewSignal(cx, proto.ModelRef{})
 	thinking := core.NewSignal(cx, "")
+	// A choice is as wide as the dialog, so a model's name shows whole.
+	wide := core.Style{Width: core.Pct(100)}
+	// What went wrong stays in the dialog, with the form as it was.
+	problem := core.NewSignal(cx, "")
 	cwd := ""
-	if prev, ok := c.store.Data.Session(c.session.Get()); ok {
+	if prev, ok := c.store.Data.Session(c.session.GetUntracked()); ok {
 		cwd = prev.Cwd
 	}
 	folder := state.NewSessionFolder(cwd)
@@ -165,38 +192,61 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 		}
 		folder.Sync(id.Get(), start, state.RepositoryChoices(p, pp))
 	}
+	standing := func() bool { p, _ := profile(); return p != nil && p.Standing }
+	// here says whether this opening is still the one shown.
+	here := func() bool { return c.newOpen.GetUntracked() && c.newForm.GetUntracked() == form }
 	submit := func() {
+		if c.store.Creating().Busy {
+			return
+		}
 		p, _ := profile()
 		if id.Get() != "" && p == nil {
-			c.showNotice(ui.ToastWarning, "Session unavailable", "pocketd no longer offers the profile "+id.Get()+": choose another profile, or No profile")
+			problem.Set("pocketd no longer offers the profile " + id.Get() + ": choose another profile, or No profile")
 			return
 		}
 		if p != nil && p.Problem != "" {
-			c.showNotice(ui.ToastError, "Couldn’t start session", p.Problem)
+			problem.Set(p.Problem)
 			return
 		}
+		problem.Set("")
 		syncFolder()
 		request := state.NewSessionRequest(p, folder, name.Get(), model.Get(), thinking.Get())
 		c.store.CreateSession(request, func(s proto.Session, err error) {
-			if err != nil {
-				c.result(err)
+			// A form closed since keeps the place the owner went to; a
+			// failure it can no longer show is a notice.
+			if !here() {
+				if err != nil {
+					c.showError(capitalize(err.Error()))
+				}
 				return
 			}
+			if err != nil {
+				problem.Set(capitalize(err.Error()))
+				return
+			}
+			c.newOpen.Set(false)
 			c.openSession(s.ID)
 		})
 		c.changed()
 	}
-	return workspaceui.Page(title("Create a session"), body("Profile"), ui.Select[string]{Value: id.Get, OptionsFunc: func() []ui.Option[string] {
+	fields := []core.Node{body("Profile"), ui.Select[string]{Style: wide, Value: id.Get, OptionsFunc: func() []ui.Option[string] {
 		_, pp := profile()
 		out := []ui.Option[string]{}
 		for _, p := range state.ProfileChoices(pp) {
 			out = append(out, ui.Option[string]{Value: p.ID, Label: p.Label})
 		}
 		return out
-	}, OnChange: func(s string) { id.Set(s); model.Set(proto.ModelRef{}); thinking.Set(""); syncFolder(); update() }},
+	}, OnChange: func(s string) {
+		id.Set(s)
+		model.Set(proto.ModelRef{})
+		thinking.Set("")
+		problem.Set("")
+		syncFolder()
+		update()
+	}},
 		c.profileNotes(),
-		core.Show{When: func() bool { p, _ := profile(); return p == nil || !p.Standing }, Then: func(*core.Scope) core.Node {
-			return workspaceui.Stack(ui.Input{Label: "Title", Placeholder: "Session title", Value: name.Get, OnChange: name.Set}, body("Repository"), ui.Select[string]{Value: func() string { edited.Get(); return folder.Repository }, OptionsFunc: func() []ui.Option[string] {
+		core.Show{When: func() bool { return !standing() }, Then: func(*core.Scope) core.Node {
+			return workspaceui.Stack(body("Repository"), ui.Select[string]{Style: wide, Value: func() string { edited.Get(); return folder.Repository }, OptionsFunc: func() []ui.Option[string] {
 				p, pp := profile()
 				out := []ui.Option[string]{}
 				for _, r := range state.RepositoryChoices(p, pp) {
@@ -204,6 +254,7 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 				}
 				return out
 			}, OnChange: func(s string) { folder.Repository = s; syncFolder(); update() }},
+				workspaceui.Row(ui.Switch{Label: "New worktree", Checked: func() bool { edited.Get(); return folder.Worktree }, Disabled: func() bool { edited.Get(); return folder.Chosen().Name == "" }, OnChange: func(b bool) { folder.Worktree = b; update() }}, body("In a new worktree")),
 				// A session in a new worktree shows the worktree's folder
 				// and branch before it goes, named from the request id it
 				// would go with now; any other has the folder to type.
@@ -222,9 +273,9 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 								core.Text{Content: state.WorktreeLine(branch), Style: ui.TypeCaption, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)})
 						}
 					}
-					return ui.Input{Label: "Working directory", Placeholder: "Absolute path on the service host", Value: func() string { edited.Get(); return folder.Cwd }, OnChange: func(s string) { folder.Cwd = s; syncFolder(); update() }}
-				}), workspaceui.Row(body("New worktree"), ui.Switch{Label: "New worktree", Checked: func() bool { edited.Get(); return folder.Worktree }, Disabled: func() bool { edited.Get(); return folder.Chosen().Name == "" }, OnChange: func(b bool) { folder.Worktree = b; update() }}),
-				body("Model"), ui.Select[proto.ModelRef]{Searchable: true, Placeholder: "Choose model", Value: model.Get, OptionsFunc: func() []ui.Option[proto.ModelRef] {
+					return ui.Input{Label: "Working directory", Placeholder: "Absolute path on the service host", Value: func() string { edited.Get(); return folder.Cwd }, OnChange: func(s string) { folder.Cwd = s; syncFolder(); update() }, OnSubmit: func(string) { submit() }}
+				}),
+				body("Model"), ui.Select[proto.ModelRef]{Style: wide, Searchable: true, Placeholder: "Choose model", Value: model.Get, OptionsFunc: func() []ui.Option[proto.ModelRef] {
 					p, _ := profile()
 					mm, _ := c.store.Models()
 					out := []ui.Option[proto.ModelRef]{}
@@ -232,7 +283,9 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 						out = append(out, ui.Option[proto.ModelRef]{Label: m.Label, Value: m.Ref})
 					}
 					return out
-				}, OnChange: func(m proto.ModelRef) { model.Set(m); thinking.Set("") }}, ui.Select[string]{Placeholder: "Thinking level", Value: thinking.Get, OptionsFunc: func() []ui.Option[string] {
+				}, OnChange: func(m proto.ModelRef) { model.Set(m); thinking.Set("") }}, c.modelNotes(profile),
+				body("Title (optional)"), ui.Input{Label: "Title", Placeholder: "Session title", Value: name.Get, OnChange: name.Set, OnSubmit: func(string) { submit() }},
+				body("Thinking"), ui.Select[string]{Style: wide, Placeholder: "Thinking level", Value: thinking.Get, OptionsFunc: func() []ui.Option[string] {
 					c.revision.Get()
 					out := []ui.Option[string]{{Value: "", Label: "Default thinking"}}
 					mm, _ := c.store.Models()
@@ -246,7 +299,7 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 						}
 					}
 					return out
-				}, OnChange: thinking.Set}, c.modelNotes(profile))
+				}, OnChange: thinking.Set})
 		}}, core.Dynamic(func(cx *core.Scope) core.Node {
 			// A standing profile keeps one session: the form opens it,
 			// and asks for no folder, model or title.
@@ -254,12 +307,20 @@ func (c *client) newSession(cx *core.Scope) core.Node {
 				return core.Text{Content: state.StandingNote(*p), StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}
 			}
 			return core.Group{}
-		}), ui.Button{TextFunc: func() string {
-			if p, _ := profile(); p != nil && p.Standing {
+		})}
+	return ui.Dialog{TestID: "new-session", Title: "New session", Description: "An agent session on the service host, in a working directory there.",
+		Open: c.newOpen.Get, OnOpenChange: func(open bool, _ base.Reason) { c.newOpen.Set(open) }, StyleFunc: workspaceui.DialogPanel(cx),
+		Children: []core.Node{
+			core.Scroll{Style: core.Style{FlexShrink: 1, MinHeight: core.Pt(0)}, Children: []core.Node{workspaceui.Stack(fields...)}},
+			core.Show{When: func() bool { return problem.Get() != "" }, Then: func(*core.Scope) core.Node {
+				return workspaceui.Banner{Tone: workspaceui.Danger, Text: problem.Get()}
+			}}},
+		Footer: []core.Node{c.button("Cancel", func() { c.newOpen.Set(false) }), ui.Button{TextFunc: func() string {
+			if standing() {
 				return "Open session"
 			}
 			return "Start session"
-		}, OnPress: submit, Busy: func() bool { c.revision.Get(); return c.store.Creating().Busy }})
+		}, OnPress: submit, Busy: func() bool { c.revision.Get(); return c.store.Creating().Busy }}}}
 }
 
 // profileNotes say, under New session's profile choice, which profiles

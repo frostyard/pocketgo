@@ -124,9 +124,6 @@ func (c *client) showDestination(d destination) {
 			}
 		case "Terminal":
 			c.store.LoadTerminals()
-		case "New session":
-			c.store.LoadModels()
-			c.store.LoadProfiles()
 		}
 		c.changed()
 	})
