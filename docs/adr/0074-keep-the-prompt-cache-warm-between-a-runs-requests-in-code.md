@@ -30,16 +30,19 @@
    - `decide`: warm when `toolHazard` (0.9) × missCost > warmCost, from the model's prices per million tokens and the usage of the request that last wrote or read the entry, the real request's or the last warm's. The cached tokens are those the provider read from its cache or wrote to it: the entry a warm keeps. warmCost is a cache read of them, the uncached input tokens at the input price, and one output token. missCost is a cache write of the cached tokens in place of a read, at the input price when the model names no write price. A prompt with no cached token has no entry to keep, and a model priced at nothing is never warmed.
    - `isReplayable`: never warm when a one-token cap would change the cache key, as with a thinking level on Anthropic Messages, whose budget follows the cap, unless the model forces adaptive thinking.
    - The keeper's clock and timers count the time the host spent suspended, as a cache entry's lifetime does, though Linux's monotonic clock, which Go's timers run on, stops in suspend. Its times are wall-clock times with no monotonic reading, and its timers (`wallClock.At`) wait on Go's timers in steps of at most `wallStep` (5 seconds), comparing wall-clock times at each step. So a refresh or an age cap due while the host slept fires within a step of its waking, and a refresh found late is dropped.
+   - `refreshStale`: a refresh goes out only while it is neither late nor past the age cap, and the clock is no earlier than when the refresh was set. A wall clock that went back would hold a refresh to its old time, long after the entry is gone. So a timer fires at the step after it sees the clock earlier than at its last step, and the keeper retires the entry, whose age it can no longer tell; a real request's answer seen with the clock earlier than its dispatch starts no warm.
 4. **The warm is the same request with a one-token cap.**
    - It goes to the provider's own stream function, below `ai.Models`, with the real request's model, credentials, headers and transcript, `MaxTokens` 1, no retry, and a context of the keeper's own. It carries no telemetry span, payload hook or response hook of the generation task.
    - Its own `OnPayload` hashes the final payload with the output-cap fields left out (`payloadHash`). When the hash differs from the real request's, the hook fails, so the warm goes unsent and the keeper stops for that session. The real request's hash is taken by wrapping its `OnPayload`, after the harness's own hook ran.
+   - The provider builds the payload on its own time, and the host may sleep before it does: the hook checks the refresh again (`refreshStale`) after the hash, the last moment before the provider sends it, and fails a stale warm the same way.
    - No transcript records a warm: the harness never sees it.
 5. **Its stops:**
    - the session's next real request that does not ask for no cache, on any model: one on a model with no cache lifetime, as after the owner changed a run's model, retires the warm though it starts none
    - the run's end or abort (decision 6)
    - a warm that errs, is aborted or would differ
    - a warm the provider cached nothing of: no entry is left to keep
-   - a late refresh (`lateRefresh`), as after the host slept
+   - a late refresh (`lateRefresh`), as after the host slept, at its timer or in the warm's payload hook
+   - a wall clock that went back (`refreshStale`)
    - a refresh no longer worth its cost (`decide`)
    - the age cap, 30 minutes from the real request's answer, never from a warm; a warm in flight at the cap is aborted
    - `Engine.Close`, which stops the keeper first: it cancels the warms in flight and waits, within its deadline, for each one's terminal result, so its usage is counted.
