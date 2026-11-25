@@ -202,3 +202,32 @@ func TestAPhoneHoldsTheGitHubRefreshInTheBackground(t *testing.T) {
 		}
 	}
 }
+
+// TestAPhonesBoardKeepsWhatHoldsSomethingAboveTheThreads checks the
+// board's order on a compact window (state.BoardOrder): a night shift's
+// section that holds something stays above the threads, and one that
+// holds nothing goes after them. A desktop keeps its own order.
+func TestAPhonesBoardKeepsWhatHoldsSomethingAboveTheThreads(t *testing.T) {
+	seed := func() *pocketdtest.Server {
+		s := pocketdtest.New()
+		s.AddThread(proto.Thread{ID: 11, Session: 9, Agent: "editor", Title: "Publish artifacts", State: proto.ThreadOpen})
+		s.SetSchedules(proto.Schedules{Schedules: []proto.Schedule{{ID: "morning", When: "07:00", Message: "Start the day."}}})
+		return s
+	}
+	top := func(app *nsgotest.App, selector string) core.Points { return app.Find(selector).Bounds().Origin.Y }
+
+	app := phoneApp(t, seed())
+	app.SelectTab(tabBar, tabBoard)
+	app.WaitFor("id:board-lane-open", 5*time.Second)
+	schedules, threads, night := top(app, "id:board >> text:Schedules"), top(app, "id:board-lane-open"), top(app, "id:board >> text:Night shift")
+	if !(schedules < threads && threads < night) {
+		t.Errorf("a phone's board has the schedules at %v, the threads at %v and the empty night shift at %v: want them in that order", schedules, threads, night)
+	}
+
+	desk := signedInApp(t, seed(), 1230, 900)
+	desk.Press("sidebar-panel >> text:Work board")
+	desk.WaitFor("id:board-lane-open", 5*time.Second)
+	if threads, schedules := top(desk, "id:board-lane-open"), top(desk, "id:board >> text:Schedules"); threads >= schedules {
+		t.Errorf("a desktop's board has the threads at %v and the schedules at %v: want the threads first", threads, schedules)
+	}
+}
