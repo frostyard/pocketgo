@@ -171,6 +171,35 @@ func WorkTaskDropped(session int64, title, why string) string {
 		"Nothing was started there; call team_work again to start the work in a fresh worktree.", session, Clip(strings.TrimSpace(title), 60), strings.TrimSpace(why))
 }
 
+// WorkUnrecorded is team_work's answer when pocketd started the work
+// session but could not record it yet (why): pocketd records it and sends
+// its task itself, so the caller must not call team_work again for the
+// task, which would start a second session on it (Codex review of #174,
+// round 5).
+func WorkUnrecorded(session int64, title, why string) string {
+	return fmt.Sprintf("pocketd started work session %d for %q, but could not record it yet (%s). Do not call team_work again for this task: "+
+		"pocketd records the session and sends it its task itself, and each of its answers comes back to you as a message that starts with [S%d · work · …].",
+		session, Clip(strings.TrimSpace(title), 60), strings.TrimSpace(why), session)
+}
+
+// WorkUncertain is team_work's answer when pocketd cannot tell whether the
+// work session started (why): its creation's answer was lost, and a look
+// at its record failed. pocketd records a session that started and sends
+// its task itself, so the caller waits for its answer rather than call
+// again; nothing comes back when none started.
+func WorkUncertain(title, why string) string {
+	return fmt.Sprintf("pocketd cannot tell yet whether the work session for %q started (%s). Do not call team_work again for this task now: "+
+		"if it started, pocketd records it and sends it its task itself, and its answers come back to you as messages that start with [S… · work · %s]. "+
+		"If none comes, it did not start, and you may call team_work again later.", Clip(strings.TrimSpace(title), 60), strings.TrimSpace(why), Clip(strings.TrimSpace(title), 60))
+}
+
+// WorkNotStarted is team_work's refusal when the work session surely did
+// not start (why): pocketd created no session, so a call again may start
+// the work.
+func WorkNotStarted(why string) string {
+	return "the work session did not start (" + strings.TrimSpace(why) + "): pocketd created no session, so calling team_work again may start the work"
+}
+
 // WorkStarted is team_work's answer: the work session, its model, its
 // worktree and branch, and how its answers come back.
 func WorkStarted(session int64, model, repository, path, branch string) string {

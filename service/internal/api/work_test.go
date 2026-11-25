@@ -720,8 +720,8 @@ func TestAWorkKeepsWhyItsBranchIsStale(t *testing.T) {
 	h.engine.createErr = errors.New("the engine failed")
 	h.engine.mu.Unlock()
 	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
-	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil {
-		t.Fatal("a failed create answered")
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil || !strings.Contains(err.Error(), "the work session did not start") {
+		t.Fatalf("a create that made nothing: %v", err)
 	}
 	row, err := h.store.WorkByKey(ctx, workKey(call))
 	if err != nil || row.Stale == "" {
@@ -851,8 +851,14 @@ func TestAPendingWorkIsRecordedAtStart(t *testing.T) {
 		return h.store.RecordWorkSession(ctx, key, session, task)
 	}
 	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
-	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil {
-		t.Fatal("a failed record answered")
+	answer, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."})
+	h.engine.mu.Lock()
+	pendingID := h.engine.byKey[workKey(call)]
+	h.engine.mu.Unlock()
+	// pocketd started the session: the answer says so, names it, and
+	// tells the caller not to call again (Codex review of #174, round 5).
+	if err != nil || !strings.Contains(answer, "Do not call team_work again") || !strings.Contains(answer, "work session "+strconv.FormatInt(pendingID, 10)) {
+		t.Fatalf("a session whose record failed answered %q, %v", answer, err)
 	}
 	stopped := recordedWork(t, h, TeamCall{Session: agnes.ID, Task: 8, CallID: "w2"}, "Stopped.", "Stopped.")
 	h.engine.mu.Lock()
@@ -964,8 +970,14 @@ func TestAPendingWorkHeldByACallIsReconciledLater(t *testing.T) {
 		return h.store.RecordWorkSession(ctx, key, session, task)
 	}
 	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
-	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil {
-		t.Fatal("a failed record answered")
+	answer, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."})
+	h.engine.mu.Lock()
+	pendingID := h.engine.byKey[workKey(call)]
+	h.engine.mu.Unlock()
+	// pocketd started the session: the answer says so, names it, and
+	// tells the caller not to call again (Codex review of #174, round 5).
+	if err != nil || !strings.Contains(answer, "Do not call team_work again") || !strings.Contains(answer, "work session "+strconv.FormatInt(pendingID, 10)) {
+		t.Fatalf("a session whose record failed answered %q, %v", answer, err)
 	}
 	unlock := h.server.keys.lock(workKey(call))
 	if done, _ := h.server.deliverAll(ctx); done {
@@ -1009,8 +1021,12 @@ func TestALostCreateWhoseLookFailedIsReconciled(t *testing.T) {
 		}
 	}
 	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
-	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil {
-		t.Fatal("a lost create whose look failed answered")
+	// pocketd cannot tell whether it started: the answer says so, and
+	// tells the caller not to call again now (Codex review of #174, round
+	// 5).
+	if answer, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err != nil || !strings.Contains(answer, "cannot tell yet whether the work session") ||
+		!strings.Contains(answer, "Do not call team_work again") {
+		t.Fatalf("a lost create whose look failed answered %q, %v", answer, err)
 	}
 	h.engine.onCreate = nil
 	h.engine.mu.Lock()
@@ -1056,5 +1072,42 @@ func TestASessionOnARepositoryCarriesItsChoice(t *testing.T) {
 	if team.WorkGuideFor(specs[0].Profile, team.SessionRole{}, specs[0].Cwd, specs[0].Repository) != "" ||
 		team.WorkGuideFor(specs[1].Profile, team.SessionRole{}, specs[1].Cwd, specs[1].Repository) != team.WorkGuide {
 		t.Fatal("the guide does not follow the owner's choice")
+	}
+}
+
+// A work session's cursor moves to the last entry of the last run that
+// ended, never to the message that began it, nor into a run still at
+// work: a read after it starts past every entry a kept answer came from
+// (Codex review of #174, round 5).
+func TestAWorkSessionsCursorPassesItsEndedRun(t *testing.T) {
+	h, agnes := workHarness(t)
+	row := startedWork(t, h, agnes.ID)
+	h.engine.mu.Lock()
+	h.engine.transcripts = map[int64][]proto.Entry{row.Session: {
+		{ID: 1, Kind: proto.EntryUser, Text: "The task."},
+		{ID: 2, Kind: proto.EntryAssistant, Text: "Reading.", StopReason: "toolUse"},
+		{ID: 3, Kind: proto.EntryToolResult},
+		{ID: 4, Kind: proto.EntryAssistant, Text: "Fixed it.", StopReason: "stop"},
+		{ID: 5, Kind: proto.EntryUser, Text: "Also the docs."},
+		{ID: 6, Kind: proto.EntryAssistant, Text: "Reading the docs.", StopReason: "toolUse"},
+	}}
+	h.engine.transcriptLive = map[int64]proto.Live{row.Session: {Busy: true}}
+	h.engine.mu.Unlock()
+	endRun(t, h, row.Session)
+	got, err := h.store.WorkOfSession(context.Background(), row.Session)
+	if err != nil || got.Cursor != 4 {
+		t.Fatalf("the cursor %+v, %v: want the ended run's last entry, 4", got, err)
+	}
+	if answers, sends := workAnswersTo(h, agnes.ID); len(answers) != 1 || sends != 1 {
+		t.Fatalf("answers %q, sent %d times", answers, sends)
+	}
+	h.engine.mu.Lock()
+	h.engine.readAfter = nil
+	h.engine.mu.Unlock()
+	h.server.followWork(row.Session)
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if len(h.engine.readAfter) != 1 || h.engine.readAfter[0] != 4 {
+		t.Fatalf("the next read began after %v", h.engine.readAfter)
 	}
 }

@@ -213,3 +213,24 @@ func TestWorkGuideFor(t *testing.T) {
 		}
 	}
 }
+
+// A start pocketd made, or may have made, and could not record says so,
+// and that the caller must not call again; a start that made nothing
+// says the work did not start (Codex review of #174, round 5).
+func TestWorkStartOutcomeTexts(t *testing.T) {
+	unrecorded := WorkUnrecorded(31, "Fix the flaky test.", "database busy")
+	for _, want := range []string{"started work session 31", "Fix the flaky test.", "database busy", "Do not call team_work again", "[S31 · work"} {
+		if !strings.Contains(unrecorded, want) {
+			t.Errorf("unrecorded lacks %q: %s", want, unrecorded)
+		}
+	}
+	uncertain := WorkUncertain("Fix it.", "lost; busy")
+	for _, want := range []string{"cannot tell yet whether the work session", "Fix it.", "lost; busy", "Do not call team_work again", "If none comes"} {
+		if !strings.Contains(uncertain, want) {
+			t.Errorf("uncertain lacks %q: %s", want, uncertain)
+		}
+	}
+	if failed := WorkNotStarted("no model"); !strings.Contains(failed, "did not start (no model)") || !strings.Contains(failed, "created no session") {
+		t.Errorf("not started: %s", failed)
+	}
+}

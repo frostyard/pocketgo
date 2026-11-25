@@ -374,21 +374,27 @@ type workerReply struct {
 // Only the runs begun after after count, those whose message's entry is
 // later; cursor is the entry that began the last run that ended, or after.
 func workerReplies(entries []proto.Entry, live proto.Live, after int64) (out []workerReply, cursor int64) {
-	return runReplies(entries, live, after, "worker")
+	out, cursor, _ = runReplies(entries, live, after, "worker")
+	return out, cursor
 }
 
 // runReplies are the replies of the runs a transcript holds, read as
 // workerReplies reads a worker's, with who naming the session in the
 // replies pocketd writes for a run that ended with none: a worker's, or an
-// agent's work session's (ADR-0073).
-func runReplies(entries []proto.Entry, live proto.Live, after int64, who string) (out []workerReply, cursor int64) {
-	cursor = after
+// agent's work session's (ADR-0073). consumed is the last entry of the
+// last run that ended, or after: the entry before the message that began
+// the next run, or the transcript's last once it is idle, never one of a
+// run still at work. A work session reads on from there, so no entry of a
+// run whose reply was kept is read again (Codex review of #174, round 5).
+func runReplies(entries []proto.Entry, live proto.Live, after int64, who string) (out []workerReply, cursor, consumed int64) {
+	cursor, consumed = after, after
 	start := -1
 	end := func(stop int, last bool) {
 		if start < 0 || entries[start].ID <= after {
 			return
 		}
 		cursor = entries[start].ID
+		consumed = max(consumed, entries[stop-1].ID)
 		// A compaction, which the wire names compaction (proto.EntryCompaction),
 		// and an entry the protocol does not model, are no step of the run:
 		// the reply is the last entry before them (Codex review of #29,
@@ -420,7 +426,7 @@ func runReplies(entries []proto.Entry, live proto.Live, after int64, who string)
 	if !live.Busy {
 		end(len(entries), true)
 	}
-	return out, cursor
+	return out, cursor, consumed
 }
 
 // stopToolUse is the stop reason of a model's entry that a tool call

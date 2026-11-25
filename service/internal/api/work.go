@@ -80,10 +80,30 @@ func (s *Server) TeamWork(ctx context.Context, call TeamCall, w team.Work) (stri
 		return "", err
 	}
 	if row, err = s.startWork(ctx, row, fresh); err != nil {
+		// A session pocketd started, or may have, whose record the
+		// delivery pass finishes, is no failed start: the caller is told
+		// not to call again (Codex review of #174, round 5).
+		var pending workPendingAnswer
+		if errors.As(err, &pending) {
+			return pending.answer, nil
+		}
 		return "", err
 	}
 	return s.workAnswer(db, row)
 }
+
+// workPendingAnswer is a start whose session pocketd made, or may have
+// made, and could not record now: the delivery pass records it and sends
+// its task (reconcileWork), so team_work answers answer, which tells the
+// caller not to call again, rather than err (Codex review of #174, round
+// 5).
+type workPendingAnswer struct {
+	answer string
+	err    error
+}
+
+func (p workPendingAnswer) Error() string { return p.err.Error() }
+func (p workPendingAnswer) Unwrap() error { return p.err }
 
 // newWork checks a team_work call and records its work: the caller
 // (workCaller), the task and title (team.CheckWork), the repository
@@ -264,10 +284,12 @@ func (s *Server) startWork(ctx context.Context, row store.WorkRow, fresh bool) (
 		case lookErr != nil:
 			// Whether PiG made it cannot be told now: the delivery pass
 			// looks again, and records one it made, with its task (Codex
-			// review of #174, round 4).
+			// review of #174, round 4), and the caller is told so (round 5).
 			s.workPending()
+			return store.WorkRow{}, workPendingAnswer{answer: team.WorkUncertain(row.Title, err.Error()+"; "+lookErr.Error()), err: err}
 		}
-		return store.WorkRow{}, err
+		// The engine's record says it made none: a definite failure.
+		return store.WorkRow{}, errors.New(team.WorkNotStarted(err.Error()))
 	}
 	return s.recordWork(db, row, id, spec, spec.Profile.ID, false)
 }
@@ -299,8 +321,11 @@ func (s *Server) recordWork(ctx context.Context, row store.WorkRow, id int64, sp
 	recorded, err := s.recordWorkSession(ctx, row.Key, store.SessionRow{ID: id, Title: title, Cwd: spec.Cwd, Provider: spec.Model.Provider,
 		Model: spec.Model.ID, Thinking: spec.Thinking, Profile: profile, Route: spec.Route, CreatedBy: teamCreator}, store.NoteRow{Key: workTaskKey(row.Key), Text: brief})
 	if err != nil {
+		// The session runs: the delivery pass records it with its task,
+		// and the caller is told not to start it again (Codex review of
+		// #174, round 5).
 		s.workPending()
-		return store.WorkRow{}, err
+		return store.WorkRow{}, workPendingAnswer{answer: team.WorkUnrecorded(id, row.Title, err.Error()), err: err}
 	}
 	// Its profile's MCP tools as they are now: it builds, as the owner's
 	// session of its profile does (ADR-0063).
@@ -625,8 +650,10 @@ func (s *Server) workRunEnded(ctx context.Context, row store.WorkRow) {
 // answer's entry, with the cursor's move, in one transaction
 // (store.QueueWorkReplies): the runs are read as a worker's are
 // (runReplies), from the transcript's own word on whether the session is
-// at work. One follow of a session reads at a time, from the cursor as it
-// is then.
+// at work. The cursor moves to the last entry of the last run that ended,
+// never into one still at work, so the next read starts after every entry
+// a kept answer came from (Codex review of #174, round 5). One follow of
+// a session reads at a time, from the cursor as it is then.
 func (s *Server) queueWorkReplies(ctx context.Context, row store.WorkRow) error {
 	defer s.workFollows.lock(strconv.FormatInt(row.Session, 10))()
 	current, err := s.store.WorkOfSession(ctx, row.Session)
@@ -637,7 +664,7 @@ func (s *Server) queueWorkReplies(ctx context.Context, row store.WorkRow) error 
 	if err != nil {
 		return err
 	}
-	replies, cursor := runReplies(entries, live, current.Cursor, workWho)
+	replies, _, cursor := runReplies(entries, live, current.Cursor, workWho)
 	if len(replies) == 0 && cursor <= current.Cursor {
 		return nil
 	}
