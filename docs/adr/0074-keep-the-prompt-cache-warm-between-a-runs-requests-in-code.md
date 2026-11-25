@@ -21,27 +21,29 @@
 
 ## Decision
 
-1. **The keeper wraps every provider's stream functions when the engine opens** (`cacheKeeper.install`): PiG's own providers, with the models the owner adds to them, and the owner's own providers alike. A request with no provider session id, or that uses no cache, passes through untouched. It is code in `service/pig` alone ([ADR-0004](0004-build-the-service-on-pigs-durable-harness.md)), on by default. `pocketd serve -cache-keeper=false` turns it off, and then nothing is wrapped. No environment variable switches it.
-2. **It warms only between the requests of one run.** It follows a real request's result on a goroutine of its own. Only an answer that ended in a tool call (`toolUse`) starts a warm, keyed by the provider session id. A finished answer, an error, an abort, a compaction's request (retention `none`) and an idle session start none.
+1. **The keeper wraps every provider's stream functions when the engine opens** (`cacheKeeper.install`): PiG's own providers, with the models the owner adds to them, and the owner's own providers alike. A request with no provider session id passes through untouched, and so does one that asks for no cache (retention `none`, as a compaction's), which leaves the session's warm as it is. It is code in `service/pig` alone ([ADR-0004](0004-build-the-service-on-pigs-durable-harness.md)), on by default. `pocketd serve -cache-keeper=false` turns it off, and then nothing is wrapped. No environment variable switches it.
+2. **It warms only between the requests of one run.** It follows a real request's result on a goroutine of its own. Only an answer that ended in a tool call (`toolUse`) starts a warm, keyed by the provider session id. A finished answer, an error, an abort, a compaction's request, a prompt the provider cached nothing of, a request on a model with no cache lifetime, and an idle session start none.
 3. **Its rules are pure functions, each with its test** ([ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md)):
    - `cacheLifetime`: the model's lifetime for the retention the request used, resolved as PiG's providers resolve it. Retention `none`, or no lifetime named, means no warm.
-   - `refreshDelay`: 90% of the lifetime, and never closer than 10 seconds to its end. A first refresh at or after the age cap (`maxWarmAge`, 30 minutes), as the long tier's would be, never starts.
-   - `decide`: warm when `toolHazard` (0.9) × missCost > warmCost, from the model's prices per million tokens. warmCost is a cache read of the whole prompt (the real request's input, cache-read and cache-write tokens) plus one output token. missCost is a cache write of it in place of a read, at the input price when the model names no write price. A model priced at nothing is never warmed.
+   - `refreshDelay`: 90% of the lifetime, and never closer than 10 seconds to its end, counted from when the request that last wrote or read the entry went to the provider, real or warm: the entry is there from when the answer begins, not when a slow answer ends. A first refresh at or after the age cap (`maxWarmAge`, 30 minutes), as the long tier's would be, never starts.
+   - `lateRefresh`: a refresh more than half the margin between its refresh point and the entry's end past its due time is late, and none goes out, the first included, as when a slow answer ended past it.
+   - `decide`: warm when `toolHazard` (0.9) × missCost > warmCost, from the model's prices per million tokens and the real request's usage. The cached tokens are those the provider read from its cache or wrote to it: the entry a warm keeps. warmCost is a cache read of them, the uncached input tokens at the input price, and one output token. missCost is a cache write of the cached tokens in place of a read, at the input price when the model names no write price. A prompt with no cached token has no entry to keep, and a model priced at nothing is never warmed.
    - `isReplayable`: never warm when a one-token cap would change the cache key, as with a thinking level on Anthropic Messages, whose budget follows the cap, unless the model forces adaptive thinking.
+   - The keeper's clock counts the time the host spent suspended (wall-clock times with no monotonic reading), so a refresh after a sleep is late and the age cap holds: Linux's monotonic clock stops in suspend, and a cache entry's lifetime does not.
 4. **The warm is the same request with a one-token cap.**
    - It goes to the provider's own stream function, below `ai.Models`, with the real request's model, credentials, headers and transcript, `MaxTokens` 1, no retry, and a context of the keeper's own. It carries no telemetry span, payload hook or response hook of the generation task.
    - Its own `OnPayload` hashes the final payload with the output-cap fields left out (`payloadHash`). When the hash differs from the real request's, the hook fails, so the warm goes unsent and the keeper stops for that session. The real request's hash is taken by wrapping its `OnPayload`, after the harness's own hook ran.
    - No transcript records a warm: the harness never sees it.
 5. **Its stops:**
-   - the session's next real request that uses the cache
+   - the session's next real request that does not ask for no cache, on any model: one on a model with no cache lifetime, as after the owner changed a run's model, retires the warm though it starts none
    - the run's end or abort (decision 6)
    - a warm that errs, is aborted or would differ
-   - a refresh that fires late, more than half the margin past its due time, as after the host slept
+   - a late refresh (`lateRefresh`), as after the host slept
    - a refresh no longer worth its cost (`decide`)
-   - the age cap, 30 minutes from the real request that started it, never from a warm; a warm in flight at the cap is aborted
-   - `Engine.Close`, which stops the keeper first and waits for the warms in flight.
-6. **The run's end is found by the engine's watch.** When a watched session's live state goes from busy to idle, the watch tells the keeper the provider session id the view carries (`cacheKeeper.runEnded`). A run that ends unseen (a session not watched, or views that skip the idle moment) leaves its warm to the session's next request or the age cap.
-7. **The log names each warm's model, its tokens and its cost at the catalog's prices,** and what a session's warms came to when they stop. It holds no prompt text, key or header, and no provider's error text. A warm's usage reaches no transcript.
+   - the age cap, 30 minutes from the real request's answer, never from a warm; a warm in flight at the cap is aborted
+   - `Engine.Close`, which stops the keeper first: it cancels the warms in flight and waits, within its deadline, for each one's terminal result, so its usage is counted.
+6. **The run's end is found by the engine's watch.** When a watched session's live state goes from busy to idle, the engine reads the keeper's count of the session's requests (`cacheKeeper.generation`), then the session's state now (`Engine.noteRunEnded`). The warm stops (`cacheKeeper.runEnded`) only when the session has no run now and no request began between the two reads. A provider session lasts across runs and the watch may show an end late, after the next run began: that run's first request retired the old warm itself, and its own warm stays. A run that ends unseen (a session not watched, or views that skip the idle moment) leaves its warm to the session's next request or the age cap.
+7. **The log names each warm's model, its cached tokens, its usage and its cost at the catalog's prices,** and what a session's warms came to when they stop, once a warm in flight then has ended and been counted. It holds no prompt text, key or header, and no provider's error text. A warm's usage reaches no transcript.
 
 ## Consequences
 
@@ -51,6 +53,7 @@
 - Every real request the keeper may warm after is encoded to JSON once more, for its hash, before it is sent.
 - A harness hook that replaces a provider's payload (`BeforeProviderRequest`), which pocketd has none of today, would make every warm differ: none would go out, rather than a warm that writes a new entry at full price.
 - A run's end the watch does not see costs warms until the next request or the age cap.
+- A warm whose provider never ends its stream once cancelled keeps `Engine.Close` waiting until its deadline, which then reports it.
 
 ## Alternatives considered
 
