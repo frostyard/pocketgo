@@ -49,5 +49,6 @@ func (c *client) platformAccounts() {
 	c.creds = config.Credentials{Ring: ring, NotFound: os.ErrNotExist, Dir: store.Dir()}
 	auth := ownerauth.New(config.GitHubApp{Ring: ring, NotFound: os.ErrNotExist}, "")
 	c.initGitHub(auth)
+	c.holdWhileSuspended(auth)
 	c.cx.Cleanup(auth.Close)
 }

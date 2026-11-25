@@ -61,6 +61,11 @@ func (c *client) record(dest destination) {
 func (c *client) rememberCard(key string) { c.nav.visits[c.nav.index].dest.card = key }
 
 func (c *client) goTo(dest destination) {
+	// A compact window's session shows over the tab it was opened from,
+	// and its way back goes to the place it was opened from.
+	if from := c.page.GetUntracked(); dest.page == "Session" && from != "Session" {
+		c.overTab, c.openedFrom = c.tabOf(from), placeOf(from)
+	}
 	c.record(dest)
 	c.showDestination(dest)
 }

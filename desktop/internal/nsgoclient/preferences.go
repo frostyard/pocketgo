@@ -46,6 +46,10 @@ func (c *client) loadPrefs() {
 	}
 }
 func (c *client) notify(n state.Notice) {
+	// A platform the client shows no notifications on (state.Notifies).
+	if !state.Notifies(c.goos()) {
+		return
+	}
 	if !state.ShowNotice(n, c.prefs.Notify, c.cx.Env().Lifecycle() == core.LifecycleActive) {
 		return
 	}

@@ -21,6 +21,10 @@ import (
 )
 
 type client struct {
+	// overTab is the tab a compact window's session shows over, and
+	// openedFrom the place it was opened from, which its way back goes to.
+	overTab    state.Tab
+	openedFrom string
 	// pendingNotice is a notification clicked before the kept sign-in
 	// connected: what it is about opens once it has.
 	pendingNotice *state.NoticeTarget
@@ -244,6 +248,8 @@ func (c *client) sections() []ui.SidebarSection {
 		place("Inbox", lucide.Inbox), place("Work board", lucide.Columns3), place("Search", lucide.Search),
 		place("Files", lucide.FolderOpen), place("Terminal", lucide.Terminal), place("Activity", lucide.Activity),
 	}
+	// The Terminal place shows only where the platform has it.
+	terminal := state.HasTerminal(c.goos())
 	if inbox := c.store.Data.Inbox(); state.InboxBadge(inbox) != "" {
 		items[0].Text = "Inbox, " + state.InboxNote(inbox)
 		items[0].Content = workspaceui.NavLabel{Icon: lucide.Inbox, Text: "Inbox", Count: state.InboxCount(inbox), Unread: true}
@@ -260,6 +266,9 @@ func (c *client) sections() []ui.SidebarSection {
 		items[4].Content = workspaceui.NavLabel{Icon: lucide.Terminal, Text: "Terminal", Count: n}
 	}
 	items = append(items, place("New session", lucide.SquarePen))
+	if !terminal {
+		items = slices.DeleteFunc(items, func(i ui.SidebarItem) bool { return i.ID == "Terminal" })
+	}
 	sections := []ui.SidebarSection{{Title: "Workspace", Items: items}}
 	tree := c.store.Data.Sidebar(state.SidebarOptions{Seen: c.prefs.Seen, Pinned: c.prefs.Pinned, Filter: c.filter.Get(), Now: time.Now()})
 	var add func(*ui.SidebarSection, state.SidebarKey, int, bool)
@@ -413,28 +422,34 @@ func (c *client) workspace(cx *core.Scope) core.Node {
 		SidebarFooter: []core.Node{c.sidebarFoot(showSettings)},
 		Header:        []core.Node{c.contentHeader(cx)},
 		Actions:       []core.Node{c.toolbar(cx, launch)},
-		Content: []core.Node{core.View{Style: ui.FillRest, Children: []core.Node{core.View{Style: ui.FillRest.Merge(core.Style{MinHeight: core.Pt(0)}), Children: []core.Node{core.Dynamic(func(cx *core.Scope) core.Node {
-			switch c.page.Get() {
-			case "Session":
-				return c.conversation(cx, c.session.Get())
-			case "Work board":
-				return c.board(cx)
-			case "New session":
-				return c.newSession(cx)
-			case "Search":
-				return c.search(cx)
-			case "Files":
-				return c.files(cx)
-			case "Terminal":
-				return c.terminalPage(cx)
-			case "Activity":
-				return c.activity(cx)
-			default:
-				return c.inbox(cx)
-			}
-		})}}, c.statusBar()}}},
+		Content:       []core.Node{core.View{Style: ui.FillRest, Children: []core.Node{core.View{Style: ui.FillRest.Merge(core.Style{MinHeight: core.Pt(0)}), Children: []core.Node{core.Dynamic(func(cx *core.Scope) core.Node { return c.placeView(cx, c.page.Get()) })}}, c.statusBar()}}},
 	}
-	return core.Group{shell, palette, c.settingsDialog(cx, settingsOpen)}
+	// A phone's window, and a tablet's narrow one, go by a bar of tabs.
+	compact := core.NewMemo(cx, c.compact)
+	window := core.Show{When: compact.Get, Then: func(cx *core.Scope) core.Node { return c.compactWorkspace(cx, showSettings) },
+		Else: func(*core.Scope) core.Node { return shell }}
+	return core.Group{window, palette, c.settingsDialog(cx, settingsOpen)}
+}
+
+// placeView is the view of a page of the window.
+func (c *client) placeView(cx *core.Scope, page string) core.Node {
+	switch page {
+	case "Session":
+		return c.conversation(cx, c.session.Get())
+	case "Work board":
+		return c.board(cx)
+	case "New session":
+		return c.newSession(cx)
+	case "Search":
+		return c.search(cx)
+	case "Files":
+		return c.files(cx)
+	case "Terminal":
+		return c.terminalPage(cx)
+	case "Activity":
+		return c.activity(cx)
+	}
+	return c.inbox(cx)
 }
 
 func (c *client) showNotice(kind ui.ToastType, title, detail string) {
