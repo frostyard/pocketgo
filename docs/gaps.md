@@ -25,7 +25,7 @@ The roadmap's "What carries over" names each of these.
 
 - [x] ~~**G1. Wait out provider rate limits.**~~ Struck by the owner on 2026-11-24.
 
-- [x] **G2. Keep the prompt cache warm.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#172](https://github.com/frostyard/pocketgo/pull/172), ADR-0074, roadmap item 44.
+- [x] **G2. Keep the prompt cache warm.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#172](https://github.com/frostyard/pocketgo/pull/172), ADR-0075, roadmap item 44.
 
 - [ ] **G3. Fence and defang outside text.** Missing.
   - **Was:** pi-pocket's `src/server/fence.ts`: `defang`, `attribute`, `quoted`, and its class of invisible characters.
@@ -38,13 +38,13 @@ The roadmap's "What carries over" names each of these.
     - `team_inbox` quotes some fields with `%q`, which is no fence.
   - **Docs:** the roadmap lists "Fencing and defanging inbox text". The [architecture](design/architecture.md)'s "External events" says, as intent, "Outside text is fenced and defanged before an agent sees it", next to Phase 5's webhooks. GitHub and MCP text arrive today, before Phase 5.
 
-- [x] **G4. Watches.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#173](https://github.com/frostyard/pocketgo/pull/173), ADR-0072, roadmap item 42.
+- [x] **G4. Watches.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#173](https://github.com/frostyard/pocketgo/pull/173), ADR-0073, roadmap item 42.
 
-- [x] **G5. Wait for CI outside a shift.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#173](https://github.com/frostyard/pocketgo/pull/173), ADR-0072, roadmap item 42.
+- [x] **G5. Wait for CI outside a shift.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#173](https://github.com/frostyard/pocketgo/pull/173), ADR-0073, roadmap item 42.
 
 ## pi-pocket-team: the team
 
-- [x] **G6. An agent starts its own linked session in a fresh worktree.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#174](https://github.com/frostyard/pocketgo/pull/174), ADR-0073, roadmap item 43.
+- [x] **G6. An agent starts its own linked session in a fresh worktree.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#174](https://github.com/frostyard/pocketgo/pull/174), ADR-0074, roadmap item 43.
 
 - [ ] **G7. The home guard.** Missing.
   - **Was:** a hook (`homeGuard`, `team.ts`) that refused `edit` and `write` into any repository of the roster, or a sibling worktree, from a session in a home.
