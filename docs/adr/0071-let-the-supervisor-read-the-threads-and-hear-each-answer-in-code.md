@@ -1,0 +1,72 @@
+# 0071 — Let the supervisor read the threads, and hear each answer to an ask, in code
+
+- **Status:** Accepted
+- **Date:** 2026-11-24
+
+## Context
+
+**The owner asked for both.** The migration gap survey of 2026-11-24 (`docs/gaps.md`) listed G10, "The supervisor lists and reads its threads", and G11, "The supervisor is told when the owner answers an ask". On 2026-11-24 the owner said: "strike G1, make a PR for G2, G4, G5, G6, G10, G11 - combine smaller changes into one PR if you can".
+
+**The supervisor cannot see its threads.** pi-pocket-team's `team_sessions` and its desk's `list` and `read` gave the supervisor every open thread with who moves it next, and one thread whole.
+- pocketd's supervisor has `team_delegate`, `team_close`, `team_schedule`, `team_send`, `team_gather`, `team_board`, `team_launch` and `team_inbox` ([ADR-0046](0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md)). `team_inbox` lists what waits for the owner, not the threads.
+- Odrade, the supervisor, runs in one standing session, compacted early ([ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)). What a report told her may be gone from her context, and she asks the owner or a specialist where a thread stands.
+- The desktop's work board groups the threads by who moves each next, by a rule in code (`state.Data.NextMover`, [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md)): the owner while an ask of it is open, a pull request of it waits for review, its plan waits for approval or its shift is paused; the specialist while it starts or works or its shift runs; the supervisor once its specialist reported it done or blocked. `service/internal/team` cannot import the desktop's module.
+- pocketd records all of it in the work database: each thread's title, agent, state, delegating session, folder, branch, task, last report, plan, shift and its rounds ([ADR-0024](0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md)), the thread it follows and the one that carries it on ([ADR-0061](0061-reopen-a-closed-thread-when-a-message-reaches-its-specialist.md)), the worker model asked for it ([ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md)); every ask with its answer, its device and time, or its withdrawal ([ADR-0037](0037-unblock-a-thread-when-the-supervisors-message-reaches-it.md)); every linked pull request with CI and the verdict at its head as pocketd last read them ([ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md)). It keeps no time of a thread's close: `updated_at` is its record's last change, the close or a later note on its report.
+- Each cross-review is a thread pocketd started and ends at its verdict (ADR-0019). It takes a place on the desk, and nobody delegated it.
+
+**An answer reaches the asking session alone.** The owner's answer to an ask goes to the specialist's session, once ([ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), rule 29). The supervisor learns of it only from the specialist's next report or by calling `team_inbox`. The roadmap's slice 2 saw it on 2026-11-19: "the supervisor still thought T1 waited for A1".
+- One path tells the supervisor of some answers: an answer that clears the last open ask of an approved plan with ready tasks files a note, `[P<plan> · A<ask> answered] …`, naming the tasks to deliver ([ADR-0020](0020-plan-before-building-with-the-plan-gate-and-consults-in-code.md)).
+- ADR-0046 rejected telling the supervisor of every answer and merge as a message, since a standing session that is compacted early would carry more messages. The owner now asks for the answers. Merges are not asked for.
+- The owner's rule is one owner per job: each message has one sender and goes once.
+
+## Decision
+
+1. **A supervisor's session gets `team_threads`, after `team_inbox`, and no other session does** (`roleTools`, `laterSupervisorTools`). `service/internal/api` checks the caller again (`Server.TeamThreads`, `team.CheckThreadsCaller`): only a session whose profile is a supervisor's. A private agent's session is refused before, as for every team tool ([ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md)). Any supervisor lists and reads every thread, as the owner's board shows every thread; the threads the calling session delegated are marked.
+2. **It reads pocketd's records alone, in one read transaction a call, and writes nothing** (`store.TeamThreads`, `store.TeamThread`). It runs no gh and calls no GitHub. A call run again reads again. `team.CheckThreadsCall` checks its `action` and `thread`.
+3. **`action: "list"` answers every thread not closed, grouped by who moves it next, then the closed ones** (`team.ThreadsText`):
+   - Who moves a thread next is `team.Board.NextMover`, which mirrors `state.Data.NextMover`: the same inputs (the threads with their shifts, the open asks, the pull requests, the plans) and the same rule. A change to one is made to the other.
+   - Each thread shows its number, title, agent, state, its plan and task, its shift's round and state, its open asks' count, its pull requests (`owner/name#number`, state, CI, verdict at its head), the thread it follows, how long since its last change, and who delegated it: "delegated by you" for the calling session.
+   - The cross-reviews pocketd runs are listed apart, with the pull request and head each reviews: pocketd starts and ends them, and the supervisor neither delegates nor closes one. A closed review is left out: its verdict shows on its pull request.
+   - The threads closed whose record changed in the last 7 days (`team.InboxWindow`) follow in a list of their own, newest first, each with its pull requests, its time named as its record's last change.
+   - Its head says how many threads are on the desk, of its cap, and states the rule of who moves next.
+4. **`action: "read"`, with `thread`, answers one thread whole** (`team.ThreadText`): its title, agent, state and who moves it next; the session that delegated it, and its profile; its specialist's session and model; its repository, branch and worktree, or its home; its plan and task; the pull request a review reviews; the thread it follows and the one that carries it on; its worker's session and model, and the worker model asked for it; its reopens; its task and its latest report, each cut to a fixed size; its shift's stop, round, deadline, CI and reason, and each round's verdict; every ask, with its question, state, answer, the device that answered and when, or its withdrawal; and every pull request with its title, state, draft, `ready-for-human`, the verdict at its head, CI and when pocketd last read it. A thread that does not exist is an error.
+5. **Its answers are bounded in code:** at most `team.MaxThreadsBytes` (24 KiB) and `team.MaxThreadsLines` (400 lines). A longer answer keeps the same number of first items of every list, the most that fit, and says so, as `team_inbox` does. Each title, question and answer is one line, cut to a fixed number of characters. The tool's output limits let a whole answer through.
+6. **The supervisor reads before it asks.** Its instructions say, in the text pocketd writes (`team.ThreadsGuide`, in `team.Roster`): before you ask the owner or a specialist where a thread stands, read it with `team_threads`. The tool's description says it too.
+7. **A supervisor's session started before the tool gets it** as ADR-0046 decision 5 gave `team_inbox`: an older one at start (`Engine.SetSupervisorTools`), a standing one at its idle refresh (`Engine.Reconfigure`).
+8. **The owner's new answer to an ask files one note to the asking thread's supervisor,** in the transaction that records the answer (`store.AnswerAsk`): to the thread's delegating session, unless it is none or the asking session itself. The note's key is the thread's random owner, the ask's own key and a digest of the answer (`team.AnsweredKey`), never a row number, so it is filed once; the outbox places it as it places every note, once, by its key (`Engine.Placed`). A delivery pass runs at each new answer.
+9. **The note's text is code** (`team.AnsweredNote`): `[T<thread> · A<ask> answered]`, the thread's title, the asking agent, the question and the answer cut short, that pocketd brings the answer to the agent's session, and the thread's next step:
+   - a closed thread: its specialist files no report on it, and `team_send` reopens it where pocketd allows, or a new thread follows it;
+   - else the thread's other open asks, which still wait for the owner;
+   - else a plan's own thread: the lead writes the answer into a plan in drafting; an approved plan has no open question now, and the note names each ready task to deliver;
+   - else the specialist goes on, and its next report comes to the supervisor.
+10. **One message an answer.** The plan's note for an answer that clears an approved plan's gate (ADR-0020) is now this note's plan line: no second note is filed for that answer. A retried answer request files nothing new, and an answer refused as answered or withdrawn files nothing. A withdrawal by a supervisor's message ([ADR-0037](0037-unblock-a-thread-when-the-supervisors-message-reaches-it.md)) files no answer note: the supervisor sent that message. Its plan's note for a gate the withdrawal clears is unchanged.
+11. **The note is the service's own message** ([ADR-0065](0065-mark-the-services-own-messages-and-fold-them-in-the-desktops-transcript.md)): its key is neither a supervisor's nor a device's, so it carries the `sender` `{"kind": "service"}` and the desktop folds it to its header.
+12. **The protocol does not change.** No wire type moves, and its version stays 35. Rule 25 names `team_threads`, rule 25b says what it reads and answers, rule 29 adds the answer's note, and rule 53's answered plan line names it.
+
+## Consequences
+
+- The supervisor can tell where a thread stands, and who moves it, without asking the owner or the specialist, after a compaction too.
+- Who moves a thread next is written twice, in `desktop/internal/state` and in `service/internal/team`, as `team_inbox`'s waiting rules are. A change to one needs the same change to the other.
+- A pull request's state, CI and verdict are as pocketd last read them; a merge on GitHub shows at pocketd's next read (`-pr-every`), and the answer's first line says how fresh they are.
+- A closed thread's time is its record's last change, not its close.
+- Every list call reads every thread not closed, the threads closed in the window, the open asks, their pull requests with their verdicts, and the plans of the plan threads not closed.
+- A standing supervisor gets a note for every answer to a thread it delegated, as the owner asked: more messages in a session compacted early, each folded on the desktop.
+- The note says the answer goes to the specialist's session; it may arrive before the answer is placed there.
+- An answer to an ask of a closed thread is told too: the specialist has it in its session but cannot report it, and the supervisor carries the work on.
+- Merges are still not told: `team_inbox` and `team_threads` show them.
+- The plan line that told the supervisor of a cleared gate now comes with the answer, under the thread's header, and the key of that note changes for new answers; a note filed before this change keeps its key.
+
+## Alternatives considered
+
+- **Only the calling session's threads:** the owner's board shows every thread, and a launch's threads are delegated from the standing session, an owner's New Session from another. The calling session's are marked instead.
+- **The board's mover read from the desktop's module:** `service` cannot import `desktop`, and the protocol carries no mover; a mover on the wire would be a protocol change for one tool.
+- **A separate note beside the plan's cleared note:** two messages for one answer, against one owner per job. The plan line rides on the answer's note.
+- **Tell the supervisor only when its thread is not closed:** the closed thread's specialist cannot report the answer, so the supervisor is the one who can carry it on.
+- **File the note when the answer is placed in the specialist's session:** the note would wait on the specialist's session, which may be busy for long; the answer is the owner's at its commit, and the note's text says it goes to the specialist.
+- **Tell merges too:** not asked for; a merge closes a thread whose pull requests all merged, and the reads show it.
+
+## References
+
+- Shapes: [design/architecture.md](../design/architecture.md#service), [specs/protocol.md](../specs/protocol.md) (rules 25, 25b, 29 and 53)
+- Built by: [plans/roadmap.md](../plans/roadmap.md) (item 41, the supervisor's threads and answers)
+- Builds on: [ADR-0046](0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md), [ADR-0011](0011-put-rules-in-code-not-in-model-judgment.md), [ADR-0014](0014-delegate-in-threads-with-team-tools-in-code.md), [ADR-0016](0016-link-reported-pull-requests-to-threads-checked-on-github-in-code.md), [ADR-0019](0019-start-each-cross-review-in-code-with-the-authors-agent-on-the-reviewer-model.md), [ADR-0020](0020-plan-before-building-with-the-plan-gate-and-consults-in-code.md), [ADR-0022](0022-run-any-session-on-any-sign-in-and-choose-workers-from-the-owners-list.md), [ADR-0024](0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md), [ADR-0026](0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md), [ADR-0037](0037-unblock-a-thread-when-the-supervisors-message-reaches-it.md), [ADR-0042](0042-give-a-private-agent-its-own-preamble-and-no-team-in-its-sessions.md), [ADR-0061](0061-reopen-a-closed-thread-when-a-message-reaches-its-specialist.md), [ADR-0065](0065-mark-the-services-own-messages-and-fold-them-in-the-desktops-transcript.md)
