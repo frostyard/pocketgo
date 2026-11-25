@@ -95,10 +95,46 @@ func (c *client) board(cx *core.Scope) core.Node {
 	// The schedules and the proposals always show: with none, each says
 	// so, and what adds one.
 	always := func() bool { return true }
-	nodes = append(nodes, section("Schedules", true, func() int { c.revision.Get(); return len(d.Schedules().Schedules) }, always, c.schedules),
-		section("Night shift", true, func() int { c.revision.Get(); return len(d.BoardProposals()) }, always, c.nightShift))
-	return core.Scroll{Style: ui.FillRest, Children: []core.Node{core.View{
-		Style: core.Style{Width: core.Pct(100), MaxWidth: core.Pt(1560), AlignSelf: core.AlignCenter, Padding: core.All(workspaceui.SpaceL), Gap: 14}, Children: nodes,
+	schedules := section("Schedules", true, func() int { c.revision.Get(); return len(d.Schedules().Schedules) }, always, c.schedules)
+	night := section("Night shift", true, func() int { c.revision.Get(); return len(d.BoardProposals()) }, always, c.nightShift)
+	// A desktop's window draws the threads, then the schedules and the
+	// night shift. A compact window, a phone's, keeps a section that holds
+	// something above the threads, and puts one that holds nothing after
+	// them, where it takes none of the screen the threads need
+	// (state.BoardOrder).
+	type order struct{ compact, proposals, schedules bool }
+	parts := core.NewMemo(cx, func() order {
+		c.revision.Get()
+		if !c.compact() {
+			return order{}
+		}
+		proposals, _ := d.ProposalsStatus()
+		listed, _ := d.SchedulesStatus()
+		return order{compact: true,
+			proposals: state.NightShiftHolds(len(d.BoardProposals()), proposals, state.ProposalsSay(c.store.LaunchUncertain(), c.store.Launching(), c.store.Launched(), timeNow())),
+			schedules: state.NightShiftHolds(len(d.Schedules().Schedules), listed, d.Schedules().Problem != "")}
+	})
+	head, threads := nodes[:2], nodes[2:]
+	ordered := core.Dynamic(func(*core.Scope) core.Node {
+		o := parts.Get()
+		out := append([]core.Node(nil), head...)
+		if !o.compact {
+			return core.Group(append(append(out, threads...), schedules, night))
+		}
+		for _, part := range state.BoardOrder(true, o.proposals, o.schedules) {
+			switch part {
+			case state.PartProposals:
+				out = append(out, night)
+			case state.PartSchedules:
+				out = append(out, schedules)
+			case state.PartThreads:
+				out = append(out, threads...)
+			}
+		}
+		return core.Group(out)
+	})
+	return core.Scroll{Style: ui.FillRest, Children: []core.Node{core.View{TestID: "board",
+		Style: core.Style{Width: core.Pct(100), MaxWidth: core.Pt(1560), AlignSelf: core.AlignCenter, Padding: core.All(workspaceui.SpaceL), Gap: 14}, Children: []core.Node{ordered},
 	}}}
 }
 
