@@ -1,0 +1,185 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+)
+
+// ThreadsRows are what team_threads reads (ADR-0071), from one read
+// transaction: the board the desktop's work board draws, and the threads
+// closed in the window.
+type ThreadsRows struct {
+	// Threads are every thread not closed and every closed one whose
+	// record changed at the window's start or later, the most recently
+	// changed first, and Shifts their shifts, by thread.
+	Threads []ThreadRow
+	Shifts  map[int64]ShiftRow
+	// Asks are the open asks, oldest first (OpenAsks).
+	Asks []AskRow
+	// Pulls are those threads' pull requests, oldest first, and Reviews
+	// the newest verdict of each one's change set, by pull request.
+	Pulls   []PullRow
+	Reviews map[int64]ReviewRow
+	// ReviewPulls are the pull requests the cross-reviews among Threads
+	// review, by id.
+	ReviewPulls map[int64]PullRow
+	// Plans are the plans of the plan threads not closed, by id.
+	Plans map[int64]PlanFacts
+	// Desk counts the threads on the desk, as its cap does (deskCount).
+	Desk int
+}
+
+// ThreadWholeRows are one thread as team_threads' read reads it.
+type ThreadWholeRows struct {
+	Thread ThreadRow
+	// Shift is its shift, nil for none.
+	Shift *ShiftRow
+	// Asks are every ask of it, oldest first.
+	Asks []AskRow
+	// Pulls are every pull request it links, oldest first, and Reviews the
+	// newest verdict of each one's change set.
+	Pulls   []PullRow
+	Reviews map[int64]ReviewRow
+	// ReviewPull is the pull request a cross-review reviews, nil for any
+	// other thread.
+	ReviewPull *PullRow
+	// Plan is the plan it works for, nil for none.
+	Plan *PlanFacts
+	// Sessions are its delegating, specialist's and worker's sessions, by
+	// id, those recorded.
+	Sessions map[int64]SessionRow
+}
+
+// TeamThreads reads ThreadsRows in one read transaction, so a thread, its
+// shift, its asks and its pull requests are seen as one commit left them.
+// since is the window's start: a closed thread whose record changed then
+// or later is read too.
+func (s *Store) TeamThreads(ctx context.Context, since time.Time) (ThreadsRows, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ThreadsRows{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	return threadsBoardIn(ctx, tx, since)
+}
+
+// TeamThread reads thread id whole, with the board ThreadsRows holds, in
+// one read transaction: who moves it next is read from the same commit
+// as the thread. ErrNotFound says there is no thread id.
+func (s *Store) TeamThread(ctx context.Context, id int64, since time.Time) (ThreadsRows, ThreadWholeRows, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ThreadsRows{}, ThreadWholeRows{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var w ThreadWholeRows
+	w.Thread, err = scanThread(tx.QueryRowContext(ctx, `SELECT `+threadColumns+` FROM threads WHERE id = ?`, id).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadsRows{}, ThreadWholeRows{}, ErrNotFound
+	} else if err != nil {
+		return ThreadsRows{}, ThreadWholeRows{}, err
+	}
+	board, err := threadsBoardIn(ctx, tx, since)
+	if err != nil {
+		return ThreadsRows{}, ThreadWholeRows{}, err
+	}
+	switch sh, err := loadShift(ctx, tx, id); {
+	case errors.Is(err, ErrNotFound):
+	case err != nil:
+		return ThreadsRows{}, ThreadWholeRows{}, err
+	default:
+		w.Shift = &sh
+	}
+	if w.Asks, err = queryRows(ctx, tx, scanAsk, `SELECT `+askColumns+` FROM asks WHERE thread_id = ? ORDER BY id`, id); err != nil {
+		return ThreadsRows{}, ThreadWholeRows{}, err
+	}
+	if w.Pulls, err = queryRows(ctx, tx, scanPull, `SELECT `+pullColumns+` FROM pull_requests WHERE thread_id = ? ORDER BY id`, id); err != nil {
+		return ThreadsRows{}, ThreadWholeRows{}, err
+	}
+	if w.Reviews, err = reviewsAtChangeSets(ctx, tx, w.Pulls); err != nil {
+		return ThreadsRows{}, ThreadWholeRows{}, err
+	}
+	if w.Thread.ReviewPull != 0 {
+		switch p, err := scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ?`, w.Thread.ReviewPull).Scan); {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return ThreadsRows{}, ThreadWholeRows{}, err
+		default:
+			w.ReviewPull = &p
+		}
+	}
+	if w.Thread.Plan != 0 {
+		switch facts, err := loadPlanFacts(ctx, tx, w.Thread.Plan); {
+		case errors.Is(err, ErrNotFound):
+		case err != nil:
+			return ThreadsRows{}, ThreadWholeRows{}, err
+		default:
+			w.Plan = &facts
+		}
+	}
+	w.Sessions = map[int64]SessionRow{}
+	for _, session := range []int64{w.Thread.SupervisorSession, w.Thread.Session, w.Thread.WorkerSession} {
+		if session == 0 {
+			continue
+		}
+		row, err := scanSession(tx.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE id = ?`, session).Scan)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		} else if err != nil {
+			return ThreadsRows{}, ThreadWholeRows{}, err
+		}
+		w.Sessions[session] = row
+	}
+	return board, w, nil
+}
+
+// threadsBoardIn reads ThreadsRows in tx, a read transaction.
+func threadsBoardIn(ctx context.Context, tx *sql.Tx, since time.Time) (ThreadsRows, error) {
+	at := toMillis(since)
+	var rows ThreadsRows
+	var err error
+	if rows.Threads, err = queryRows(ctx, tx, scanThread, `SELECT `+threadColumns+` FROM threads WHERE state != 'closed' OR updated_at >= ?
+		ORDER BY updated_at DESC, id DESC`, at); err != nil {
+		return ThreadsRows{}, err
+	}
+	if rows.Shifts, err = shiftsOf(ctx, tx, rows.Threads); err != nil {
+		return ThreadsRows{}, err
+	}
+	if rows.Asks, err = openAsksIn(ctx, tx); err != nil {
+		return ThreadsRows{}, err
+	}
+	if rows.Pulls, err = queryRows(ctx, tx, scanPull, `SELECT `+pullColumns+` FROM pull_requests
+		WHERE thread_id IN (SELECT id FROM threads WHERE state != 'closed' OR updated_at >= ?) ORDER BY id`, at); err != nil {
+		return ThreadsRows{}, err
+	}
+	if rows.Reviews, err = reviewsAtChangeSets(ctx, tx, rows.Pulls); err != nil {
+		return ThreadsRows{}, err
+	}
+	rows.ReviewPulls, rows.Plans = map[int64]PullRow{}, map[int64]PlanFacts{}
+	for _, t := range rows.Threads {
+		if t.ReviewPull != 0 {
+			p, err := scanPull(tx.QueryRowContext(ctx, `SELECT `+pullColumns+` FROM pull_requests WHERE id = ?`, t.ReviewPull).Scan)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return ThreadsRows{}, err
+			}
+			if err == nil {
+				rows.ReviewPulls[p.ID] = p
+			}
+		}
+		if t.State != ThreadClosed && t.IsPlanThread() {
+			facts, err := loadPlanFacts(ctx, tx, t.Plan)
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				return ThreadsRows{}, err
+			}
+			if err == nil {
+				rows.Plans[facts.Plan.ID] = facts
+			}
+		}
+	}
+	if rows.Desk, err = deskCount(ctx, tx); err != nil {
+		return ThreadsRows{}, err
+	}
+	return rows, nil
+}

@@ -173,8 +173,9 @@ type Engine interface {
 	SetVerdictTool(ctx context.Context, id int64, on bool) (bool, error)
 	// SetSupervisorTools gives a supervisor's session started before
 	// them the supervisor's later team tools it lacks (team_schedule,
-	// team_send, team_gather, team_board, team_launch, team_inbox), and
-	// says whether it did (ADR-0030, ADR-0046).
+	// team_send, team_gather, team_board, team_launch, team_inbox,
+	// team_threads), and says whether it did (ADR-0030, ADR-0046,
+	// ADR-0071).
 	SetSupervisorTools(ctx context.Context, id int64) (bool, error)
 	// SetGitHubTool gives team_github to a plan's lead, a consult or a
 	// cross-review whose session was made before it existed, and says

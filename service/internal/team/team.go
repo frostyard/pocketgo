@@ -151,6 +151,7 @@ func Roster(list []profiles.Profile, startable func(profiles.Profile) error, cap
 	fmt.Fprintf(&b, "The desk holds at most %d threads that are not closed; close a finished one with team_close. ", capacity)
 	b.WriteString("To tell a thread's specialist something new, as another thread's finding or the owner's decision, send it with team_send: it reaches the specialist's session once, and a done or blocked thread is open again; a blocked one's asks that wait for the owner are withdrawn. ")
 	b.WriteString(InboxGuide)
+	b.WriteString(ThreadsGuide)
 	sorted := slices.Clone(list)
 	slices.SortFunc(sorted, func(a, b profiles.Profile) int { return strings.Compare(a.ID, b.ID) })
 	var lines []string

@@ -55,6 +55,7 @@ type Team interface {
 	// ctx's error.
 	Question(ctx context.Context, call api.TeamCall, q team.Question) (string, error)
 	TeamInbox(ctx context.Context, call api.TeamCall) (string, error)
+	TeamThreads(ctx context.Context, call api.TeamCall, c team.ThreadsCall) (string, error)
 	// Schedule keeps a private agent's own schedules, to the calling
 	// session, with team_schedule's engine (ADR-0060). It is no team
 	// tool: TeamAllows does not run before it, and it checks its caller
@@ -85,6 +86,7 @@ const (
 	toolGitHub   = "team_github"
 	toolLaunch   = "team_launch"
 	toolInbox    = "team_inbox"
+	toolThreads  = "team_threads"
 )
 
 // proposalProperties are a proposal's fields, as team_propose and
@@ -124,6 +126,13 @@ const launchParameters = `{"type":"object","properties":{` +
 
 // inboxParameters are team_inbox's: none.
 const inboxParameters = `{"type":"object","properties":{},"additionalProperties":false}`
+
+// threadsParameters are team_threads' (ADR-0071).
+var threadsParameters = `{"type":"object","properties":{` +
+	`"action":{"type":"string","enum":["list","read"],"description":"list every thread not closed with who moves it next, and the threads closed in the last ` +
+	strconv.Itoa(team.InboxDays) + ` days; or read one thread whole."},` +
+	`"thread":{"type":"integer","minimum":1,"description":"read: the thread's number, 5 for T5."}` +
+	`},"required":["action"],"additionalProperties":false}`
 
 const boardParameters = `{"type":"object","properties":{` +
 	`"action":{"type":"string","enum":["list","read","edit","order","drop"],"description":"list the board's proposals, read one whole, edit or drop one at its rev, or order them."},` +
@@ -452,6 +461,28 @@ func (e *Engine) teamExtension() *durable.Extension {
 				},
 			},
 			{
+				// After team_inbox, as roleTools and laterSupervisorTools order
+				// them (ADR-0071). The rule to read a thread before asking where
+				// it stands is in its description too, for a supervisor started
+				// before the line in its instructions.
+				ToolSchema: schema(toolThreads, fmt.Sprintf("See the threads: list every thread not closed, grouped by who moves it next as the owner's work board "+
+					"groups it (the owner, its specialist or its supervisor), each with its state, shift, open asks, pull requests with CI and verdict, and "+
+					"who delegated it, then the cross-reviews pocketd runs and the threads closed in the last %d days; or read one thread whole, with its task, "+
+					"latest report, asks and answers, pull requests, shift rounds, plan and worker. It reads pocketd's records alone, never GitHub, and "+
+					"changes nothing. Read a thread before you ask the owner or a specialist where it stands.", team.InboxDays), threadsParameters),
+				Replay: durable.ReplaySafe,
+				// A whole answer reaches the supervisor: team.ThreadsText and
+				// team.ThreadText keep it within these bounds, cut as they say.
+				OutputLimits: &durable.ToolOutputLimits{MaxBytes: ptr(team.MaxThreadsBytes), MaxLines: ptr(team.MaxThreadsLines)},
+				Execute: func(ctx context.Context, args any, api durable.ToolExecutionApi) (durable.ToolExecutionResult, error) {
+					c, err := durable.FromJsonValue[team.ThreadsCall](args)
+					if err != nil {
+						return toolText("", err), nil
+					}
+					return e.runTeam(ctx, api, func(t Team, call apiCall) (string, error) { return t.TeamThreads(ctx, call, c) })
+				},
+			},
+			{
 				ToolSchema: schema(toolPropose, "File your proposals for the supervisor's gather: add one, edit or drop one of yours at its rev, list yours, "+
 					"and say done when you have no more.", proposeParameters),
 				Replay: durable.ReplaySafe,
@@ -530,7 +561,8 @@ func toolText(text string, err error) durable.ToolExecutionResult {
 // (ADR-0033). A consult, a gather's agent, a plan's lead and a
 // cross-review read GitHub with GET alone, too (team_github, ADR-0036,
 // ADR-0057), and no other session does. A supervisor alone reads the
-// owner's Inbox (team_inbox, ADR-0046). A private agent has no team tool
+// owner's Inbox (team_inbox, ADR-0046) and the threads (team_threads,
+// ADR-0071). A private agent has no team tool
 // at all (ADR-0042): it keeps its own schedules with the schedule tool,
 // which is none (toolsOf, ADR-0060).
 func roleTools(spec api.SessionSpec) []string {
@@ -564,8 +596,8 @@ func roleTools(spec api.SessionSpec) []string {
 	if spec.Profile != nil && spec.Profile.Role == profiles.RoleSupervisor {
 		// A supervisor keeps its own reminders and repeats too (ADR-0030),
 		// sends to the threads it delegated (ADR-0032), gathers proposals
-		// and keeps their board (ADR-0033), launches them (ADR-0034), and
-		// reads the owner's Inbox (ADR-0046).
+		// and keeps their board (ADR-0033), launches them (ADR-0034), reads
+		// the owner's Inbox (ADR-0046) and reads the threads (ADR-0071).
 		out = append(out, toolDelegate, toolClose)
 		out = append(out, laterSupervisorTools...)
 	}
@@ -1295,13 +1327,15 @@ func (e *Engine) SetVerdictTool(ctx context.Context, id int64, on bool) (bool, e
 // laterSupervisorTools are the supervisor's team tools after team_close,
 // in roleTools' order, which a session started before them lacks:
 // team_schedule (ADR-0030), team_send (ADR-0032), team_gather and
-// team_board (ADR-0033), team_launch (ADR-0034), team_inbox (ADR-0046).
-var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox}
+// team_board (ADR-0033), team_launch (ADR-0034), team_inbox (ADR-0046),
+// team_threads (ADR-0071).
+var laterSupervisorTools = []string{toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads}
 
 // SetSupervisorTools gives a supervisor's session started before them the
 // supervisor's later team tools (laterSupervisorTools), in the order
 // roleTools places them, after its other tools, and says whether it did
-// (ADR-0030, ADR-0032, ADR-0033, ADR-0046; Codex review of #51, round 1).
+// (ADR-0030, ADR-0032, ADR-0033, ADR-0046, ADR-0071; Codex review of #51,
+// round 1).
 // A session that has them all, or that has no team_delegate, is left as it
 // is.
 func (e *Engine) SetSupervisorTools(ctx context.Context, id int64) (bool, error) {

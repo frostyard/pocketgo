@@ -64,7 +64,7 @@ func TestTeamToolsGoByRole(t *testing.T) {
 	}{
 		"a plain session": {api.SessionSpec{}, []string{"read", "write", "edit", "bash"}},
 		"an agent":        {api.SessionSpec{Profile: vera}, []string{"read", "bash", toolMemory}},
-		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory, toolQuestion}},
+		"a supervisor":    {api.SessionSpec{Profile: odrade, Roster: "Delegate to vera."}, []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolQuestion}},
 		// Only a cross-review pocketd started files a verdict, with read-only
 		// tools, whatever its profile allows (ADR-0019).
 		// A thread's specialist has a worker, which has its coding tools
@@ -157,7 +157,11 @@ type fakeTeam struct {
 	// TeamInbox answers, "inbox" when empty.
 	inboxes     []api.TeamCall
 	inboxResult string
-	fail        error
+	// threads are the team_threads calls, in order; threadsResult is what
+	// TeamThreads answers, "threads" when empty.
+	threads       []team.ThreadsCall
+	threadsResult string
+	fail          error
 	// diff is what TeamDiff answers, a short patch when "".
 	diff string
 	// planResult is team_plan's answer, "Wrote plan P1." when empty.
@@ -254,6 +258,15 @@ func (f *fakeTeam) TeamInbox(_ context.Context, call api.TeamCall) (string, erro
 		return f.inboxResult, f.fail
 	}
 	return "inbox", f.fail
+}
+
+func (f *fakeTeam) TeamThreads(_ context.Context, call api.TeamCall, c team.ThreadsCall) (string, error) {
+	f.calls = append(f.calls, call)
+	f.threads = append(f.threads, c)
+	if f.threadsResult != "" {
+		return f.threadsResult, f.fail
+	}
+	return "threads", f.fail
 }
 
 func (f *fakeTeam) TeamPropose(_ context.Context, call api.TeamCall, c team.ProposeCall) (string, error) {
@@ -1227,7 +1240,7 @@ func TestSetSupervisorToolsUpgradesAnOlderSupervisor(t *testing.T) {
 	if changed, err := e.SetSupervisorTools(ctx, id); err != nil || !changed {
 		t.Fatalf("the upgrade: %v %v", changed, err)
 	}
-	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory, toolQuestion}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolQuestion}
 	if got := agentTools(t, e, id); !slices.Equal(got, want) {
 		t.Fatalf("tools %q, want %q", got, want)
 	}
@@ -1276,7 +1289,7 @@ func TestSetSupervisorToolsUpgradesASupervisorWithItsSchedules(t *testing.T) {
 	if changed, err := e.SetSupervisorTools(ctx, id); err != nil || !changed {
 		t.Fatalf("the upgrade: %v %v", changed, err)
 	}
-	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolMemory, toolQuestion}
+	want := []string{"read", "write", "edit", "bash", toolDelegate, toolClose, toolSchedule, toolSend, toolGather, toolBoard, toolLaunch, toolInbox, toolThreads, toolMemory, toolQuestion}
 	if got := agentTools(t, e, id); !slices.Equal(got, want) {
 		t.Fatalf("tools %q, want %q", got, want)
 	}
