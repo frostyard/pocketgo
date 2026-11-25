@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "store.SessionWatches reads the live and the ended watches in one read transaction, so a watch a pass ends meanwhile is listed once.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 1: [P2] Read live and ended watches from one snapshot",
+  "promoted_to": "service/internal/store/watches_round1_test.go"
+}

@@ -620,6 +620,15 @@ type Server struct {
 	pullLocks ctxLocks
 	// watchMu runs the watches' passes one at a time (ADR-0072).
 	watchMu sync.Mutex
+	// watchAdmitMu orders a watch's admission (its last check and its
+	// insert) with StartPulls(0), which sets watchesOff under it before it
+	// ends the live watches: an add commits before that sweep reads, or
+	// sees watchesOff and is refused (ADR-0072; Codex review of #173,
+	// round 1). afterWatchRead, in tests, runs in an add between its
+	// reads of GitHub and its admission.
+	watchAdmitMu   sync.Mutex
+	watchesOff     bool
+	afterWatchRead func()
 	// pullEvery is how often open pull requests are read again
 	// (StartPulls), 0 for never; pullsStarted says StartPulls ran, so
 	// team_inbox tells rounds not begun from none (ADR-0046); sessionMu

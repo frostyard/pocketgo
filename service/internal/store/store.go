@@ -696,6 +696,9 @@ type Store struct {
 	// inboxRead runs in Inbox between its reads of what waits and of what
 	// was settled; only tests set it.
 	inboxRead func()
+	// watchesRead runs in SessionWatches between its reads of the live
+	// and the ended watches; only tests set it.
+	watchesRead func()
 }
 
 // Open opens or creates the database at path and migrates it. now is the

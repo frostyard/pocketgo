@@ -448,6 +448,11 @@ func (s *Server) refreshPulls(ctx context.Context) (fresh map[int64]int64, done 
 // after StartDelivery.
 func (s *Server) StartPulls(every time.Duration) {
 	if every <= 0 {
+		// No add is admitted from here on, and one admitted before has
+		// committed, so the sweep ends it (Codex review of #173, round 1).
+		s.watchAdmitMu.Lock()
+		s.watchesOff = true
+		s.watchAdmitMu.Unlock()
 		if err := s.endUncheckedWatches(s.passCtx); err != nil {
 			s.log.Warn("end the watches no round checks", "err", err)
 		}

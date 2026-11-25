@@ -113,6 +113,16 @@ func (s *Store) AddWatch(ctx context.Context, row WatchRow, perSession, total in
 		ended = sql.NullInt64{Int64: now, Valid: true}
 	} else {
 		row.State, row.Outcome = WatchLive, ""
+		// A closed thread's specialist keeps no watch: its close ended
+		// them in its own transaction, which this one comes before or
+		// after (Codex review of #173, round 1).
+		var thread int64
+		err := tx.QueryRowContext(ctx, `SELECT id FROM threads WHERE session = ? AND state = ? LIMIT 1`, row.SessionID, ThreadClosed).Scan(&thread)
+		if err == nil {
+			return WatchRow{}, false, fmt.Errorf("%w: this session's thread T%d is closed, so it keeps no watch", ErrConflict, thread)
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return WatchRow{}, false, err
+		}
 		var mine, all int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(session_id = ?), 0) FROM watches WHERE state = ?`, row.SessionID, WatchLive).Scan(&all, &mine); err != nil {
 			return WatchRow{}, false, err
@@ -155,13 +165,23 @@ func (s *Store) LiveWatches(ctx context.Context) ([]WatchRow, error) {
 }
 
 // SessionWatches are session's live watches, oldest first, then at most
-// ended of those that ended, the newest first.
+// ended of those that ended, the newest first, read in one transaction: a
+// watch a pass ends meanwhile is in one list, never both (Codex review of
+// #173, round 1).
 func (s *Store) SessionWatches(ctx context.Context, session int64, ended int) ([]WatchRow, error) {
-	live, err := queryRows(ctx, s.db, scanWatch, `SELECT `+watchColumns+` FROM watches WHERE session_id = ? AND state = ? ORDER BY id`, session, WatchLive)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	done, err := queryRows(ctx, s.db, scanWatch, `SELECT `+watchColumns+` FROM watches WHERE session_id = ? AND state = ? ORDER BY ended_at DESC, id DESC LIMIT ?`,
+	defer func() { _ = tx.Rollback() }()
+	live, err := queryRows(ctx, tx, scanWatch, `SELECT `+watchColumns+` FROM watches WHERE session_id = ? AND state = ? ORDER BY id`, session, WatchLive)
+	if err != nil {
+		return nil, err
+	}
+	if s.watchesRead != nil {
+		s.watchesRead()
+	}
+	done, err := queryRows(ctx, tx, scanWatch, `SELECT `+watchColumns+` FROM watches WHERE session_id = ? AND state = ? ORDER BY ended_at DESC, id DESC LIMIT ?`,
 		session, WatchEnded, ended)
 	if err != nil {
 		return nil, err

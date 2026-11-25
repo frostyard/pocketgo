@@ -516,6 +516,15 @@ func (s *Server) attachBriefOpen(ctx context.Context, thread store.ThreadRow, se
 			return store.ThreadRow{}, fmt.Errorf("give the session team_github: %w", err)
 		}
 	}
+	// One made by a run before team_watch gets it before the brief that
+	// names it: the work database does not know the session yet, so the
+	// start's upgrade passed it by (ADR-0072; Codex review of #173, round
+	// 1).
+	if spec.Profile == nil {
+		if err := s.recoveredWatchTool(db, id, current, profile); err != nil {
+			return store.ThreadRow{}, fmt.Errorf("give the session team_watch: %w", err)
+		}
+	}
 	brief := newBrief
 	if current.Brief != "" {
 		brief = current.Brief // as an earlier run kept it
