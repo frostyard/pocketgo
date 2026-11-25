@@ -60,6 +60,7 @@ func TestConfirmationStartsOnCancel(t *testing.T) {
 		app.WaitFor("role:alertdialog >> text:Disconnect?", 3*time.Second)
 	}
 	ask()
+	app.Screenshot("confirmation")
 	app.Key("Enter")
 	app.WaitForGone("role:alertdialog", 3*time.Second)
 	if app.Exists("label:Service URL") {
