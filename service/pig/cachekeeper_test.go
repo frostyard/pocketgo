@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"maps"
 	"math"
@@ -141,9 +142,124 @@ func TestLateRefreshAllowsHalfTheMarginPastTheRefreshPoint(t *testing.T) {
 // host is suspended, and a cache entry's lifetime does not, so the
 // keeper's times carry no monotonic reading.
 func TestTheKeepersClockCountsTimeTheHostSlept(t *testing.T) {
-	now := wallClock{}.Now()
+	now := newKeeperClock().Now()
 	if strings.Contains(now.String(), "m=") || now != now.Round(0) {
 		t.Fatalf("the keeper's clock reads %s, with a monotonic reading", now)
+	}
+}
+
+// sleepyHost is host timers whose wall clock the test moves, and whose
+// timers count only the time it runs, as Go's timers on Linux count no
+// suspend.
+type sleepyHost struct {
+	mu     sync.Mutex
+	wall   time.Time
+	awake  time.Duration
+	timers []*sleepyTimer
+}
+
+type sleepyTimer struct {
+	host *sleepyHost
+	at   time.Duration
+	f    func()
+}
+
+func (h *sleepyHost) Now() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.wall
+}
+
+func (h *sleepyHost) AfterFunc(d time.Duration, f func()) keeperTimer {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	timer := &sleepyTimer{host: h, at: h.awake + d, f: f}
+	h.timers = append(h.timers, timer)
+	return timer
+}
+
+func (t *sleepyTimer) Stop() bool {
+	h := t.host
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	i := slices.Index(h.timers, t)
+	if i < 0 {
+		return false
+	}
+	h.timers = slices.Delete(h.timers, i, i+1)
+	return true
+}
+
+// sleep moves the wall clock alone, as a suspend does.
+func (h *sleepyHost) sleep(d time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.wall = h.wall.Add(d)
+}
+
+// run lets the host run for d, firing each timer due on the way, in
+// order, at its time; a timer may start another.
+func (h *sleepyHost) run(d time.Duration) {
+	h.mu.Lock()
+	end := h.awake + d
+	for {
+		soonest := -1
+		for i, timer := range h.timers {
+			if timer.at <= end && (soonest < 0 || timer.at < h.timers[soonest].at) {
+				soonest = i
+			}
+		}
+		if soonest < 0 {
+			break
+		}
+		timer := h.timers[soonest]
+		h.timers = slices.Delete(h.timers, soonest, soonest+1)
+		h.wall = h.wall.Add(timer.at - h.awake)
+		h.awake = timer.at
+		h.mu.Unlock()
+		timer.f()
+		h.mu.Lock()
+	}
+	h.wall = h.wall.Add(end - h.awake)
+	h.awake = end
+	h.mu.Unlock()
+}
+
+// Codex review of #172, round 2: Go's timers count no suspend, so the
+// keeper's timers wait in short steps against the wall clock: one due
+// while the host slept fires soon after it wakes, not a suspend's length
+// late.
+func TestTheKeepersTimersCountTimeTheHostSlept(t *testing.T) {
+	host := &sleepyHost{wall: time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)}
+	clock := wallClock{host: host}
+	start := host.Now()
+	var fired time.Time
+	clock.At(start.Add(270*time.Second), func() { fired = host.Now() })
+	host.run(10 * time.Second)
+	host.sleep(time.Minute)
+	host.run(10 * time.Minute)
+	if fired.IsZero() {
+		t.Fatal("the timer never fired")
+	}
+	if late := fired.Sub(start) - 270*time.Second; late < 0 || late > wallStep {
+		t.Fatalf("the timer fired %v after its time, past the host's minute asleep", late)
+	}
+	// A timer stopped never fires.
+	stopped := false
+	timer := clock.At(host.Now().Add(time.Minute), func() { stopped = true })
+	if !timer.Stop() || timer.Stop() {
+		t.Fatal("Stop says a stopped timer was running")
+	}
+	host.run(time.Hour)
+	if stopped || len(host.timers) != 0 {
+		t.Fatalf("a stopped timer fired %v, or left %d steps", stopped, len(host.timers))
+	}
+	// One whose time has passed fires at once.
+	now := false
+	clock.At(host.Now().Add(-time.Second), func() { now = true })
+	host.run(0)
+	if !now {
+		t.Fatal("a timer whose time has passed does not fire")
 	}
 }
 
@@ -263,10 +379,10 @@ func (c *keeperFakeClock) Now() time.Time {
 	return c.now
 }
 
-func (c *keeperFakeClock) AfterFunc(d time.Duration, f func()) keeperTimer {
+func (c *keeperFakeClock) At(at time.Time, f func()) keeperTimer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	timer := &keeperFakeTimer{clock: c, at: c.now.Add(d), f: f}
+	timer := &keeperFakeTimer{clock: c, at: at, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -715,7 +831,7 @@ func TestARequestThatUsesNoCacheLeavesTheWarmAlone(t *testing.T) {
 }
 
 // ended tells the keeper that key's run ended, seen now.
-func (r *keeperRig) ended(key string) { r.keeper.runEnded(key, r.keeper.generation(key)) }
+func (r *keeperRig) ended(key string) { r.keeper.runEnded(key, r.keeper.token(key)) }
 
 // blocking is a faux step that says when faux reached it, and answers
 // with response once released.
@@ -750,7 +866,7 @@ func TestALateRunEndLeavesALaterRequestsWarm(t *testing.T) {
 	r := newKeeperRig(t, sonnetCost)
 	r.send("s", "", readTool("c1"))
 	// The watch read the end of that run before the next run's request.
-	seen := r.keeper.generation("s")
+	seen := r.keeper.token("s")
 	r.send("s", "", readTool("c2"))
 	r.keeper.runEnded("s", seen)
 	if r.keeper.warming() != 1 || !slices.Equal(r.clock.pending(), []time.Duration{270 * time.Second}) {
@@ -758,7 +874,7 @@ func TestALateRunEndLeavesALaterRequestsWarm(t *testing.T) {
 	}
 	// A request that asks for no cache retires nothing, and counts for
 	// nothing.
-	seen = r.keeper.generation("s")
+	seen = r.keeper.token("s")
 	r.send("s", ai.CacheRetentionNone, answer("## Summary"))
 	r.keeper.runEnded("s", seen)
 	if r.keeper.warming() != 0 {
@@ -793,6 +909,67 @@ func TestAWarmThatFailsStopsWarming(t *testing.T) {
 	r.clock.fire()
 	if r.faux.CallCount() != 2 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
 		t.Fatalf("faux calls %d, warming %d, timers %v", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
+	}
+}
+
+// Codex review of #172, round 2: a warm the provider cached nothing of
+// shows there is no entry left to keep, and the next refresh is decided
+// on what the last warm found.
+func TestAWarmThatCachedNothingStopsWarming(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	r.faux.AppendResponses([]ai.FauxResponseStep{warmAnswer(), warmAnswer()})
+	r.clock.fire()
+	r.keeper.mu.Lock()
+	e := r.keeper.entries["s"]
+	r.keeper.mu.Unlock()
+	if e == nil || e.cached == 0 || e.uncached != 0 {
+		t.Fatalf("the entry after a warm that read the cache: %+v", e)
+	}
+	r.shim.setUncached(true)
+	r.clock.fire()
+	if r.faux.CallCount() != 3 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("faux calls %d, warming %d, timers %v after a warm that cached nothing", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
+	}
+	if !strings.Contains(r.log.String(), "cached nothing") {
+		t.Fatalf("the stop names no reason: %s", r.log.String())
+	}
+}
+
+// Codex review of #172, round 2: the keeper keeps a session's token only
+// while it has a request followed or a warm under way, and a token is
+// never drawn twice, so a stale one matches no later request.
+func TestTheKeeperKeepsATokenOnlyWhileThereIsSomethingToRetire(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	tokens := func() int {
+		r.keeper.mu.Lock()
+		defer r.keeper.mu.Unlock()
+		return len(r.keeper.tokens)
+	}
+	r.send("a", "", answer("done"))
+	r.sendOn(r.faux.GetModel("faux-2"), "b", "", readTool("c1"))
+	r.send("c", ai.CacheRetentionNone, readTool("c2"))
+	if got := tokens(); got != 0 {
+		t.Fatalf("%d tokens kept for sessions with nothing to retire", got)
+	}
+	r.send("d", "", readTool("c3"))
+	first := r.keeper.token("d")
+	if first == 0 || tokens() != 1 {
+		t.Fatalf("a warm under way has token %d, %d kept", first, tokens())
+	}
+	r.ended("d")
+	if got := tokens(); got != 0 || r.keeper.token("d") != 0 {
+		t.Fatalf("%d tokens kept after the run's end", got)
+	}
+	// The same session's next warm has a token of its own: the end of the
+	// run before, seen late, stops nothing.
+	r.send("d", "", readTool("c4"))
+	if again := r.keeper.token("d"); again == first || again == 0 {
+		t.Fatalf("a later request's token %d, the earlier %d", again, first)
+	}
+	r.keeper.runEnded("d", first)
+	if r.keeper.warming() != 1 {
+		t.Fatal("a stale token stopped a later warm")
 	}
 }
 
@@ -1026,6 +1203,43 @@ func TestAStaleIdleViewLeavesTheNextRunsWarm(t *testing.T) {
 	run.e.noteRunEnded(ctx, run.id, view)
 	if run.e.keeper.warming() != 0 {
 		t.Fatal("the end of a run seen with the session idle leaves its warm")
+	}
+}
+
+// Codex review of #172, round 2: a failed read of the session's state at
+// its run's end proves nothing, and the watch will not report that end
+// again: the keeper reads it again soon, with the token as it was, and
+// stops the warm of the run that ended.
+func TestAFailedReadAtARunsEndIsReadAgain(t *testing.T) {
+	run := keptEngine(t)
+	var reads atomic.Int32
+	run.e.runBusy = func(ctx context.Context, id int64) (bool, error) {
+		if reads.Add(1) == 1 {
+			return false, errors.New("the store could not be read")
+		}
+		return run.e.Busy(ctx, id)
+	}
+	busyAt := -1
+	if !run.f.waitLive(func(lives []proto.Live) bool {
+		busyAt = slices.IndexFunc(lives, func(l proto.Live) bool { return l.Busy })
+		return busyAt >= 0
+	}) {
+		t.Fatal("the watch never reported the run busy")
+	}
+	if err := run.e.Abort(context.Background(), run.id); err != nil {
+		t.Fatal(err)
+	}
+	if !run.f.waitLive(func(lives []proto.Live) bool {
+		return slices.ContainsFunc(lives[busyAt+1:], func(l proto.Live) bool { return !l.Busy })
+	}) {
+		t.Fatal("the run did not end")
+	}
+	if reads.Load() != 1 || run.e.keeper.warming() != 1 || !slices.Equal(run.clock.pending(), []time.Duration{runEndRetry, 270 * time.Second}) {
+		t.Fatalf("after a failed read: %d reads, warming %d, timers %v", reads.Load(), run.e.keeper.warming(), run.clock.pending())
+	}
+	run.clock.fire()
+	if reads.Load() != 2 || run.e.keeper.warming() != 0 || len(run.clock.pending()) != 0 {
+		t.Fatalf("after the read again: %d reads, warming %d, timers %v", reads.Load(), run.e.keeper.warming(), run.clock.pending())
 	}
 }
 

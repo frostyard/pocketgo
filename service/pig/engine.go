@@ -160,6 +160,9 @@ type Engine struct {
 	// betweenReads runs in Transcript between its two reads; tests change
 	// the conversation there. Nil does nothing.
 	betweenReads func()
+	// runBusy reads whether a session has a run, for the cache keeper's
+	// run end (checkRunEnded); tests make it fail. Nil is Busy.
+	runBusy func(ctx context.Context, id int64) (bool, error)
 }
 
 // retryDelay is how long a watch waits before it reads a failed update

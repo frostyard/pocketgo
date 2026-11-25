@@ -1,7 +1,7 @@
 {
   "date": "2026-11-24",
   "scope": "service",
-  "correction": "A run's end seen by the watch stops a warm only when the session has no run now and no request of the session began since the keeper's generation was read (Engine.noteRunEnded, cacheKeeper.runEnded), since a provider session lasts across runs and the watch may show an end late.",
+  "correction": "A run's end seen by the watch stops a warm only when the session has no run now and no request of the session began since the keeper's token for it was read (Engine.noteRunEnded, cacheKeeper.token, cacheKeeper.runEnded): a provider session lasts across runs and the watch may show an end late, and a token is drawn once and kept only while the session has a request or warm to retire.",
   "evidence": "frostyard/pocketgo#172, Codex review, round 1 of head c47c474: [P2] Scope an idle notification to the run that actually ended",
   "promoted_to": "service/pig/cachekeeper_test.go"
 }

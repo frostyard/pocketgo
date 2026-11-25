@@ -194,27 +194,102 @@ func payloadHash(payload any) (hash string, err error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// keeperClock is the keeper's clock and timers; tests drive their own.
+// keeperClock is the keeper's clock and timers, both of which count the
+// time the host spent suspended, as a provider's cache entry's lifetime
+// does; tests drive their own.
 type keeperClock interface {
+	Now() time.Time
+	// At runs f on a goroutine of its own at wall-clock time at, or soon
+	// after; at once when at has passed.
+	At(at time.Time, f func()) keeperTimer
+}
+
+// keeperTimer is a timer At started.
+type keeperTimer interface{ Stop() bool }
+
+// hostTimers are the host's clock and timers: Now counts the time the
+// host spent suspended, AfterFunc's durations need not.
+type hostTimers interface {
 	Now() time.Time
 	AfterFunc(d time.Duration, f func()) keeperTimer
 }
 
-// keeperTimer is a timer AfterFunc started.
-type keeperTimer interface{ Stop() bool }
+// goTimers are the host's: wall-clock times with no monotonic reading,
+// so comparing two counts the time the host spent suspended, and Go's
+// timers, which on Linux run on the monotonic clock and so count none.
+type goTimers struct{}
 
-// wallClock is the host's clock. Its times carry no monotonic reading,
-// so comparing two counts the time the host spent suspended, which
-// Linux's monotonic clock leaves out while a provider's cache entry
-// expires all the same: a refresh after a sleep reads as late.
-type wallClock struct{}
+func (goTimers) Now() time.Time { return time.Now().Round(0) }
 
-func (wallClock) Now() time.Time { return time.Now().Round(0) }
+func (goTimers) AfterFunc(d time.Duration, f func()) keeperTimer { return time.AfterFunc(d, f) }
 
-func (wallClock) AfterFunc(d time.Duration, f func()) keeperTimer { return time.AfterFunc(d, f) }
+// wallStep is the longest a wallClock timer waits on the host's timers
+// before it reads the wall clock again: after a suspend it fires at most
+// this long past its time, well inside a refresh's margin (lateRefresh).
+const wallStep = 5 * time.Second
+
+// wallClock is the keeper's clock on host timers. Its times are the
+// host's, and At waits in steps of at most wallStep, comparing wall-clock
+// times, so a refresh due before the host wakes fires on waking, not a
+// suspend's length late.
+type wallClock struct{ host hostTimers }
+
+func (c wallClock) Now() time.Time { return c.host.Now() }
+
+func (c wallClock) At(at time.Time, f func()) keeperTimer {
+	t := &steppedTimer{host: c.host, at: at, f: f}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.armLocked()
+	return t
+}
+
+// steppedTimer is a wallClock timer.
+type steppedTimer struct {
+	host hostTimers
+	at   time.Time
+	f    func()
+
+	mu   sync.Mutex
+	step keeperTimer
+	// done is set when it fired or was stopped.
+	done bool
+}
+
+func (t *steppedTimer) armLocked() {
+	wait := max(0, min(t.at.Sub(t.host.Now()), wallStep))
+	t.step = t.host.AfterFunc(wait, t.wake)
+}
+
+func (t *steppedTimer) wake() {
+	t.mu.Lock()
+	if t.done {
+		t.mu.Unlock()
+		return
+	}
+	if t.host.Now().Before(t.at) {
+		t.armLocked()
+		t.mu.Unlock()
+		return
+	}
+	t.done = true
+	t.mu.Unlock()
+	t.f()
+}
+
+func (t *steppedTimer) Stop() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return false
+	}
+	t.done = true
+	t.step.Stop()
+	return true
+}
 
 // newKeeperClock is the clock of an engine's keeper; tests replace it.
-var newKeeperClock = func() keeperClock { return wallClock{} }
+var newKeeperClock = func() keeperClock { return wallClock{host: goTimers{}} }
 
 // errWarmDiffers fails a warm whose payload is not the real request's, so
 // the provider never sends it.
@@ -239,9 +314,13 @@ type cacheKeeper struct {
 	// whose result the keeper waits for, by provider session id.
 	entries  map[string]*warmEntry
 	requests map[string]*realRequest
-	// gens count each session's real requests that retire its warm: a
-	// run's end stops only what came before a later request (runEnded).
-	gens map[string]uint64
+	// tokens hold, for each session with a request followed or a warm
+	// under way, the token of the real request that retired its warm last,
+	// drawn from seq, which never repeats one: a run's end stops only what
+	// came before a later request (runEnded). A session with neither has
+	// no token.
+	seq    uint64
+	tokens map[string]uint64
 	// work counts the waits on real requests' results and the warms in
 	// flight, which close waits for.
 	work sync.WaitGroup
@@ -302,7 +381,7 @@ func newCacheKeeper(log *slog.Logger, clock keeperClock) *cacheKeeper {
 	}
 	life, end := context.WithCancel(context.Background())
 	return &cacheKeeper{log: log, clock: clock, getenv: os.Getenv, life: life, end: end,
-		entries: map[string]*warmEntry{}, requests: map[string]*realRequest{}, gens: map[string]uint64{}}
+		entries: map[string]*warmEntry{}, requests: map[string]*realRequest{}, tokens: map[string]uint64{}}
 }
 
 // install wraps the stream functions of every provider of models in
@@ -382,17 +461,30 @@ func (k *cacheKeeper) begin(call warmCall) *realRequest {
 	ttl, cached := cacheLifetime(call.model, call.options, k.getenv)
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.gens[key]++
-	k.dropLocked(key, "the session's next request")
+	k.seq++
 	delete(k.requests, key)
+	k.dropLocked(key, "the session's next request")
 	delay, ok := refreshDelay(ttl)
 	if !cached || k.closed || !ok || delay >= maxWarmAge || !isReplayable(call.model, call.options) {
 		return nil
 	}
 	req := &realRequest{key: key, call: call, ttl: ttl, dispatched: k.clock.Now()}
 	k.requests[key] = req
+	k.tokens[key] = k.seq
 	k.work.Add(1)
 	return req
+}
+
+// untrackLocked lets go of key's token once it has neither a request
+// followed nor a warm under way: there is nothing left to retire.
+func (k *cacheKeeper) untrackLocked(key string) {
+	if _, ok := k.requests[key]; ok {
+		return
+	}
+	if _, ok := k.entries[key]; ok {
+		return
+	}
+	delete(k.tokens, key)
 }
 
 // forget lets go of a real request whose stream never started.
@@ -400,6 +492,7 @@ func (k *cacheKeeper) forget(req *realRequest) {
 	k.mu.Lock()
 	if k.requests[req.key] == req {
 		delete(k.requests, req.key)
+		k.untrackLocked(req.key)
 	}
 	k.mu.Unlock()
 	k.work.Done()
@@ -417,6 +510,8 @@ func (k *cacheKeeper) await(req *realRequest, stream *ai.AssistantMessageEventSt
 		return
 	}
 	delete(k.requests, req.key)
+	// Unless it starts a warm, the session has nothing left to retire.
+	defer k.untrackLocked(req.key)
 	if err != nil || message == nil || k.closed || message.StopReason != ai.StopReasonToolUse {
 		return
 	}
@@ -443,9 +538,15 @@ func (k *cacheKeeper) await(req *realRequest, stream *ai.AssistantMessageEventSt
 func (k *cacheKeeper) scheduleLocked(key string, e *warmEntry) {
 	delay, _ := refreshDelay(e.ttl)
 	e.due = e.written.Add(delay)
-	now := k.clock.Now()
-	wait := max(0, min(e.due.Sub(now), e.started.Add(maxWarmAge).Sub(now)))
-	e.timer = k.clock.AfterFunc(wait, func() { k.fire(key, e) })
+	e.timer = k.clock.At(minTime(e.due, e.started.Add(maxWarmAge)), func() { k.fire(key, e) })
+}
+
+// minTime is the earlier of a and b.
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
 }
 
 // fire is e's refresh point: it warms e, or stops it.
@@ -476,7 +577,7 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 	}
 	ctx, cancel := context.WithCancel(k.life)
 	e.cancel = cancel
-	e.deadline = k.clock.AfterFunc(e.started.Add(maxWarmAge).Sub(now), func() { k.drop(key, e, "the age cap") })
+	e.deadline = k.clock.At(e.started.Add(maxWarmAge), func() { k.drop(key, e, "the age cap") })
 	k.work.Add(1)
 	k.mu.Unlock()
 	defer k.work.Done()
@@ -513,7 +614,13 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 		k.dropLocked(key, "a warm that would differ or did not start")
 	case message == nil || message.StopReason == ai.StopReasonError || message.StopReason == ai.StopReasonAborted:
 		k.dropLocked(key, "a warm that failed")
+	case message.Usage.CacheRead+message.Usage.CacheWrite <= 0:
+		// The provider cached nothing of the warm: there is no entry left
+		// to keep.
+		k.dropLocked(key, "a warm the provider cached nothing of")
 	default:
+		// The next refresh is decided on what this warm found.
+		e.cached, e.uncached = message.Usage.CacheRead+message.Usage.CacheWrite, message.Usage.Input
 		e.written = dispatched
 		k.scheduleLocked(key, e)
 	}
@@ -580,49 +687,100 @@ func providerSession(view harness.ConversationView) string {
 	return id
 }
 
+// runEndRetry is how long after a failed read of a session's state the
+// keeper reads it again, to stop the warm of a run that ended.
+const runEndRetry = time.Second
+
 // noteRunEnded tells the keeper that session id's run ended, as view, the
 // watch's, shows it. The watch may show it late, after the session's next
-// run began under the same provider session: the keeper's generation is
-// read first, then the session's state now, and the warm stops only when
-// the session has no run now and no request began between the two.
+// run began under the same provider session: the keeper's token for the
+// session is read first, then the session's state now (checkRunEnded).
 func (e *Engine) noteRunEnded(ctx context.Context, id int64, view harness.ConversationView) {
 	if e.keeper == nil {
 		return
 	}
 	key := providerSession(view)
-	gen := e.keeper.generation(key)
-	if busy, err := e.Busy(ctx, id); err != nil || busy {
-		return
-	}
-	e.keeper.runEnded(key, gen)
+	e.checkRunEnded(ctx, id, key, e.keeper.token(key))
 }
 
-// generation is how many real requests of provider session key have
-// retired its warm so far: runEnded takes it as read before the session
-// was found idle.
-func (k *cacheKeeper) generation(key string) uint64 {
+// checkRunEnded stops provider session key's warm, of session id, when
+// the session has no run now and no request began since token was read.
+// A read of its state that fails proves nothing: it is read again after
+// runEndRetry with the same token, so a later run's request still spares
+// its own warm, for as long as there is something to retire.
+func (e *Engine) checkRunEnded(ctx context.Context, id int64, key string, token uint64) {
+	if !e.keeper.retiring(key, token) {
+		return
+	}
+	read := e.Busy
+	if e.runBusy != nil {
+		read = e.runBusy
+	}
+	busy, err := read(ctx, id)
+	switch {
+	case err != nil:
+		e.keeper.after(runEndRetry, func() { e.checkRunEnded(e.keeper.life, id, key, token) })
+	case !busy:
+		e.keeper.runEnded(key, token)
+	}
+}
+
+// token is provider session key's token now: that of the real request
+// that last retired its warm, 0 when it has no request followed and no
+// warm under way. runEnded takes it as read before the session was found
+// idle.
+func (k *cacheKeeper) token(key string) uint64 {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	return k.gens[key]
+	return k.tokens[key]
+}
+
+// retiring says whether a run's end seen with token read would still
+// stop something: the keeper is open, and key has a request followed or a
+// warm under way that no later request retired.
+func (k *cacheKeeper) retiring(key string, token uint64) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return !k.closed && token != 0 && k.tokens[key] == token
+}
+
+// after runs f after d on the keeper's clock, unless the keeper closed by
+// then.
+func (k *cacheKeeper) after(d time.Duration, f func()) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed {
+		return
+	}
+	k.clock.At(k.clock.Now().Add(d), func() {
+		k.mu.Lock()
+		closed := k.closed
+		k.mu.Unlock()
+		if !closed {
+			f()
+		}
+	})
 }
 
 // runEnded stops the warm of provider session key, whose run ended or
-// was aborted, no request following its last tool call; gen is the
-// session's generation as read before the end was seen. A provider
-// session lasts across runs, so when a later request began since, the
-// warm and the request are a later run's, and stay: that request
-// retired whatever the ended run left.
-func (k *cacheKeeper) runEnded(key string, gen uint64) {
+// was aborted, no request following its last tool call; token is the
+// session's token as read before the end was seen. A provider session
+// lasts across runs, so when a later request began since, the warm and
+// the request are a later run's, and stay: that request retired whatever
+// the ended run left. Tokens never repeat, so a stale one matches nothing
+// later.
+func (k *cacheKeeper) runEnded(key string, token uint64) {
 	if k == nil || key == "" {
 		return
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if k.gens[key] != gen {
+	if k.tokens[key] != token {
 		return
 	}
 	delete(k.requests, key)
 	k.dropLocked(key, "its run's end")
+	k.untrackLocked(key)
 }
 
 // drop stops e, if it is still key's warm.
@@ -642,6 +800,7 @@ func (k *cacheKeeper) dropLocked(key, why string) {
 		return
 	}
 	delete(k.entries, key)
+	k.untrackLocked(key)
 	if e.timer != nil {
 		e.timer.Stop()
 	}
@@ -682,10 +841,11 @@ func (k *cacheKeeper) close(ctx context.Context) error {
 	k.mu.Lock()
 	k.closed = true
 	k.end()
+	clear(k.requests)
 	for key := range k.entries {
 		k.dropLocked(key, "pocketd's stop")
 	}
-	clear(k.requests)
+	clear(k.tokens)
 	k.mu.Unlock()
 	done := make(chan struct{})
 	go func() {

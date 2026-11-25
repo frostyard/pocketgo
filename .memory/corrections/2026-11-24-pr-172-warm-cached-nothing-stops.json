@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A warm whose own usage reports no cached token (no cache read or write) stops the session's warming, since no entry is left to keep, and a warm that cached some sets the cached and uncached counts the next refresh is decided on.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 2 of head e9a1ea8: [P2] Stop refreshing when a warm reports no cached tokens",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}
