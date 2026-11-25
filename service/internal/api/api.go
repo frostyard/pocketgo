@@ -641,6 +641,9 @@ type Server struct {
 	watchAdmitMu   sync.Mutex
 	watchesOff     bool
 	afterWatchRead func()
+	// beforeUncheckedEnd, in tests, sees each watch the -pr-every 0 sweep
+	// is about to end (endUncheckedWatches).
+	beforeUncheckedEnd func(id int64)
 	// pullEvery is how often open pull requests are read again
 	// (StartPulls), 0 for never; pullsStarted says StartPulls ran, so
 	// team_inbox tells rounds not begun from none (ADR-0046); sessionMu

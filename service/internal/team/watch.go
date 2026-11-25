@@ -541,8 +541,8 @@ const WatchGuide = "To wait for CI, open the pull request and call team_watch wi
 // WatchRoster tells a supervisor it may watch a merge, in its roster
 // (ADR-0072).
 const WatchRoster = "When work should follow a pull request's merge, watch it with team_watch until merged. Only an answer that starts with \"Watching W\" " +
-	"promises a message: end your run then, and pocketd tells you once it merges, or that it closed without merging, and you delegate the follow-up then. " +
-	"Any other answer comes with no message: act on it now. "
+	"promises a message: end your run then. pocketd tells you once it merged, that it closed without merging, or that the watch's time ran out; " +
+	"delegate the follow-up only when pocketd says it merged, never on a close or an expiry. Any other answer comes with no message: act on it now. "
 
 // WatchReceipt tells an agent which answer of team_watch's add promises a
 // message: only a live watch's, which starts "Watching W". An answer that

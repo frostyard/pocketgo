@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The supervisor's roster tells it to delegate a merge's follow-up only when pocketd says the pull request merged, never on a close without merging or an expiry (team.WatchRoster).",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 5: [P2] Tell the supervisor to delegate only after a confirmed merge",
+  "promoted_to": "service/internal/team/watch_test.go"
+}

@@ -280,8 +280,17 @@ func (s *Server) watchPass(ctx context.Context) error {
 	for _, w := range rows {
 		ref := strings.ToLower(w.Ref())
 		r, done := reads[ref]
+		// ciHeld says only this watch's CI waits: the pass read its pull
+		// request already, and that read still answers it (Codex review of
+		// #173, round 5).
+		ciHeld := false
 		if need := s.watchReadNeed(w, r, done, cis); need > 0 && (held || !s.watchBudget.Has(s.now(), need)) {
-			held, done, r = true, true, watchRead{err: errWatchReadsSpent}
+			held = true
+			if done && r.err == nil {
+				ciHeld = true
+			} else {
+				done, r = true, watchRead{err: errWatchReadsSpent}
+			}
 		}
 		if !done {
 			r.pull, r.err = s.readWatched(ctx, gh, w.Repository, w.Number)
@@ -304,7 +313,11 @@ func (s *Server) watchPass(ctx context.Context) error {
 				// commit, whichever pull request has it at its head.
 				at := strings.ToLower(r.pull.Repository) + "@" + got.Head
 				ci, done := cis[at]
-				if !done {
+				switch {
+				case done:
+				case ciHeld:
+					ci = watchCI{err: errWatchReadsSpent.Error()}
+				default:
 					ci = s.readWatchedCI(ctx, gh, r.pull.Repository, got.Head)
 					cis[at] = ci
 				}
@@ -453,19 +466,22 @@ func (s *Server) endUncheckedWatches(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	filed := false
 	var failures []error
 	for _, w := range rows {
+		if s.beforeUncheckedEnd != nil {
+			s.beforeUncheckedEnd(w.ID)
+		}
 		note := team.WatchNoteText(w.ID, w.Ref(), w.Until, team.WatchUnchecked, nil, "", s.now().Sub(w.CreatedAt))
 		_, ended, err := s.store.EndWatch(ctx, w.ID, team.WatchUnchecked, "", note)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("end watch %s: %w", team.WatchID(w.ID), err))
 			continue
 		}
-		filed = filed || ended
-	}
-	if filed {
-		s.deliverLater()
+		// Its note goes now, not after the other watches' ends, as a
+		// pass's does (Codex review of #173, round 5).
+		if ended {
+			s.deliverLater()
+		}
 	}
 	return errors.Join(failures...)
 }

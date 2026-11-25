@@ -345,6 +345,11 @@ func TestTheRosterNamesTeamWatch(t *testing.T) {
 			t.Errorf("%s does not name the live answer's exact start:\n%s", name, text)
 		}
 	}
+	// The follow-up waits for a merge alone, never a close or an expiry
+	// (Codex review of #173, round 5).
+	if !strings.Contains(roster, "delegate the follow-up only when pocketd says it merged, never on a close or an expiry") {
+		t.Errorf("the roster ties the follow-up to more than a merge:\n%s", roster)
+	}
 	if at := WatchAtOnceText("Watching/example#1", UntilMerged, WatchMet, WatchSeen{Merged: true}); strings.HasPrefix(at, "Watching W") {
 		t.Fatalf("an answer at once starts as a live one: %s", at)
 	}

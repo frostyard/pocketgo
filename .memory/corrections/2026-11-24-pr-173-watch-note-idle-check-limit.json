@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A watch note's idle read (no run, no input in PiG's inbox) and its WhenBusyReject submission are two steps, since PiG offers no submission that rejects on a waiting input: an input and a failed run between them can queue the note behind that input. It is a known limit, stated in the spec, not worked around.",
+  "evidence": "frostyard/pocketgo#173, Codex review, round 5: [P2] Check the inbox atomically when admitting a watch note",
+  "promoted_to": "docs/specs/protocol.md"
+}
