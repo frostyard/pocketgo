@@ -33,8 +33,7 @@ const (
 	closeWaitDefault = 35 * time.Second
 	// suspendWaitDefault is how long Suspend waits for a refresh or a write
 	// in progress: iOS gives an app about 5 seconds to leave for the
-	// background, and MyGo's host waits for the suspend's listeners within
-	// them (pocketgo ADR-0041).
+	// background (pocketgo ADR-0041).
 	suspendWaitDefault = 3 * time.Second
 )
 

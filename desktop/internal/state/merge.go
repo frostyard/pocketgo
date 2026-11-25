@@ -18,7 +18,7 @@ import (
 // thread, as Store does: each call to GitHub runs on a goroutine and posts
 // its result with Options.Post.
 
-// GitHubAuth is the owner's App sign-in: cmd/pocket's githubAuth over
+// GitHubAuth is the owner's App sign-in: ownerauth.Auth over
 // github.TokenSource and the keyring, a fake in tests.
 type GitHubAuth interface {
 	// Open takes the sign-in lock and loads the kept sign-in.

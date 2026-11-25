@@ -261,30 +261,29 @@ The token starts with `pgd_` and is shown only then. pocketd keeps only its hash
 
 ### 9. The desktop
 
-The desktop is `desktop/cmd/pocket`, on MyGo and frostui ([ADR-0010](../adr/0010-port-the-desktop-client-selectively-from-frostyard-pocket.md)). On your machine, with the Go release of `go.work`:
+The desktop is the NSGo client, `desktop/cmd/pocket-nsgo` over `desktop/internal/nsgoclient`, the only client ([architecture: desktop client](architecture.md#desktop-client)). On a Linux machine, with the Go release of `go.work`:
 
 ```sh
 make run      # build and start it from source
 make build    # build/pocket and build/pocketd
-make app      # package the host client (NSGo on Linux, MyGo on macOS)
+make app      # package the Linux client with NSGo's packager
 ```
 
-- **Linux** uses NSGo and GTK 4. `make run-mygo` and `make app-mygo` select the GTK 3 fallback. See [release candidates](../../packaging/README.md) for Flatpak installation and web serving.
-- **macOS:** `make app` builds `PocketGo.app` and a disk image. Notifications need the packaged app ([ADR-0049](../adr/0049-notify-the-owner-of-what-waits-once-decided-in-code.md)).
-- **The MyGo Terminal** draws with Ghostty's emulator, MyGo's terminal plugin, which loads `libghostty-vt`. `make app` puts the library in the app. Run from source, it is downloaded on first use into your cache folder (`mygo/natives/`), checked by its SHA-256; `MYGO_GHOSTTY_VT` names a copy of your own instead.
+- **Linux** uses NSGo and GTK 4. `make build` puts `libghostty-vt.so`, the Terminal's emulator, beside `build/pocket`. See [release candidates](../../packaging/README.md) for Flatpak installation and web serving.
+- **macOS:** the Makefile builds no client there. NSGo's `macos_arm64` target builds one on a Mac with Xcode (`go tool nsgo build -target macos_arm64` in `desktop/cmd/pocket-nsgo`), as `.github/workflows/apple.yml` does on CI; it has not run on a Mac of the owner's yet ([plan: NSGo as the only client](../plans/nsgo-only-client.md), Phase 6).
 - **The device token** is kept in the system keyring, or in a private file in the desktop's config folder only when the platform has no keyring (`config.Credentials`). The config folder is `pocketgo` in your user config folder; `POCKETGO_CONFIG_DIR` names another.
 
 **Sign in:** enter the service URL (step 3) and the device's token (step 8), then Connect. The desktop keeps the token, its pins and what you have seen by the service's origin, so a new URL means signing in again. The desktop and pocketd must speak the same protocol version: rebuild the desktop from the same commit after a deploy that changed it.
 
-**The iPad and iPhone** build from the same code on a Mac with Xcode: follow [Try it on a Mac](../plans/phone-client.md#try-it-on-a-mac) in the phone and tablet plan, which also says what does not work on iOS yet.
+**The iPad and iPhone** build from the same code on NSGo's iOS targets, on a Mac with Xcode: `.github/workflows/apple.yml` builds the app for the iOS simulator. [Plan: NSGo as the only client](../plans/nsgo-only-client.md), Phase 6, says what has run there and what has not.
 
 **Approve and merge from the desktop** is optional: without it, merge on GitHub ([ADR-0018](../adr/0018-approve-and-merge-as-the-owner-from-the-desktop-with-pockets-gates.md)). It acts as you, through a GitHub App's device-flow sign-in, and only for the one login and App compiled in: `Login` in `desktop/internal/github/client.go`, and `AppName`, `AppSlug` and `AppClientID` in `desktop/internal/github/app.go`. These name the repository owner's, so a fork needs an App of its own. The App's sign-in is kept only in the system keyring, with no file fallback (`config.GitHubApp`): without a keyring, Approve and merge stays off.
 
 1. On GitHub, under Settings › Developer settings › GitHub Apps, make a new App. Turn on Enable Device Flow, keep Expire user authorization tokens on (the desktop takes only a pair with a refresh token and both expiries, `OAuth.pair` in `desktop/internal/github/app.go`), and turn off the webhook.
 2. Give it these repository permissions (`appPermissions` in `desktop/internal/github/reads.go`): Checks read, Commit statuses read, Contents read and write, Metadata read, Pull requests read and write, Workflows read and write. Merge queues read and write is optional: without it, an enqueue may fail, and the desktop says so.
 3. Install it on each account or organization whose pull requests you merge, with All repositories or a selection that holds each repository you merge in: the desktop checks the installation's account and permissions, not its repositories. An App that may be installed only on its own account installs on no other account: choose Any account when you create it, unless every repository you merge in belongs to the account that owns the App, organization or not.
-4. In your fork, set the four constants to your login and your App's name, slug and client ID, then build the desktop again (`make run` or `make app`): the client ID and the login are compiled in. Tests in `desktop/internal/github`, `desktop/internal/config`, `desktop/internal/state` and `desktop/internal/app` name the current login; change them too, or `make verify` fails.
-5. In the rebuilt desktop, choose Sign In to GitHub (the menu, or a pull request's card) and enter the code it shows at GitHub's device page.
+4. In your fork, set the four constants to your login and your App's name, slug and client ID, then build the desktop again (`make run` or `make app`): the client ID and the login are compiled in. Tests in `desktop/internal/github`, `desktop/internal/config`, `desktop/internal/state` and `desktop/internal/nsgoclient` name the current login; change them too, or `make verify` fails.
+5. In the rebuilt desktop, choose Sign in to GitHub (the command palette, or Settings under Accounts) and enter the code it shows at GitHub's device page.
 
 A merge then needs pocketd's backing at the pull request's head and base branch: a `ready` verdict and green CI, on an open pull request that is no draft (`state.Backed`). That is a prerequisite: Check to Merge then reads frostyard/pocket's gates on GitHub, which refuse some repositories, classic branch protection among them (`repoGate` in `desktop/internal/github/gates.go`). Merge on GitHub when it refuses. A fork with its own App has not been tried.
 

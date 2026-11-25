@@ -44,9 +44,8 @@ test("make cross fails for a module without a CROSS_<module> list", () => {
   assert.match(run.stderr, /CROSS_extra is not set/);
 });
 
-// The phone's portability step (ADR-0040): proto and the desktop's UI-free
-// packages build for ios/arm64 with CGO off, and the desktop's iOS app,
-// listed as MyGo's build lists it, leaves out MyGo's terminal plugin.
+// The phone's portability step (ADR-0071): proto and the desktop's UI-free
+// packages build for ios/arm64 with CGO off.
 test("make portable builds proto and the desktop's UI-free packages for ios/arm64 with CGO off", () => {
   const run = make("-n", "portable");
   assert.equal(run.status, 0, run.stderr);
@@ -54,20 +53,8 @@ test("make portable builds proto and the desktop's UI-free packages for ios/arm6
   assert.match(run.stdout, /cd proto && CGO_ENABLED=0 GOOS=\$goos GOARCH=\$goarch go build -o \/dev\/null \.\/\.\.\./);
   assert.match(
     run.stdout,
-    /cd desktop && CGO_ENABLED=0 GOOS=\$goos GOARCH=\$goarch go build -o \/dev\/null \.\/internal\/state \.\/internal\/config \.\/internal\/github \.\/internal\/icons\)/,
+    /cd desktop && CGO_ENABLED=0 GOOS=\$goos GOARCH=\$goarch go build -o \/dev\/null \.\/internal\/state \.\/internal\/config \.\/internal\/github\)/,
   );
-});
-
-test("make portable fails when the desktop's iOS app imports MyGo's terminal plugin", () => {
-  const run = make("-n", "portable");
-  assert.equal(run.status, 0, run.stderr);
-  // No -e: a package that does not load fails the list, so the check never
-  // passes on an incomplete tree (Codex review of #74, round 1).
-  assert.match(run.stdout, /cd desktop && GOOS=ios GOARCH=arm64 CGO_ENABLED=1 go list -deps \.\/cmd\/pocket\)"/);
-  assert.doesNotMatch(run.stdout, /go list -e/);
-  assert.match(run.stdout, /grep -qx 'github\.com\/frostyard\/pocketgo\/desktop\/internal\/app' \|\| \{ echo "go list did not list/);
-  assert.match(run.stdout, /for pkg in github\.com\/egoist\/mygo\/plugins\/terminal; do/);
-  assert.match(run.stdout, /grep -qx "\$pkg"; then echo .*; exit 1; fi/);
 });
 
 test("make ci runs the portability step after the cross-build", () => {
@@ -123,20 +110,6 @@ test("make build resolves a relative BUILD_DIR from the repository root", () => 
   assert.match(run.stdout, new RegExp(`-o "${join(repo, "dist")}/pocketd"`));
 });
 
-test("make verify-static runs MyGo's build-lifetime vet in the desktop module", () => {
-  const run = make("-n", "verify-static");
-  assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /cd desktop && go tool mygo vet \./);
-});
-
-test("make snapshot writes the desktop's views to an absolute SNAPSHOT_DIR", () => {
-  const run = make("-n", "snapshot", "SNAPSHOT_DIR=dist/snaps");
-  assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, new RegExp(`POCKETGO_SNAPSHOT_DIR="${join(repo, "dist", "snaps")}"`));
-  assert.match(run.stdout, /cd desktop && .*go test \.\/internal\/app -run Snapshot/);
-  assert.match(run.stdout, /env -u DISPLAY -u WAYLAND_DISPLAY/);
-});
-
 test("Linux selects NSGo for build, run and packaging", () => {
   for (const target of ["build", "run", "app"]) {
     const run = make("-n", target, "HOST_OS=Linux", "HOST_ARCH=x86_64");
@@ -145,11 +118,14 @@ test("Linux selects NSGo for build, run and packaging", () => {
   }
 });
 
-test("MyGo remains the fallback and the non-Linux packaging default", () => {
-  for (const args of [["app-mygo"], ["app", "HOST_OS=Darwin"]]) {
-    const run = make("-n", ...args);
-    assert.equal(run.status, 0, run.stderr);
-    assert.match(run.stdout, /cd desktop && go tool mygo build/);
+// The NSGo client is the only client (ADR-0071): on another host make run
+// and make app build nothing and say where its build is.
+test("another host's make run and make app say the client builds on Linux alone", () => {
+  for (const target of ["run", "app"]) {
+    const run = make(target, "HOST_OS=Darwin");
+    assert.notEqual(run.status, 0, run.stdout);
+    assert.match(run.stdout, new RegExp(`make ${target} builds the desktop client on Linux alone`));
+    assert.match(run.stdout, /go tool nsgo build -target macos_arm64 in desktop\/cmd\/pocket-nsgo/);
   }
 });
 
@@ -314,20 +290,6 @@ test("every Go cache of CI is keyed on files that exist before any go.sum", (t) 
   rejectsMutation(t, text, "actions/cache@", "actions/not-cache@", check);
 });
 
-test("CI installs Pango and cairo before the tests", (t) => {
-  const check = (text) => {
-    for (const job of workflowJobs(text)) {
-      job.steps.forEach((step, index) => {
-        if (!makeTargets(stepField(step, "run")).some((target) => ["test", "race"].includes(target))) return;
-        assert.ok(job.steps.slice(0, index).some((earlier) => stepField(earlier, "run")?.includes("libpangocairo-1.0-0")), `${job.name} must install Pango before testing`);
-      });
-    }
-  };
-  const text = workflowText();
-  check(text);
-  rejectsMutation(t, text, "libpangocairo-1.0-0", "missing-pango", check);
-});
-
 test("CI runs every prerequisite of make ci", (t) => {
   const check = (text) => {
     const jobs = workflowJobs(text);
@@ -379,8 +341,8 @@ test("the required check verify passes only when every other job succeeded", (t)
 test("binaries built in a command directory are ignored", () => {
   const ignored = [
     "service/cmd/pocketd/pocketd",
-    "desktop/cmd/pocket/pocket",
-    "desktop/cmd/pocket/pocket.exe",
+    "desktop/cmd/pocket-nsgo/pocket-nsgo",
+    "desktop/cmd/pocket-nsgo/pocket-nsgo.exe",
     "service/pocketd",
     "desktop/pocket.exe",
     ".claude/worktrees/agent-x/README.md",

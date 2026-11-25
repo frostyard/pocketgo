@@ -18,7 +18,7 @@ import (
 // its words and what a click on it opens are decided here, by the Store as
 // it applies each event and each answer (Options.Notify); whether a notice
 // shows, given the window's focus and the owner's switches, is ShowNotice.
-// desktop/internal/app only sends what these decide.
+// The client (desktop/internal/nsgoclient) only sends what these decide.
 //
 // Each thing notifies once: its key is the thing itself (the ask's, the
 // question's or the approval's id, the pull request at its head, the plan
