@@ -71,6 +71,10 @@ type client struct {
 	// the title, and titleDraft what its field shows.
 	titleEdit  state.TitleEdit
 	titleDraft *core.Signal[string]
+	// signInProblem is what the sign-in screen says went wrong: a field
+	// missing, a sign-in that failed, why pocketd signed this device out,
+	// and a token the keyring would not forget. "" says nothing.
+	signInProblem *core.Signal[string]
 }
 
 func Root(cx *core.Scope) core.Node { return buildClient(cx, transport(), true) }
@@ -103,6 +107,7 @@ func startClient(cx *core.Scope, transport http.RoundTripper, production bool, a
 	c.asking = core.NewSignal(cx, (*question)(nil))
 	c.newOpen, c.newForm = core.NewSignal(cx, false), core.NewSignal(cx, 0)
 	c.titleDraft = core.NewSignal(cx, "")
+	c.signInProblem = core.NewSignal(cx, "")
 	if fontErr != nil {
 		c.logLine(state.LevelWarn, "Register the Inter font: "+fontErr.Error())
 	}
@@ -141,7 +146,10 @@ func startClient(cx *core.Scope, transport http.RoundTripper, production bool, a
 	}, SignedOut: func(server, reason string) {
 		c.forget(server)
 		c.reset()
-		c.showNotice(ui.ToastWarning, "Signed out", reason)
+		// The sign-in screen the owner lands on says why, as the MyGo
+		// client's does; a toast of the store's line would say it again.
+		c.notices.Set(nil)
+		c.signInProblem.Set(reason)
 	}})
 	cx.Cleanup(c.store.Close)
 	if accounts != nil {
@@ -199,6 +207,7 @@ func (c *client) reset() {
 	c.page.Set("Inbox")
 	c.session.Set(0)
 	c.filter.Set("")
+	c.signInProblem.Set("")
 	c.log = nil
 	c.changed()
 }
