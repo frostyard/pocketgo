@@ -578,6 +578,17 @@ func refreshStale(now, checked, started, due time.Time, ttl time.Duration) strin
 	return ""
 }
 
+// wentBack says whether the clock went back: now is earlier than any of
+// the times the keeper read from it before.
+func wentBack(now time.Time, earlier ...time.Time) bool {
+	for _, t := range earlier {
+		if now.Before(t) {
+			return true
+		}
+	}
+	return false
+}
+
 // minTime is the earlier of a and b.
 func minTime(a, b time.Time) time.Time {
 	if b.Before(a) {
@@ -654,6 +665,11 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 		// The provider cached nothing of the warm: there is no entry left
 		// to keep.
 		k.dropLocked(key, "a warm the provider cached nothing of")
+	case wentBack(k.clock.Now(), dispatched, e.checked):
+		// The clock went back while the warm was in flight, maybe before
+		// its timer's next step saw it: the next refresh cannot be counted
+		// from when the warm went out.
+		k.dropLocked(key, "the clock went back")
 	default:
 		// The next refresh is decided on what this warm found.
 		e.cached, e.uncached = message.Usage.CacheRead+message.Usage.CacheWrite, message.Usage.Input

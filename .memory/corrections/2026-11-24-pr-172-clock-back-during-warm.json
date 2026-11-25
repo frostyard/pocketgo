@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "When a warm's answer comes with the clock earlier than when the warm went out or than the entry's last check (wentBack), the keeper retires the entry instead of counting the next refresh from the warm: the clock went back while the warm was in flight, maybe before the timer's next step could see it.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 5 of head 686d74f: [P2] Retire the entry if the clock rolls back during a warm",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}

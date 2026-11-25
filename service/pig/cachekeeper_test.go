@@ -1146,6 +1146,33 @@ func TestAClockThatWentBackAfterTheRefreshWasSetRetiresTheWarm(t *testing.T) {
 	}
 }
 
+// Codex review of #172, round 5: a clock that went back while a warm was
+// in flight, its answer coming before the timer's next step could see it,
+// would count the next refresh from when the warm went out; the keeper
+// retires the entry instead.
+func TestAClockThatWentBackDuringAWarmRetiresTheWarm(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	started, release := make(chan struct{}), make(chan struct{})
+	r.faux.AppendResponses([]ai.FauxResponseStep{blocking(started, release, ai.FauxResponse{Content: []ai.FauxContentBlock{ai.FauxText("w")}})})
+	fired := make(chan struct{})
+	go func() {
+		r.clock.fire()
+		close(fired)
+	}()
+	// The warm went out, its payload checked; the provider answers it.
+	<-started
+	r.clock.set(r.clock.Now().Add(-10 * time.Second))
+	close(release)
+	<-fired
+	if calls := r.shim.recorded(); len(calls) != 2 || !calls[1].sent {
+		t.Fatalf("requests %+v, want the warm sent", calls)
+	}
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v after the clock went back during a warm", r.keeper.warming(), r.clock.pending())
+	}
+}
+
 // Codex review of #172, round 3 (P3): a request the keeper starts nothing
 // for, superseding one it followed, leaves the session no token.
 func TestAnIneligibleRequestDropsTheTokenOfTheOneItSupersedes(t *testing.T) {
