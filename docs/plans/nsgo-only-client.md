@@ -11,9 +11,9 @@ Built and merged on 2026-11-24 and 2026-11-25, each with its tests in `desktop/i
 | 1, 2. Failures and loading | #178, #180: the Inbox, the board, the sidebar, a transcript, a run, a search, the Terminal place, the sign-ins (#184), New session's profiles and models (#181) | |
 | 3. Lessons in force | #181 | |
 | 4. What waits and runs | #181: a status bar under the content | the usage tooltips' text has no test |
-| 5. New session | #181; a dialog, as the owner chose (PR-A) | |
+| 5. New session | #181; a dialog, as the owner chose (#195) | |
 | 6, 7. The board, proposals, schedules | #185 | a plan's consults; "Dropping #N…" has no test; the kit's shell cannot open the session's details from the changes' count |
-| 8. The sidebar | #181: the counts, the search offer, a group's role and problem, the New mark; a row's menu with Pinned and Rename… (PR-A) | a session's tag and its dimming |
+| 8. The sidebar | #181: the counts, the search offer, a group's role and problem, the New mark; a row's menu with Pinned and Rename… (#195) | a session's tag and its dimming |
 | 9. A session | #186 | a failed copy's note (NSGo reports none); the unfolded service messages kept |
 | 10. The Terminal place | #186 | a refused `file:` link's toast (NSGo treats it as no link); the terminal's zoom zooming the window |
 | 11. Approve and merge | | all of it: its files are the client's auth files |
@@ -21,14 +21,14 @@ Built and merged on 2026-11-24 and 2026-11-25, each with its tests in `desktop/i
 | 13. Search | #180, #184 | the opened entry's highlight |
 | 14. Zoom that fits | #182 | |
 | 15. A notification clicked at start | #182 | it runs headless only: a press did not reach the client in the real window |
-| 16. Commands | #182; Rename session, with F2 (PR-A) | Insert Prompt as a command; Show or Hide the Sessions |
+| 16. Commands | #182; Rename session, with F2 (#195) | Insert Prompt as a command; Show or Hide the Sessions |
 | 17. The Activity place | #184 | |
 | The terminal's clipboard | #177: 3 tests | |
 | The preferences' move | #182 | not run on a real `settings.json` with a real keyring |
 | A phone's and a tablet's rules | #187, #190: the bar of tabs, a session over its tab, More, the board's order, no Terminal and no Quit on iOS, the held GitHub refresh, tested headless with a phone's and a tablet's environment | the touch size; a tab chosen in the simulator (Phase 6's first runs); everything on a real device |
 | What a removal must change first | #183: the state tests' loop | the Makefile, CI, the lint rules and 2 script tests still name MyGo |
 
-**The owner answered the 6 design questions on 2026-11-25,** each from the 2 clients' pictures side by side (the table of choices under [What the NSGo client lacks](#what-the-nsgo-client-lacks)). Until then the NSGo client's own layout was kept in each. New session as a dialog, and pin and rename on the row and the title, are built (PR-A). The board's groups, the report on its card and a plan on its thread's card are a change of their own (PR-B). The palette stays as it is.
+**The owner answered the 6 design questions on 2026-11-25,** each from the 2 clients' pictures side by side (the table of choices under [What the NSGo client lacks](#what-the-nsgo-client-lacks)). Until then the NSGo client's own layout was kept in each. New session as a dialog, and pin and rename on the row and the title, are built (#195). The board's groups, the report on its card and a plan on its thread's card are a pull request of their own, open when this was written. The palette stays as it is.
 
 **A correction.** #177, #178, #179, #180, #181, #182 and #184 each said in its body that no path of `.github/risk-paths.json` was touched. That was false: `desktop/internal/nsgoclient/*.go` is on the list at L2, `**/go.mod` at L2 (#179), and #182 changed `accounts.go` and `accounts_native.go`, which are on it at L1. Each body now carries the correction. #180 to #190 were merged by admin merge on the owner's authorization of 2026-11-24 for that night; #182's change of the 2 auth files is the one to read again: a notification clicked at start opens after the same sign-in, and a first start reads the MyGo client's `settings.json` and so signs in to the service it names with the keyring's token and no form. #187 changed `accounts_native.go` by 1 line, which its body names: the GitHub sign-in's refresh is held while iOS has the app in the background.
 
@@ -62,12 +62,12 @@ Read from `desktop/internal/app` (the MyGo client: 8,540 lines in 26 files, and 
 
 | The difference | The owner's choice | Built |
 | --- | --- | --- |
-| **The board.** MyGo groups threads by who moves them next (`Data.Board`: "Waits for you", "With the specialists", "With the supervisors", "Closed"). NSGo drew lanes by the thread's state (Starting, In progress, Blocked, Done) with a badge for who moves. | By who moves next, as MyGo. | PR-B |
-| **New session.** A dialog in MyGo, a page among the sidebar's places in NSGo. | A dialog, over the place the owner was in, opened by a button at the top of the sidebar, the palette and Ctrl+N; a sheet on a touch screen. | PR-A |
-| **Rename and pin.** On the row and the title in MyGo (a right-click menu, F2, a pencil, a double click); in the session's details in NSGo. | On the row and the title, as MyGo; the details keep theirs. | PR-A, with 1 difference, below |
-| **A report.** MyGo shows it on the thread's card, plain, cut at 4 lines with "Show the Whole Report". NSGo kept it behind Details and a closed fold, as rendered Markdown. | On the card, its first 4 lines, then "Show the Whole Report", as rendered Markdown. | PR-B |
+| **The board.** MyGo groups threads by who moves them next (`Data.Board`: "Waits for you", "With the specialists", "With the supervisors", "Closed"). NSGo drew lanes by the thread's state (Starting, In progress, Blocked, Done) with a badge for who moves. | By who moves next, as MyGo. | its own pull request |
+| **New session.** A dialog in MyGo, a page among the sidebar's places in NSGo. | A dialog, over the place the owner was in, opened by a button at the top of the sidebar, the palette and Ctrl+N; a sheet on a touch screen. | #195 |
+| **Rename and pin.** On the row and the title in MyGo (a right-click menu, F2, a pencil, a double click); in the session's details in NSGo. | On the row and the title, as MyGo; the details keep theirs. | #195, with 1 difference, below |
+| **A report.** MyGo shows it on the thread's card, plain, cut at 4 lines with "Show the Whole Report". NSGo kept it behind Details and a closed fold, as rendered Markdown. | On the card, its first 4 lines, then "Show the Whole Report", as rendered Markdown. | its own pull request |
 | **The palette.** Commands in MyGo; commands, then every session, in NSGo, with an Open terminal command. | Commands and sessions, as NSGo. | nothing to build |
-| **Plans.** On their threads' cards in MyGo; a section of their own in NSGo, with the plan's text and each task's acceptance lines. | On the plan's own thread's card, with the plan's text and the acceptance lines behind a "Show the Plan" fold; no section. | PR-B |
+| **Plans.** On their threads' cards in MyGo; a section of their own in NSGo, with the plan's text and each task's acceptance lines. | On the plan's own thread's card, with the plan's text and the acceptance lines behind a "Show the Plan" fold; no section. | its own pull request |
 
 **The 1 difference in rename.** In MyGo, Rename… of a row's menu turns the title into a field in the row. In the NSGo client the field is in place of the session's title over the transcript, for every way to start a rename. NSGo's sidebar (`ui.Sidebar`, v0.3.0) builds its rows anew at every change of them, so a field in a row would lose the keyboard, and end the edit, at pocketd's next event. A field in the row waits on a sidebar that keeps its rows.
 
