@@ -23,10 +23,7 @@ The numbers stay with their items when others are struck, so refer to an item by
 
 The roadmap's "What carries over" names each of these.
 
-- [ ] **G1. Wait out provider rate limits.** Missing.
-  - **Was:** pi-pocket's `src/server/limit-gate.ts` and `src/server/limits.ts`. A run that hits a provider's usage limit waits until the reset, up to 6 hours by default, sends one test request, and the wait survives a restart.
-  - **Now:** nothing in `service/` handles a model call's 429, rate limit or `retry-after` (only `service/internal/signins` does, for GitHub's device flow). Runs take PiG v0.7.0's `DefaultRetryPolicy`: 3 retries, 2 s apart at first, 60 s at most. A subscription's usage window, hours long, likely ends the run with an error.
-  - **Docs:** the roadmap lists "Waiting out provider rate limits" under pi-pocket's behaviours. No slice or ADR builds it.
+- [x] ~~**G1. Wait out provider rate limits.**~~ Struck by the owner on 2026-11-24.
 
 - [ ] **G2. Keep the prompt cache warm.** Missing.
   - **Was:** pi-pocket's `src/server/cache-keeper.ts`.
