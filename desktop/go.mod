@@ -3,7 +3,7 @@ module github.com/frostyard/pocketgo/desktop
 go 1.27.4
 
 require (
-	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/charmbracelet/x/ansi v0.11.10
 	github.com/egoist/mygo v0.10.0
 	github.com/frostyard/frostui v0.10.0
 	github.com/frostyard/frostui/workspaceui v0.5.1
