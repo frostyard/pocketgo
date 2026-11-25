@@ -76,7 +76,7 @@ func (c *client) conversation(cx *core.Scope, id int64) core.Node {
 			}
 			return core.Group{}
 		}),
-		transcript, asks, c.runFailures(id)},
+		transcript, asks, c.runFailures(id), c.answerCheck(id)},
 		Footer: core.Func(func(cx *core.Scope) core.Node { return c.messageComposer(cx, id, view) }),
 		FooterMode: func() string {
 			if why := readOnly.Get(); why != "" {
@@ -95,7 +95,8 @@ func (c *client) conversation(cx *core.Scope, id int64) core.Node {
 func (c *client) message(cx *core.Scope, row func() state.Row, view *chat.ConversationState) core.Node {
 	r := core.Untracked(cx, row)
 	text := func() string { return row().Text }
-	copyAction := chat.Actions{Text: func() string { s, _ := row().Copy(); return s }}
+	// Copy shows that it copied for state.CopyHold.
+	copyAction := chat.Actions{Receipt: state.CopyHold, Text: func() string { s, _ := row().Copy(); return s }}
 	switch r.Kind {
 	case state.RowTool:
 		activity := chat.ActivityRow{Conversation: view, Activity: func() chat.Activity {
@@ -122,9 +123,6 @@ func (c *client) message(cx *core.Scope, row func() state.Row, view *chat.Conver
 			}}
 		}
 		extras := []core.Node{}
-		if id, ok := r.FromSupervisor(); ok {
-			extras = append(extras, c.button(fmt.Sprintf("From supervisor #%d", id), func() { c.openSession(id) }))
-		}
 		for _, f := range r.Files {
 			extras = append(extras, core.Text{Content: f.Name + " · " + f.Path, Selectable: core.SelectableOn})
 		}
@@ -134,9 +132,20 @@ func (c *client) message(cx *core.Scope, row func() state.Row, view *chat.Conver
 		if r.Queued {
 			extras = append(extras, core.Text{Content: "Queued"})
 		}
-		return workspaceui.Message(r.Sender == nil, c.markdown(text, view.Search()), append(extras, copyAction)...)
+		extras = append(extras, copyAction)
+		if id, ok := r.FromSupervisor(); ok {
+			// A supervisor's message says whose it is over its words
+			// (ADR-0032).
+			return workspaceui.Message(false, c.supervisorMark(id), append([]core.Node{c.markdown(text, view.Search())}, extras...)...)
+		}
+		return workspaceui.Message(r.Sender == nil, c.markdown(text, view.Search()), extras...)
 	case state.RowQuestion:
-		return core.Text{Content: r.Question.Question, Style: ui.TypeTitle}
+		return c.questionRow(cx, row)
+	case state.RowError:
+		// A reply that failed is a problem, apart from the run's words.
+		return core.Dynamic(func(*core.Scope) core.Node { return c.problemBanner(workspaceui.Danger, text(), nil) })
+	case state.RowNote:
+		return noteRow(cx, text)
 	case state.RowCompaction:
 		return chat.ActivityRow{Conversation: view, Activity: func() chat.Activity {
 			return chat.Activity{ID: r.Key, Action: "Context compacted", Status: chat.Completed, Content: func(*core.Scope) core.Node { return workspaceui.Message(false, c.markdown(text, view.Search())) }}
@@ -161,7 +170,8 @@ func (c *client) result(err error) {
 }
 
 // runFailures say, at the transcript's end, that the session's run
-// failed, that compacting its context failed, or that starting over did.
+// failed, that compacting its context failed, or that starting over or
+// renaming the session did.
 func (c *client) runFailures(id int64) core.Node {
 	return core.Dynamic(func(*core.Scope) core.Node {
 		c.revision.Get()
@@ -176,6 +186,10 @@ func (c *client) runFailures(id int64) core.Node {
 		}
 		if why := c.store.StartingOver(id).Err; why != "" {
 			out = append(out, c.problemBanner(workspaceui.Danger, "Starting over failed: "+why, nil))
+		}
+		if why := c.store.Renaming(id).Err; why != "" {
+			// The title stays as pocketd last sent it (ADR-0058).
+			out = append(out, c.problemBanner(workspaceui.Danger, "Renaming the session failed: "+why, nil))
 		}
 		return core.Group(out)
 	})

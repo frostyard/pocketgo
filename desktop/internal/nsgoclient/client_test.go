@@ -1,6 +1,7 @@
 package nsgoclient
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -51,10 +52,17 @@ func TestConversation(t *testing.T) {
 
 func signedInApp(t *testing.T, service *pocketdtest.Server, w, h core.Points, opts ...nsgotest.Option) *nsgotest.App {
 	t.Helper()
+	return signedInOver(t, service.Transport(), w, h, opts...)
+}
+
+// signedInOver is signedInApp over transport, which a test puts before
+// pocketd's test server to hold a request back before pocketd has it.
+func signedInOver(t *testing.T, transport http.RoundTripper, w, h core.Points, opts ...nsgotest.Option) *nsgotest.App {
+	t.Helper()
 	app := nsgotest.Start(t, func(cx *core.Scope) core.Node {
 		// Use the same appearance on both hosts for screenshot comparisons.
 		cx.SetAppearance(core.AppearanceLight)
-		return newClient(cx, service.Transport())
+		return newClient(cx, transport)
 	}, append(opts, nsgotest.Size(w, h))...)
 	app.Clear("label:Service URL")
 	app.Type("label:Service URL", pocketdtest.URL)
