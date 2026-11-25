@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/frostyard/frostui/frostuitest"
-
 	"github.com/frostyard/pocketgo/desktop/internal/github"
 	"github.com/frostyard/pocketgo/proto"
 )
@@ -334,7 +332,7 @@ const (
 )
 
 type ghHarness struct {
-	loop *frostuitest.Loop
+	loop *testLoop
 	auth *fakeAuth
 	api  *fakeAPI
 	gh   *GitHub
@@ -344,7 +342,7 @@ type ghHarness struct {
 
 func newGHHarness(t *testing.T) *ghHarness {
 	t.Helper()
-	h := &ghHarness{loop: frostuitest.NewLoop(), auth: &fakeAuth{ui: goid(), tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}},
+	h := &ghHarness{loop: newTestLoop(), auth: &fakeAuth{ui: goid(), tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}},
 		api: &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true},
 			result: github.Result{Kind: "merged", Method: "SQUASH"}}}
 	h.gh = NewGitHub(GitHubOptions{Post: h.loop.Post, Auth: h.auth, NewClient: func(string) GitHubAPI { return h.api },
@@ -437,7 +435,7 @@ func TestACancelledSignInKeepsNothing(t *testing.T) {
 // A sign-in that cannot open (another PocketGo holds it) turns approve and
 // merge off.
 func TestASignInThatCannotOpenIsOff(t *testing.T) {
-	loop := frostuitest.NewLoop()
+	loop := newTestLoop()
 	auth := &fakeAuth{openErr: errors.New("another PocketGo holds the GitHub sign-in")}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return &fakeAPI{} }})
 	opened := false
@@ -572,7 +570,7 @@ func TestMergeRefAndDiffURL(t *testing.T) {
 // Approve and merge are off until Open ended: the lock held and the
 // keyring read (Codex review of #24, round 1).
 func TestNothingRunsBeforeTheSignInOpened(t *testing.T) {
-	loop := frostuitest.NewLoop()
+	loop := newTestLoop()
 	auth := &fakeAuth{openWait: make(chan struct{})}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return &fakeAPI{login: github.Login} }})
 	opened := false
@@ -737,7 +735,7 @@ func TestARetargetedPullRequestNeedsItsDiffAgain(t *testing.T) {
 // A kept sign-in's App installations are read at Open, and a merge waits
 // for them and for none to stand in the way.
 func TestAKeptSignInChecksTheAppBeforeAMerge(t *testing.T) {
-	loop := frostuitest.NewLoop()
+	loop := newTestLoop()
 	auth := &fakeAuth{signedIn: true}
 	api := &fakeAPI{login: github.Login, owners: map[string]string{github.Login: "", "frostyard": "missing contents: write"},
 		preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true}}
@@ -800,7 +798,7 @@ func TestAThirdOwnerIsReadBeforeAMerge(t *testing.T) {
 // An installation read that failed at Open is read again by Check, with
 // the kept credential.
 func TestCheckReadsTheInstallationsAgain(t *testing.T) {
-	loop := frostuitest.NewLoop()
+	loop := newTestLoop()
 	auth := &fakeAuth{signedIn: true}
 	api := &fakeAPI{login: github.Login, checkErr: errors.New("timeout"), preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true}}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api }, Owners: []string{github.Login, "frostyard"}})
@@ -816,7 +814,7 @@ func TestCheckReadsTheInstallationsAgain(t *testing.T) {
 
 // A kept sign-in that acts as someone else now signs the window out.
 func TestAKeptSignInForAnotherLoginSignsOut(t *testing.T) {
-	loop := frostuitest.NewLoop()
+	loop := newTestLoop()
 	auth := &fakeAuth{signedIn: true}
 	api := &fakeAPI{login: "bketelsen-renamed"}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api }, Owners: []string{github.Login}})
@@ -1010,7 +1008,7 @@ func TestAConfirmationHoldsForItsCheckOnly(t *testing.T) {
 // lacked a permission; Check read the owner since and found it granted
 // (Codex review of #24, round 7).
 func TestAnOlderInstallationReadNeverUndoesANewerOne(t *testing.T) {
-	loop := frostuitest.NewLoop()
+	loop := newTestLoop()
 	auth := &fakeAuth{ui: goid(), signedIn: true}
 	held := make(chan struct{})
 	api := &fakeAPI{login: github.Login, preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true},
@@ -1340,7 +1338,7 @@ func TestARejectedCredentialStaysOutAfterACanceledSignIn(t *testing.T) {
 // owner began a new sign-in, until a new pair is adopted (Codex review of
 // #24, round 11).
 func TestASignInRemovedOnItsOwnSaysWhy(t *testing.T) {
-	loop := frostuitest.NewLoop()
+	loop := newTestLoop()
 	auth := &fakeAuth{ui: goid(), signedIn: true, tok: github.AppToken{ClientID: github.AppClientID, Access: "gho_new", Refresh: "ghr_new"}}
 	api := &fakeAPI{login: "someone-else", preview: github.Preview{Head: headX, BaseRef: "main", BaseOid: baseX, Method: "SQUASH", Eligible: true}}
 	g := NewGitHub(GitHubOptions{Post: loop.Post, Auth: auth, NewClient: func(string) GitHubAPI { return api },
