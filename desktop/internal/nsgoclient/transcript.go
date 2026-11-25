@@ -4,11 +4,13 @@ import (
 	"github.com/frostyard/pocketgo/proto"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/frostyard/frostui/workspaceui"
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/nsgo-dev/nsgo/base/textview"
 	"github.com/nsgo-dev/nsgo/core"
+	"github.com/nsgo-dev/nsgo/ui"
 	"github.com/nsgo-dev/nsgo/ui/chat"
 )
 
@@ -16,12 +18,31 @@ import (
 // opening a session bounded as its history grows.
 const transcriptPageSize = 36
 
+// The highlight of the entry a search hit opens: shown at once, held,
+// then gone in a fade, in a lighter tint than a hit's marked words.
+const (
+	flashHold = 1200 * time.Millisecond
+	flashFade = 600 * time.Millisecond
+	flashTint = 0.14
+)
+
 func (c *client) transcript(cx *core.Scope, id int64, rows func() []state.Row, view *chat.ConversationState) core.Node {
 	// An empty anchor follows incoming messages. A historical page ends at a
 	// row key so streaming and new messages cannot move the reader's place.
 	endKey := core.NewSignal(cx, "")
 	target := core.NewSignal(cx, "")
 	isolate := core.NewSignal(cx, "")
+	// flash is the row a search hit opened: it shows highlighted at once,
+	// and the highlight goes in a moment (flashHold, then a fade), as in
+	// the MyGo client.
+	flash := core.NewSignal(cx, "")
+	cx.Effect(func() {
+		// A newer highlight starts its own moment: the effect's next run
+		// ends this one's timer.
+		if flash.Get() != "" {
+			cx.AfterFunc(flashHold, func() { flash.Set("") })
+		}
+	})
 	cx.Effect(func() {
 		entry := c.seek.Get()
 		if entry == 0 {
@@ -31,6 +52,7 @@ func (c *client) transcript(cx *core.Scope, id int64, rows func() []state.Row, v
 		if i, ok := state.TargetRow(all, entry); ok {
 			target.Set(all[i].Key)
 			isolate.Set(all[i].Key)
+			flash.Set(all[i].Key)
 			if len(all) > transcriptPageSize {
 				endKey.Set(all[i].Key)
 			}
@@ -139,10 +161,22 @@ func (c *client) transcript(cx *core.Scope, id int64, rows func() []state.Row, v
 		},
 		Key: func(p turnPart) string { return p.key },
 		Content: func(cx *core.Scope, p func() turnPart) core.Node {
+			var row core.Node
 			if core.Untracked(cx, p).work {
-				return c.workTurn(cx, p, view)
+				row = c.workTurn(cx, p, view)
+			} else {
+				row = c.message(cx, func() state.Row { return p().rows[0] }, view)
 			}
-			return c.message(cx, func() state.Row { return p().rows[0] }, view)
+			key := core.Untracked(cx, p).key
+			colors := ui.ColorsOf(cx)
+			return core.View{TestID: "transcript-row-" + key, Style: core.Style{CornerRadius: ui.RadiusInset, Transition: core.Transition{Duration: flashFade, Easing: core.EaseOut, Properties: core.TransitionBackground}},
+				StyleFunc: func() core.Style {
+					if flash.Get() != key {
+						return core.Style{}
+					}
+					return core.Style{Background: ui.Mix(colors.Surface(), colors.Accent(), flashTint)}
+				},
+				Children: []core.Node{row}}
 		}, Reveal: target.Get, OnRevealed: func(string) { target.Set("") },
 	}
 	// Keep pending approvals actionable even when the originating tool is

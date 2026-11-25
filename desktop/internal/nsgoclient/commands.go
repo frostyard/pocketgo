@@ -60,6 +60,17 @@ func about() string {
 	return fmt.Sprintf("Version %s, on %s/%s.\nThe client of pocketd, protocol version %d.\nhttps://github.com/frostyard/pocketgo · MIT", version, runtime.GOOS, runtime.GOARCH, proto.Version)
 }
 
+// promptsBox says whether a message box takes a saved prompt now: the
+// shown session's, unless it is read only or answers a question.
+func (c *client) promptsBox() bool {
+	if c.page.Get() != "Session" || c.summon == nil {
+		return false
+	}
+	id := c.session.Get()
+	ro, _ := c.store.Data.ReadOnly(id)
+	return !ro && c.store.Data.ComposerOf(id).Attaches()
+}
+
 func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func()) {
 	open := core.NewSignal(cx, false)
 	show := func() { open.Set(true) }
@@ -98,6 +109,10 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 			}
 		case "quit":
 			desktop.RequestQuit(c.cx)
+		case "insert-prompt":
+			if c.promptsBox() {
+				(*c.summon)()
+			}
 		case "rename":
 			// F2 renames the session shown.
 			if c.page.Get() == "Session" {
@@ -154,6 +169,12 @@ func (c *client) commands(cx *core.Scope, showSettings func()) (core.Node, func(
 			rename.Disabled, rename.Description = true, "A rename of it is on its way"
 		}
 		out = append(out, rename)
+		// Insert prompt is always listed, and says why it is off.
+		insert := base.CommandItem{ID: "insert-prompt", Label: "Insert prompt…"}
+		if !c.promptsBox() {
+			insert.Disabled, insert.Description = true, "No message box takes a prompt now"
+		}
+		out = append(out, insert)
 		// The zoom's commands say when the zoom is at its end.
 		z := c.zoom.Get()
 		in := base.CommandItem{ID: "zoom-in", Label: "Zoom in", Shortcut: "mod+="}
