@@ -725,6 +725,11 @@ func threadClosed(ctx context.Context, tx *sql.Tx, before, after ThreadRow, now 
 	if _, err := tx.ExecContext(ctx, `UPDATE threads SET worker_stop_due = 1 WHERE id = ? AND worker_session != 0`, before.ID); err != nil {
 		return err
 	}
+	// Its specialist's watches end with no note, whatever closed it
+	// (ADR-0072).
+	if err := endThreadWatches(ctx, tx, before.ID, now); err != nil {
+		return err
+	}
 	// A thread's close ends its shift, whatever closed it (ADR-0024).
 	if err := shiftClosed(ctx, tx, before, now); err != nil {
 		return err
@@ -857,6 +862,11 @@ func planThreadClosed(ctx context.Context, tx *sql.Tx, before ThreadRow, now int
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE threads SET state = ?, report = ?, updated_at = ? WHERE id = ? AND state != ?`,
 		ThreadClosed, team.PlanClosedReport(plan), now, facts.Plan.ThreadID, ThreadClosed); err != nil {
+		return err
+	}
+	// The lead's watches end with its thread, as any closed thread's
+	// (ADR-0072).
+	if err := endThreadWatches(ctx, tx, facts.Plan.ThreadID, now); err != nil {
 		return err
 	}
 	return insertNote(ctx, tx, NoteRow{Key: prefix + ":done", SessionID: facts.Plan.SupervisorSession,

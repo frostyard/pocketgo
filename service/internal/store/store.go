@@ -646,6 +646,34 @@ var migrations = []string{
 		AND thread_id IN (SELECT id FROM threads WHERE state = 'closed')
 		AND (substr(key, 1, 13) = 'worker-reply:' OR substr(key, 1, 11) = 'worker-msg:' OR substr(key, 1, 12) = 'shift-round:'
 			OR substr(key, 1, 14) = 'shift-summary:' OR substr(key, 1, 10) = 'team-send:');`,
+	// Version 26: a session's watches of pull requests (ADR-0072). A watch
+	// is keyed by the team_watch call that made it, and its random owner
+	// keys the one note its end files (WatchRow.NoteKey). github_id is
+	// GitHub's own id of the pull request the add read, which no rename
+	// reuses; until is what it waits for, deadline when it gives up, and
+	// answer what the add answered, which the call run again answers;
+	// state is live until it ends, then outcome says how and seen what
+	// pocketd read last.
+	`CREATE TABLE watches (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		key TEXT NOT NULL UNIQUE,
+		owner TEXT NOT NULL UNIQUE,
+		session_id INTEGER NOT NULL,
+		repository TEXT NOT NULL,
+		number INTEGER NOT NULL,
+		github_id INTEGER NOT NULL,
+		until TEXT NOT NULL,
+		hours REAL NOT NULL,
+		deadline INTEGER NOT NULL,
+		state TEXT NOT NULL CHECK (state IN ('live', 'ended')),
+		outcome TEXT NOT NULL DEFAULT '',
+		seen TEXT NOT NULL DEFAULT '',
+		answer TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		ended_at INTEGER
+	);
+	CREATE INDEX watches_live ON watches (session_id) WHERE state = 'live';
+	CREATE INDEX watches_session ON watches (session_id, ended_at);`,
 }
 
 // SchemaVersion is the schema version this build migrates to.
