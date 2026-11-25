@@ -216,8 +216,14 @@ func TestOnlyWebAndMailLinksOpenFromATerminal(t *testing.T) {
 	// none to open it.
 	drawn(app, s, "s1", "\x1b[2J\x1b[Hgemini://example.org/x")
 	// The link's first cells, in the screen's first row; the key that
-	// opens links is held, Control or Command.
-	app.PressAtWith("id:remote-terminal-screen", core.Point{X: 30, Y: 10}, core.Modifiers{Control: true, Platform: true})
+	// opens links is held, Control or Command. A Mac's window takes a
+	// press with Control held as a secondary click, which opens the
+	// terminal's menu, so there Command alone is held.
+	held := core.Modifiers{Control: true, Platform: true}
+	if nsgotest.Target() == "macos" {
+		held = core.Modifiers{Platform: true}
+	}
+	app.PressAtWith("id:remote-terminal-screen", core.Point{X: 30, Y: 10}, held)
 	app.WaitFor("text:Only web and mail links open from a terminal", 5*time.Second)
 	if len(app.OpenedURLs) != 0 {
 		t.Errorf("the client opened %q", app.OpenedURLs)
