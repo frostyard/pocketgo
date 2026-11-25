@@ -48,7 +48,10 @@ func phoneApp(t *testing.T, s *pocketdtest.Server) *nsgotest.App {
 	app.Type("label:Service URL", pocketdtest.URL)
 	app.Type("label:Device token", pocketdtest.Token)
 	app.Press("text:Connect")
-	app.WaitFor("id:tab-bar", patience())
+	// The bar of tabs has 2 views of that id on a device, the shell's and
+	// the system's bar in it, where WaitFor wants 1: its presence is waited
+	// for.
+	app.WaitUntil(patience(), func() bool { return app.Exists("id:tab-bar") })
 	return app
 }
 
@@ -165,7 +168,7 @@ func TestATabletsFullWindowKeepsTheDesktopsLayout(t *testing.T) {
 	}
 	// Narrowed, as in Split View, it goes by the bar of tabs.
 	app.Resize(500, 1180)
-	app.WaitFor("id:tab-bar", patience())
+	app.WaitUntil(patience(), func() bool { return app.Exists("id:tab-bar") })
 }
 
 // TestADesktopsNarrowWindowHasNoBarOfTabs checks that the compact layout
