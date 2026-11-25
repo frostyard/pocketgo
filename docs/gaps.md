@@ -25,11 +25,7 @@ The roadmap's "What carries over" names each of these.
 
 - [x] ~~**G1. Wait out provider rate limits.**~~ Struck by the owner on 2026-11-24.
 
-- [ ] **G2. Keep the prompt cache warm.** Missing.
-  - **Was:** pi-pocket's `src/server/cache-keeper.ts`.
-  - **Now:** nothing in `service/` keeps a cache warm or sets a cache retention.
-  - **Docs:** the roadmap lists "Keeping the prompt cache warm". No slice builds it.
-  - The standing supervisor session ([ADR-0026](adr/0026-keep-the-supervisor-in-one-standing-session-compacted-early-in-code.md)) re-reads the longest context after an idle gap, so it gains most.
+- [x] **G2. Keep the prompt cache warm.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#172](https://github.com/frostyard/pocketgo/pull/172), ADR-0074, roadmap item 44.
 
 - [ ] **G3. Fence and defang outside text.** Missing.
   - **Was:** pi-pocket's `src/server/fence.ts`: `defang`, `attribute`, `quoted`, and its class of invisible characters.
@@ -42,22 +38,13 @@ The roadmap's "What carries over" names each of these.
     - `team_inbox` quotes some fields with `%q`, which is no fence.
   - **Docs:** the roadmap lists "Fencing and defanging inbox text". The [architecture](design/architecture.md)'s "External events" says, as intent, "Outside text is fenced and defanged before an agent sees it", next to Phase 5's webhooks. GitHub and MCP text arrive today, before Phase 5.
 
-- [ ] **G4. Watches.** Missing.
-  - **Was:** pi-pocket-team's `team_delegate` `watch` (`check_on`, `check`, `on`, `condition`), the desk's `watch` and `result`, and the desk page's Watching section (Watch, Clear, Pass, Fail). A watched thread slept outside the desk cap until a date, an event, or a condition checked by machine: a pull request merged, checks green, a run succeeded. pi-pocket had `watch_pr` too.
-  - **Now:** no watch table, tool parameter or protocol rule. `team_delegate` takes `agent`, `task`, `title`, `repository`, `plan`, `shift`, `worker` and `follows` ([team.go](../service/pig/team.go)). `team_schedule`'s reminders cover a dated check, with no condition.
-  - **Docs:** the roadmap's "From pi-pocket-team, port the domain model" names "The thread, ask, PR link, watch and review-verdict schemas". The architecture's overview says the owner can "schedule a follow-up" from a thread, and Phase 5 names "scheduled follow-ups"; either may mean this. The night shift's design put the supervisor's "merge watches" in a later slice.
+- [x] **G4. Watches.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#173](https://github.com/frostyard/pocketgo/pull/173), ADR-0072, roadmap item 42.
 
-- [ ] **G5. Wait for CI outside a shift.** Missing.
-  - **Was:** pi-pocket-team's `team_wait_for_ci` (`team.ts`): any session waited for a pull request's checks. pi-pocket's `watch_pr` did the same.
-  - **Now:** pocketd reads CI in code only for a shift with `ci: true` ([ADR-0024](adr/0024-run-a-delegated-thread-in-rounds-as-a-shift-driven-in-code.md), [ADR-0047](adr/0047-carry-a-shifts-ci-on-a-proposal-to-its-launch.md)). A thread that is no shift reports its pull request and cannot wait for its checks.
-  - **Docs:** ADR-0047's context says "the specialists had no tool to wait for CI" and fixes it for shifts and launches alone.
+- [x] **G5. Wait for CI outside a shift.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#173](https://github.com/frostyard/pocketgo/pull/173), ADR-0072, roadmap item 42.
 
 ## pi-pocket-team: the team
 
-- [ ] **G6. An agent starts its own linked session in a fresh worktree.** Missing.
-  - **Was:** `team_work` (`team.ts`): an agent in its home opened a session of its own on a new worktree of one of its repositories, linked to its own.
-  - **Now:** no such tool; `roleTools` ([team.go](../service/pig/team.go)) offers none. The owner's New Session on a repository ([ADR-0027](adr/0027-start-the-owners-session-on-a-repository-in-a-new-worktree-named-in-code.md)) is the nearest, and only the owner starts it.
-  - **Docs:** none.
+- [x] **G6. An agent starts its own linked session in a fresh worktree.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#174](https://github.com/frostyard/pocketgo/pull/174), ADR-0073, roadmap item 43.
 
 - [ ] **G7. The home guard.** Missing.
   - **Was:** a hook (`homeGuard`, `team.ts`) that refused `edit` and `write` into any repository of the roster, or a sibling worktree, from a session in a home.
@@ -74,15 +61,9 @@ The roadmap's "What carries over" names each of these.
   - **Now:** no brief (`team.Brief`), report, answer or scheduled message carries one, and PiG adds none that the survey found. Shift deadlines show in UTC alone (`team/shift.go`).
   - **Docs:** none. pi-pocket-team's beacon ran a trial of the clock line, due for review on 2026-11-25.
 
-- [ ] **G10. The supervisor lists and reads its threads.** Missing.
-  - **Was:** `team_sessions` (`team.ts`), and the desk's `list` and `read` (`desk.ts`): open threads with who moves next and stale marks, a thread in full or in brief, one report.
-  - **Now:** the supervisor's tools are `team_delegate`, `team_close`, `team_schedule`, `team_send`, `team_gather`, `team_board`, `team_launch` and `team_inbox`, beside `team_memory`. `team_inbox` ([ADR-0046](adr/0046-let-the-supervisor-read-the-owners-inbox-from-pocketds-records-in-code.md)) lists what waits for the owner, not the supervisor's threads.
-  - **Docs:** none. It may be part of why the supervisor reminds the owner of settled work (the reason for ADR-0046).
+- [x] **G10. The supervisor lists and reads its threads.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#175](https://github.com/frostyard/pocketgo/pull/175), ADR-0071, roadmap item 41.
 
-- [ ] **G11. The supervisor is told when the owner answers an ask.** Partial.
-  - **Was:** the desk told the supervisor of the answer with the thread's next step.
-  - **Now:** the answer reaches the asking session alone. The supervisor learns of it only by calling `team_inbox`.
-  - **Docs:** roadmap Phase 2, slice 2: "Seen then, for a later slice: an answer goes only to the session that asked, so the supervisor still thought T1 waited for A1."
+- [x] **G11. The supervisor is told when the owner answers an ask.** Taken by the owner on 2026-11-24: [frostyard/pocketgo#175](https://github.com/frostyard/pocketgo/pull/175), ADR-0071, roadmap item 41.
 
 - [ ] **G12. The owner adds a lesson that holds at once.** Missing.
   - **Was:** the owner wrote a lesson for an agent from the Team panel, in force with no approval step (`team.ts`).
