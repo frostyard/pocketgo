@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "Each new submission of a work session's task not yet placed first checks the work's claimed worktree, its place, branch and mark (Server.workTaskCheck); a task whose worktree is no longer the work's is dropped and the caller told once (store.DropWorkTask). A placed task is not checked.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 1: [P1] Verify the worktree before delivering a delayed first task",
+  "promoted_to": "service/internal/api/work_test.go"
+}

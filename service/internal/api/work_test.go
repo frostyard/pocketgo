@@ -352,9 +352,9 @@ func TestTheOwnersMessageWaitsForTheWorkSessionsTask(t *testing.T) {
 	}
 }
 
-// A session the engine made for the work key, whose record failed, is
-// recorded as it was made when the call runs again: one session, with its
-// task (ADR-0073).
+// A session the engine made for the work key, whose answer was lost, is
+// recorded as it was made, by the same call or by its run again: one
+// session, with its task (ADR-0073).
 func TestAWorkSessionMadeButNotRecordedIsRecordedAsMade(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -363,8 +363,8 @@ func TestAWorkSessionMadeButNotRecordedIsRecordedAsMade(t *testing.T) {
 	h.engine.mu.Unlock()
 	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
 	work := team.Work{Task: "Fix the flaky test."}
-	if _, err := h.server.TeamWork(ctx, call, work); err == nil {
-		t.Fatal("a lost create answered")
+	if _, err := h.server.TeamWork(ctx, call, work); err != nil {
+		t.Fatalf("a lost create's session: %v", err)
 	}
 	h.engine.mu.Lock()
 	made := h.engine.created
@@ -385,7 +385,7 @@ func TestAWorkSessionMadeButNotRecordedIsRecordedAsMade(t *testing.T) {
 
 // A work session starts only from a profile that still names its
 // repository with the checkout its worktree was made from, read again
-// right before the session starts (ADR-0073).
+// when its call runs again (ADR-0073).
 func TestAWorkSessionStartsOnlyFromAProfileThatStillNamesItsRepository(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -397,7 +397,7 @@ func TestAWorkSessionStartsOnlyFromAProfileThatStillNamesItsRepository(t *testin
 		t.Fatal("a failed create answered")
 	}
 	h.addProfiles(map[string]string{"agnes.md": "---\nmodel: faux/faux-1\nhome: ~\nrepositories:\n  frostyard/example: " + h.checkout + "-moved\n---\n# Agnes\n"})
-	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil || !strings.Contains(err.Error(), "changed while its worktree was made") {
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil || !strings.Contains(err.Error(), "-moved now, not "+h.checkout+", which the work was recorded from") {
 		t.Fatalf("a moved checkout: %v", err)
 	}
 	h.addProfiles(map[string]string{"agnes.md": "---\nmodel: faux/faux-1\nhome: ~\n---\n# Agnes\n"})
@@ -451,5 +451,304 @@ func TestAWorkSessionsWorktreeIsKept(t *testing.T) {
 	}
 	if _, err := os.Stat(row.Path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// writeAgnes rewrites Agnes's profile with front matter front.
+func writeAgnes(h *teamHarness, front string) {
+	h.addProfiles(map[string]string{"agnes.md": "---\nmodel: faux/faux-1\nhome: ~\n" + front + "---\n# Agnes\n"})
+}
+
+// recordedWork is the work of Agnes's call as its first run recorded it
+// before it stopped: its record, and no worktree or session yet.
+func recordedWork(t *testing.T, h *teamHarness, call TeamCall, title, task string) store.WorkRow {
+	t.Helper()
+	key := workKey(call)
+	path, branch := team.WorkWorktree(profiles.Profile{ID: "agnes"}, h.checkout, title, key)
+	row, err := h.store.StartWork(context.Background(), store.WorkRow{Key: key, Caller: call.Session, Agent: "agnes", Repository: "frostyard/example",
+		Checkout: h.checkout, Path: path, Branch: branch, Title: title, Task: task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return row
+}
+
+// A call stopped while it waits to start its session, after its worktree
+// was made, creates no session and sends no task; its run again starts it
+// in the same worktree (Codex review of #174, round 1).
+func TestAStoppedCallStartsNoWorkSession(t *testing.T) {
+	h, agnes := workHarness(t)
+	h.engine.mu.Lock()
+	created := h.engine.created
+	h.engine.mu.Unlock()
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.server.beforeCreateLock = cancel
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil || !strings.Contains(err.Error(), "team_work was stopped") {
+		t.Fatalf("a stopped call: %v", err)
+	}
+	h.server.beforeCreateLock = nil
+	h.engine.mu.Lock()
+	after := h.engine.created
+	h.engine.mu.Unlock()
+	row, err := h.store.WorkByKey(context.Background(), workKey(call))
+	if after != created || err != nil || row.Session != 0 {
+		t.Fatalf("a stopped call made %d sessions; the work %+v, %v", after-created, row, err)
+	}
+	if _, err := os.Stat(row.Path); err != nil {
+		t.Fatalf("the worktree made before the stop: %v", err)
+	}
+	if _, err := h.server.TeamWork(context.Background(), call, team.Work{Task: "Fix it."}); err != nil {
+		t.Fatalf("the call run again: %v", err)
+	}
+	if row, err := h.store.WorkByKey(context.Background(), workKey(call)); err != nil || row.Session == 0 {
+		t.Fatalf("the work after its run again %+v, %v", row, err)
+	}
+}
+
+// A task not placed yet is submitted only while its worktree is the one
+// its work made: one removed before the task went is dropped, and the
+// caller hears so once; a task placed already is not checked again
+// (Codex review of #174, round 1).
+func TestADelayedTaskChecksItsWorktreeFirst(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	h.server.retry = func(func()) func() { return func() {} }
+	h.engine.onCreate = func(spec SessionSpec) {
+		if spec.Work {
+			h.engine.mu.Lock()
+			h.engine.failTo = map[int64]bool{h.engine.next + 1: true}
+			h.engine.mu.Unlock()
+		}
+	}
+	row := startedWork(t, h, agnes.ID)
+	h.engine.onCreate = nil
+	if _, err := h.engine.Git(ctx, h.checkout, "worktree", "remove", "--force", row.Path); err != nil {
+		t.Fatal(err)
+	}
+	h.failTo(0)
+	for range 2 {
+		if _, err := h.server.deliverAll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.engine.mu.Lock()
+	_, sent := h.engine.texts[workTaskKey(row.Key)]
+	notice, to := h.engine.texts[row.Key+workDroppedSuffix], h.engine.to[row.Key+workDroppedSuffix]
+	h.engine.mu.Unlock()
+	if sent {
+		t.Fatal("the task went to a work session whose worktree is gone")
+	}
+	if to != agnes.ID || !strings.Contains(notice, "dropped this work session's task") {
+		t.Fatalf("the caller's notice %q went to %d", notice, to)
+	}
+	if note, err := h.store.Note(ctx, workTaskKey(row.Key)); err != nil || note.DroppedAt == nil {
+		t.Fatalf("the task %+v, %v", note, err)
+	}
+	if waits, err := h.server.workTaskWaits(ctx, row.Session); err != nil || waits {
+		t.Fatalf("a dropped task still waits: %v %v", waits, err)
+	}
+	// A task placed already needs no check: its worktree's removal later
+	// drops nothing.
+	call := TeamCall{Session: agnes.ID, Task: 8, CallID: "w2"}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix the docs."}); err != nil {
+		t.Fatal(err)
+	}
+	placed, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.engine.Git(ctx, h.checkout, "worktree", "remove", "--force", placed.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if note, err := h.store.Note(ctx, workTaskKey(placed.Key)); err != nil || note.SentAt == nil || note.DroppedAt != nil {
+		t.Fatalf("the placed task %+v, %v", note, err)
+	}
+	if _, err := h.store.Note(ctx, placed.Key+workDroppedSuffix); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a placed task's notice: %v", err)
+	}
+}
+
+// A run that ended with its answer, then a compaction (the wire's own
+// kind), sends that answer, never "ended with no reply" (Codex review of
+// #174, round 1).
+func TestAWorkSessionsAnswerSurvivesATrailingCompaction(t *testing.T) {
+	h, agnes := workHarness(t)
+	row := startedWork(t, h, agnes.ID)
+	h.engine.mu.Lock()
+	h.engine.transcripts = map[int64][]proto.Entry{row.Session: {
+		{ID: 1, Kind: proto.EntryUser, Text: "The task."},
+		{ID: 2, Kind: proto.EntryAssistant, Text: "Fixed it.", StopReason: "stop"},
+		{ID: 3, Kind: proto.EntryCompaction, Text: "Summary."},
+	}}
+	h.engine.mu.Unlock()
+	endRun(t, h, row.Session)
+	want := "[S" + strconv.FormatInt(row.Session, 10) + " · work · Fix the flaky test.] Fixed it."
+	if got, sends := workAnswersTo(h, agnes.ID); !slices.Equal(got, []string{want}) || sends != 1 {
+		t.Fatalf("answers %q, sent %d times", got, sends)
+	}
+}
+
+// A call run again that finds its work recorded and no session checks its
+// caller and repository again before it makes the worktree: a profile
+// that became a supervisor's, or lost the repository, gets no branch or
+// folder (Codex review of #174, round 1).
+func TestAReplayChecksItsCallerBeforeItsWorktree(t *testing.T) {
+	for name, tc := range map[string]struct{ front, want string }{
+		"a supervisor now":  {"role: supervisor\n", "delegate the work with team_delegate"},
+		"no repository now": {"", "agnes works on no repository"},
+		"another checkout":  {"repositories:\n  frostyard/example: /elsewhere/example\n", "which the work was recorded from"},
+		"a private one now": {"private: true\n", "agnes is private"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, agnes := workHarness(t)
+			ctx := context.Background()
+			call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+			row := recordedWork(t, h, call, "Fix it.", "Fix it.")
+			writeAgnes(h, tc.front)
+			if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("the run again: %v, want %q", err, tc.want)
+			}
+			if _, err := os.Stat(row.Path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the worktree's folder was made: %v", err)
+			}
+			if _, held, err := h.store.WorktreeOf(ctx, row.Key); err != nil || held {
+				t.Fatalf("the worktree was claimed: %v %v", held, err)
+			}
+			if branch, err := h.engine.Git(ctx, h.checkout, "branch", "--list", row.Branch); err != nil || branch != "" {
+				t.Fatalf("the branch %q, %v", branch, err)
+			}
+		})
+	}
+}
+
+// The work session's profile is read again after the models, right before
+// the session starts: one made private while the models were read starts
+// no session (Codex review of #174, round 1).
+func TestTheWorkSessionsProfileIsReadAfterTheModels(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	path, _ := team.WorkWorktree(profiles.Profile{ID: "agnes"}, h.checkout, "Fix it.", workKey(call))
+	changed := false
+	h.engine.mu.Lock()
+	h.engine.onModels = func() {
+		if _, err := os.Stat(path); err == nil && !changed {
+			changed = true
+			writeAgnes(h, "private: true\nrepositories:\n  frostyard/example: "+h.checkout+"\n")
+		}
+	}
+	created := h.engine.created
+	h.engine.mu.Unlock()
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil || !strings.Contains(err.Error(), "takes no work of its own now") {
+		t.Fatalf("a profile made private as the models were read: %v", err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if !changed || h.engine.created != created {
+		t.Fatalf("changed %v; %d sessions after %d", changed, h.engine.created, created)
+	}
+}
+
+// A profile no session can start from gets no work: a standing profile
+// whose compactAt is not below its routed model's window, as
+// Server.startable refuses it (Codex review of #174, round 1).
+func TestAProfileThatCannotStartGetsNoWork(t *testing.T) {
+	h, _ := workHarness(t)
+	ctx := context.Background()
+	front := "---\nmodel: faux/faux-1\nhome: ~\nsession: standing\nrepositories:\n  frostyard/example: " + h.checkout + "\n"
+	h.addProfiles(map[string]string{"irulan.md": front + "---\n# Irulan\n"})
+	irulan, err := h.client.CreateSession(ctx, proto.CreateSession{RequestID: "irulan", Profile: "irulan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.addProfiles(map[string]string{"irulan.md": front + "compactAt: 1000\n---\n# Irulan\n"})
+	call := TeamCall{Session: irulan.ID, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil || !strings.Contains(err.Error(), "compacts at 1000 tokens") {
+		t.Fatalf("a profile that cannot start: %v", err)
+	}
+	if _, err := h.store.WorkByKey(ctx, workKey(call)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("its work was recorded: %v", err)
+	}
+}
+
+// A work session recovered as the engine made it, whose lessons section
+// is unknown, has its profile's lessons given it by the delivery pass
+// (Codex review of #174, round 1).
+func TestARecoveredWorkSessionGetsItsLessons(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.createLost = errors.New("pocketd stopped")
+	h.engine.mu.Unlock()
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err != nil {
+		t.Fatal(err)
+	}
+	row, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil || row.Session == 0 {
+		t.Fatalf("the work %+v, %v", row, err)
+	}
+	if _, err := h.server.deliverAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if _, given := h.engine.lessons[row.Session]; !given {
+		t.Fatalf("the recovered work session got no lessons: %v", h.engine.lessons)
+	}
+}
+
+// Why a work's branch starts from the checkout's HEAD is kept with its
+// record: a task its call's run again sends still says to fetch and
+// compare (Codex review of #174, round 1).
+func TestAWorkKeepsWhyItsBranchIsStale(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	h.engine.mu.Lock()
+	h.engine.createErr = errors.New("the engine failed")
+	h.engine.mu.Unlock()
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err == nil {
+		t.Fatal("a failed create answered")
+	}
+	row, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil || row.Stale == "" {
+		t.Fatalf("the work %+v, %v: no stale base kept", row, err)
+	}
+	if _, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."}); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.mu.Lock()
+	defer h.engine.mu.Unlock()
+	if task := h.engine.texts[workTaskKey(row.Key)]; !strings.Contains(task, team.StaleBase(row.Stale)) {
+		t.Fatalf("the task of the run again:\n%s", task)
+	}
+}
+
+// A call run again answers with the model the session was created on,
+// whatever its model is now (Codex review of #174, round 1).
+func TestAWorkReplayAnswersWithItsCreatedModel(t *testing.T) {
+	h, agnes := workHarness(t)
+	ctx := context.Background()
+	call := TeamCall{Session: agnes.ID, Task: 7, CallID: "w1"}
+	first, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := h.store.WorkByKey(ctx, workKey(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SetSessionModel(ctx, row.Session, "faux", "faux-2", "", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := h.server.TeamWork(ctx, call, team.Work{Task: "Fix it."})
+	if err != nil || again != first || strings.Contains(again, "faux-2") {
+		t.Fatalf("a run again %q, %v; the first %q", again, err, first)
 	}
 }

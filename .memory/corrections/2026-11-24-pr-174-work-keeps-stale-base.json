@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "Why a work's branch starts from the checkout's HEAD (worktree.Start.Stale) is kept with its record (store.KeepWorkStale, work_sessions.stale), and every task brief is built from the record, a replayed or recovered one too.",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 1: [P2] Retain the stale-base warning when a work start is replayed",
+  "promoted_to": "service/internal/api/work_test.go"
+}

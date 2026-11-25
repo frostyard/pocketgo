@@ -650,9 +650,10 @@ var migrations = []string{
 	// (ADR-0073), one a team call, by its work key, which keys its
 	// worktree's claim and its session too: the session that called it,
 	// which takes its answers, the profile and repository it works on, its
-	// checkout, worktree and branch, its title and task, the session once
-	// it started (0 before), and the entry that began the last of its runs
-	// whose answer was kept.
+	// checkout, worktree and branch, its title and task, why its branch
+	// starts from the checkout's HEAD ('' for a fresh fetch), the session
+	// once it started (0 before), and the entry that began the last of its
+	// runs whose answer was kept.
 	`CREATE TABLE work_sessions (
 		key TEXT PRIMARY KEY,
 		caller INTEGER NOT NULL,
@@ -663,6 +664,7 @@ var migrations = []string{
 		branch TEXT NOT NULL,
 		title TEXT NOT NULL,
 		task TEXT NOT NULL,
+		stale TEXT NOT NULL DEFAULT '',
 		session INTEGER NOT NULL DEFAULT 0,
 		cursor INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL

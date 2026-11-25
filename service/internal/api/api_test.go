@@ -116,6 +116,8 @@ type fakeEngine struct {
 	ownScheduleTool map[int64]bool
 	// workTool are the sessions SetWorkTool gave team_work (ADR-0073).
 	workTool map[int64]bool
+	// onModels sees each Models call, before it answers.
+	onModels func()
 	// mcpProfiles are the profiles MCPProfiles names; mcpConnects counts
 	// ConnectMCP's calls, and mcpTools are the profiles SetMCPTools gave
 	// each session, in order (ADR-0063).
@@ -283,6 +285,12 @@ func (f *fakeEngine) Withdraw(_ context.Context, session int64, key string) (boo
 }
 
 func (f *fakeEngine) Models(context.Context) ([]proto.Model, error) {
+	f.mu.Lock()
+	hook := f.onModels
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.signedOut {

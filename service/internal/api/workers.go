@@ -389,11 +389,12 @@ func runReplies(entries []proto.Entry, live proto.Live, after int64, who string)
 			return
 		}
 		cursor = entries[start].ID
-		// An entry the protocol does not model, as PiG's compaction, is no
-		// step of the run: the reply is the last entry before it (Codex
-		// review of #29, round 7).
+		// A compaction, which the wire names compaction (proto.EntryCompaction),
+		// and an entry the protocol does not model, are no step of the run:
+		// the reply is the last entry before them (Codex review of #29,
+		// round 7; of #174, round 1).
 		at := stop - 1
-		for at > start && entries[at].Kind == proto.EntryOther {
+		for at > start && (entries[at].Kind == proto.EntryCompaction || entries[at].Kind == proto.EntryOther) {
 			at--
 		}
 		final := entries[at]

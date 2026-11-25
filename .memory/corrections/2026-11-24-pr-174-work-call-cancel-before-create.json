@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A team_work call checks and creates its work session with the call's own context, and checks it again after the wait for createMu: a call stopped before the session exists creates none, and only a session PiG created is recorded detached (Server.startWork).",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 1: [P1] Honor cancellation until the work session is created",
+  "promoted_to": "service/internal/api/work_test.go"
+}

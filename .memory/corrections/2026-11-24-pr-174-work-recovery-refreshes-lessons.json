@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A work session recorded as the engine made it, its lessons section unknown, marks its profile's lessons stale for the delivery pass (Server.lessonsChanged in Server.recordWork).",
+  "evidence": "frostyard/pocketgo#174, Codex review, round 1: [P2] Refresh lessons when recovering an unrecorded work session",
+  "promoted_to": "service/internal/api/work_test.go"
+}

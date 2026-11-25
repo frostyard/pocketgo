@@ -30,6 +30,10 @@ type WorkRow struct {
 	// Path and Branch are the worktree's, named from the work key.
 	Path, Branch string
 	Title, Task  string
+	// Stale is why its branch starts from the checkout's HEAD, as the
+	// making of its worktree found it (worktree.Start.Stale), "" for a
+	// fresh fetch: its task says so, a replayed or recovered one too.
+	Stale string
 	// Session is the work session, 0 until it started.
 	Session int64
 	// Cursor is the entry that began the last of its runs whose answer
@@ -42,13 +46,17 @@ type WorkRow struct {
 // the one its record was asked for.
 var ErrWorkSessionTaken = errors.New("the work names another session already")
 
-const workColumns = `key, caller, agent, repository, checkout, path, branch, title, task, session, cursor, created_at`
+const workColumns = `key, caller, agent, repository, checkout, path, branch, title, task, stale, session, cursor, created_at`
+
+// workBySession finds a work by its session, in the words of the partial
+// index work_sessions_session, so SQLite reads it (session != 0).
+const workBySession = `session = ? AND session != 0`
 
 func scanWork(scan func(...any) error) (WorkRow, error) {
 	var row WorkRow
 	var created int64
 	err := scan(&row.Key, &row.Caller, &row.Agent, &row.Repository, &row.Checkout, &row.Path, &row.Branch, &row.Title, &row.Task,
-		&row.Session, &row.Cursor, &created)
+		&row.Stale, &row.Session, &row.Cursor, &created)
 	row.CreatedAt = fromMillis(created)
 	return row, err
 }
@@ -84,11 +92,32 @@ func (s *Store) WorkOfSession(ctx context.Context, session int64) (WorkRow, erro
 	if session == 0 {
 		return WorkRow{}, ErrNotFound
 	}
-	row, err := scanWork(s.db.QueryRowContext(ctx, `SELECT `+workColumns+` FROM work_sessions WHERE session = ?`, session).Scan)
+	row, err := scanWork(s.db.QueryRowContext(ctx, `SELECT `+workColumns+` FROM work_sessions WHERE `+workBySession, session).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkRow{}, ErrNotFound
 	}
 	return row, err
+}
+
+// KeepWorkStale keeps why the worktree of the work keyed key starts from
+// its checkout's HEAD, once: the first reason kept stays, since only the
+// first making of the worktree fetched.
+func (s *Store) KeepWorkStale(ctx context.Context, key, stale string) error {
+	if stale == "" {
+		return nil
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE work_sessions SET stale = ? WHERE key = ? AND stale = ''`, stale, key)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		if _, err := s.WorkByKey(ctx, key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WorkSessions are the work records whose session started, oldest first.
@@ -130,6 +159,36 @@ func (s *Store) RecordWorkSession(ctx context.Context, key string, session Sessi
 	return row, err
 }
 
+// DropWorkTask drops the work keyed key's task, note taskKey, while it is
+// neither sent nor dropped, and keeps notice for its caller once, in one
+// transaction: a task its worktree no longer backs goes to no one, and
+// the session that called team_work hears so once. A task sent already
+// stays, and keeps no notice.
+func (s *Store) DropWorkTask(ctx context.Context, key, taskKey string, notice NoteRow) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := s.millis()
+	var sent bool
+	if err := tx.QueryRowContext(ctx, `SELECT sent_at IS NOT NULL FROM notes WHERE key = ?`, taskKey).Scan(&sent); errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("no task %s of the work %s: %w", taskKey, key, ErrNotFound)
+	} else if err != nil {
+		return err
+	}
+	if sent {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE notes SET dropped_at = ? WHERE key = ? AND sent_at IS NULL AND dropped_at IS NULL`, now, taskKey); err != nil {
+		return err
+	}
+	if err := insertNote(ctx, tx, notice, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // QueueWorkReplies keeps replies, each a note to its work's calling
 // session once by its key, and moves session's cursor on to cursor, in
 // one transaction: a reply kept is never read again, and a read again
@@ -146,7 +205,7 @@ func (s *Store) QueueWorkReplies(ctx context.Context, session int64, replies []N
 			return err
 		}
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE work_sessions SET cursor = MAX(cursor, ?) WHERE session = ?`, cursor, session)
+	result, err := tx.ExecContext(ctx, `UPDATE work_sessions SET cursor = MAX(cursor, ?) WHERE `+workBySession, cursor, session)
 	if err != nil {
 		return err
 	}

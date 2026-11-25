@@ -161,6 +161,15 @@ func WorkReplyText(session int64, title, reply string) string {
 	return fmt.Sprintf("[S%d · work · %s] %s", session, Clip(strings.TrimSpace(title), 60), reply)
 }
 
+// WorkTaskDropped is the message the session that called team_work gets
+// when its work session's task never reached it: its worktree is no longer
+// the one pocketd made (why), so pocketd dropped the task, and the work
+// session has nothing to do.
+func WorkTaskDropped(session int64, title, why string) string {
+	return fmt.Sprintf("[S%d · work · %s] pocketd dropped this work session's task before it reached the session: its worktree is no longer the one pocketd made (%s). "+
+		"Nothing was started there; call team_work again to start the work in a fresh worktree.", session, Clip(strings.TrimSpace(title), 60), strings.TrimSpace(why))
+}
+
 // WorkStarted is team_work's answer: the work session, its model, its
 // worktree and branch, and how its answers come back.
 func WorkStarted(session int64, model, repository, path, branch string) string {

@@ -122,3 +122,78 @@ func TestAWorkSessionsAnswersAreKeptOnce(t *testing.T) {
 		t.Fatalf("a session that is no work session: %v", err)
 	}
 }
+
+// The lookups of a work by its session, on every send and run event, and
+// the move of its cursor, read the partial index of the sessions, never
+// the whole table (Codex review of #174, round 1).
+func TestWorkQueriesUseTheirIndexes(t *testing.T) {
+	s, _ := openFresh(t)
+	for _, query := range []string{
+		`SELECT ` + workColumns + ` FROM work_sessions WHERE ` + workBySession,
+		`UPDATE work_sessions SET cursor = MAX(cursor, 1) WHERE ` + workBySession,
+	} {
+		if plan := planOf(t, s, query, 21); !strings.Contains(plan, "work_sessions_session") || strings.Contains(plan, "SCAN work_sessions") {
+			t.Errorf("%s:\n  plan %s, want work_sessions_session", query, plan)
+		}
+	}
+}
+
+// Why a work's branch starts from its checkout's HEAD is kept once, with
+// its record (Codex review of #174, round 1).
+func TestAWorkKeepsItsStaleBaseOnce(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.StartWork(ctx, workRow("work:k")); err != nil {
+		t.Fatal(err)
+	}
+	for _, why := range []string{"", "no origin", "later"} {
+		if err := s.KeepWorkStale(ctx, "work:k", why); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if row, err := s.WorkByKey(ctx, "work:k"); err != nil || row.Stale != "no origin" {
+		t.Fatalf("the work %+v, %v", row, err)
+	}
+	if err := s.KeepWorkStale(ctx, "work:none", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no work: %v", err)
+	}
+}
+
+// A task its worktree no longer backs is dropped and its caller told once;
+// a task sent already stays, and tells no one (Codex review of #174,
+// round 1).
+func TestADroppedWorkTaskTellsItsCallerOnce(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.StartWork(ctx, workRow("work:k")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordWorkSession(ctx, "work:k", SessionRow{ID: 21, Title: "Vera: Fix", CreatedBy: "team"}, NoteRow{Key: "work:k:task", Text: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	notice := NoteRow{Key: "work:k:dropped", SessionID: 3, Text: "dropped"}
+	for range 2 {
+		if err := s.DropWorkTask(ctx, "work:k", "work:k:task", notice); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if task, err := s.Note(ctx, "work:k:task"); err != nil || task.DroppedAt == nil {
+		t.Fatalf("the task %+v, %v", task, err)
+	}
+	if got, ok, err := s.OldestNote(ctx, 3); err != nil || !ok || got.Key != notice.Key {
+		t.Fatalf("the notice %+v %v %v", got, ok, err)
+	}
+	if _, err := s.StartWork(ctx, workRow("work:sent")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordWorkSession(ctx, "work:sent", SessionRow{ID: 22, Title: "Vera: Fix", CreatedBy: "team"}, NoteRow{Key: "work:sent:task", Text: "task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.NoteSent(ctx, "work:sent:task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropWorkTask(ctx, "work:sent", "work:sent:task", NoteRow{Key: "work:sent:dropped", SessionID: 3, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Note(ctx, "work:sent:dropped"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a sent task's notice: %v", err)
+	}
+}
