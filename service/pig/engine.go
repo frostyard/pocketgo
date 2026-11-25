@@ -562,7 +562,7 @@ func (e *Engine) refreshInstructions(ctx context.Context, id int64) error {
 // the owner's global AGENTS.md, then, for a session started from a
 // profile, the agent's identity, and for a supervisor the roster it
 // delegates to, or for a session at the agent's home that starts work
-// sessions where it changes a repository (team.WorkGuideFor, ADR-0073),
+// sessions where it changes a repository (team.WorkGuideFor, ADR-0074),
 // then its folder's
 // AGENTS.md and the skills it may read,
 // then its lessons section (ADR-0043); loaded holds the files' parts. A
@@ -584,7 +584,7 @@ func sessionInstructions(spec api.SessionSpec, loaded team.Loaded) string {
 	identity := "You are " + spec.Profile.Name + ", the team's " + string(spec.Profile.Role) + ". Your profile follows.\n\n" + spec.Profile.Identity
 	// A session at the agent's home that starts work sessions is told
 	// where it changes a repository; one the owner opened in a repository
-	// is not (team.WorkGuideFor, ADR-0073).
+	// is not (team.WorkGuideFor, ADR-0074).
 	guide := team.WorkGuideFor(spec.Profile, roleOf(spec), spec.Cwd, spec.Repository)
 	// The lessons last: pocketd owns the instructions from their marker on
 	// (SetLessons).

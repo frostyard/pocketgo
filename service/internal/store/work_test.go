@@ -15,7 +15,7 @@ func workRow(key string) WorkRow {
 // A work's record is kept by its key, once: a call run again finds what
 // its first run named, whatever it names now; its session is recorded
 // with the session's row, the key's request and its task, in one
-// transaction, and once (ADR-0073).
+// transaction, and once (ADR-0074).
 func TestAWorkSessionIsRecordedOnceWithItsTask(t *testing.T) {
 	s, path := open(t)
 	first, err := s.StartWork(ctx, workRow("work:team:3:7:c1"))
@@ -78,7 +78,7 @@ func TestAWorkSessionIsRecordedOnceWithItsTask(t *testing.T) {
 }
 
 // A work session's answers are kept once each, by key, with the cursor's
-// move in one transaction; the cursor never moves back (ADR-0073).
+// move in one transaction; the cursor never moves back (ADR-0074).
 func TestAWorkSessionsAnswersAreKeptOnce(t *testing.T) {
 	s, _ := open(t)
 	if _, err := s.StartWork(ctx, workRow("work:k")); err != nil {
@@ -199,8 +199,8 @@ func TestADroppedWorkTaskTellsItsCallerOnce(t *testing.T) {
 	}
 }
 
-// The work sessions are migration 27, after the watches' 26 (ADR-0072,
-// ADR-0073): a database at 26 takes them, and the order of the two holds.
+// The work sessions are migration 27, after the watches' 26 (ADR-0073,
+// ADR-0074): a database at 26 takes them, and the order of the two holds.
 func TestTheWorkSessionsAreMigration27(t *testing.T) {
 	if SchemaVersion < 27 || !strings.Contains(migrations[25], "CREATE TABLE watches") || !strings.Contains(migrations[26], "CREATE TABLE work_sessions") {
 		t.Fatalf("schema version %d: the work sessions are not migration 27, after the watches' 26", SchemaVersion)

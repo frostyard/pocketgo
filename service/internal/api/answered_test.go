@@ -17,7 +17,7 @@ import (
 // that delegated the thread: a note with the question, the answer and the
 // thread's next step, placed by the outbox. The same request again tells
 // nothing new, and the specialist's own report is the only other message
-// (ADR-0071).
+// (ADR-0072).
 func TestTheSupervisorHearsTheOwnersAnswerOnce(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -62,7 +62,7 @@ func TestTheSupervisorHearsTheOwnersAnswerOnce(t *testing.T) {
 // thread once noted. An answer that comes between its placement and its
 // noting notes it first, under outboxMu, so the answer's note reads the
 // reopened thread and never tells the supervisor to reopen an open one
-// (ADR-0061, ADR-0071; Codex review of #175, round 1).
+// (ADR-0061, ADR-0072; Codex review of #175, round 1).
 func TestTheAnswersNoteReadsTheThreadAfterItsPlacedMessages(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()

@@ -21,7 +21,7 @@ type RenameFacts struct {
 	// Team says pocketd started the session for the team's work: a
 	// thread's specialist, its worker, a review, a consult, a gather's
 	// ask or an agent's work session (its created_by is team or gather;
-	// ADR-0073).
+	// ADR-0074).
 	Team bool
 	// NoProfiles says pocketd runs without profiles. Now is the profile as
 	// loaded now, nil when it is gone or invalid.

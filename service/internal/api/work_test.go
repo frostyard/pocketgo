@@ -69,7 +69,7 @@ func workAnswersTo(h *teamHarness, session int64) (texts []string, sends int) {
 // the call's key, starts a session of the caller's profile at its real
 // place, recorded as the team's and linked to the caller, and gives it the
 // task through the outbox; the same call run again makes no second
-// worktree, session or task, and answers the same (ADR-0073).
+// worktree, session or task, and answers the same (ADR-0074).
 func TestTeamWorkStartsAWorkSessionInAFreshWorktree(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -152,7 +152,7 @@ func TestTeamWorkStartsAWorkSessionInAFreshWorktree(t *testing.T) {
 // team_work refuses, before anything is recorded or made: a supervisor, a
 // session of no profile, a private agent, a work session itself, a
 // repository the profile does not name or one left out of two, an empty
-// task, and a checkout that is no git work tree (ADR-0073).
+// task, and a checkout that is no git work tree (ADR-0074).
 func TestTeamWorkRefuses(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -218,7 +218,7 @@ func TestTeamWorkRefuses(t *testing.T) {
 // Each run of a work session that ends sends its answer to the session
 // that started it once, as a run's end, a delivery pass and a restarted
 // pocketd read it; a run the owner's message started sends its own, and a
-// run that ended with no answer says so (ADR-0073).
+// run that ended with no answer says so (ADR-0074).
 func TestAWorkSessionsAnswersReachItsCallerOnce(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -268,7 +268,7 @@ func TestAWorkSessionsAnswersReachItsCallerOnce(t *testing.T) {
 
 // An answer to a calling session at work waits in its queue: a pass sends
 // it no second time while it waits, and notes it sent once it is placed;
-// pocketd removes no session, so the caller is always there (ADR-0073).
+// pocketd removes no session, so the caller is always there (ADR-0074).
 func TestAnAnswerToABusyCallerIsPlacedOnce(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -318,7 +318,7 @@ func TestAnAnswerToABusyCallerIsPlacedOnce(t *testing.T) {
 
 // A work session takes no message from the owner until its task is in
 // its transcript: the task is its first message (protocol rule 10,
-// ADR-0073).
+// ADR-0074).
 func TestTheOwnersMessageWaitsForTheWorkSessionsTask(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -354,7 +354,7 @@ func TestTheOwnersMessageWaitsForTheWorkSessionsTask(t *testing.T) {
 
 // A session the engine made for the work key, whose answer was lost, is
 // recorded as it was made, by the same call or by its run again: one
-// session, with its task (ADR-0073).
+// session, with its task (ADR-0074).
 func TestAWorkSessionMadeButNotRecordedIsRecordedAsMade(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -385,7 +385,7 @@ func TestAWorkSessionMadeButNotRecordedIsRecordedAsMade(t *testing.T) {
 
 // A work session starts only from a profile that still names its
 // repository with the checkout its worktree was made from, read again
-// when its call runs again (ADR-0073).
+// when its call runs again (ADR-0074).
 func TestAWorkSessionStartsOnlyFromAProfileThatStillNamesItsRepository(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -411,7 +411,7 @@ func TestAWorkSessionStartsOnlyFromAProfileThatStillNamesItsRepository(t *testin
 
 // An agent's own session started before team_work gets it at start; a
 // supervisor's, a thread's specialist's and a work session do not, and a
-// standing one takes it at its idle refresh (ADR-0073).
+// standing one takes it at its idle refresh (ADR-0074).
 func TestAnOlderAgentsSessionGetsTeamWorkAtStart(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()
@@ -435,7 +435,7 @@ func TestAnOlderAgentsSessionGetsTeamWorkAtStart(t *testing.T) {
 
 // A work session's worktree is one pocketd never removes: it is recorded
 // as a session's worktree, which a closed thread's cleanup never takes
-// (ADR-0027, ADR-0054, ADR-0073).
+// (ADR-0027, ADR-0054, ADR-0074).
 func TestAWorkSessionsWorktreeIsKept(t *testing.T) {
 	h, agnes := workHarness(t)
 	ctx := context.Background()

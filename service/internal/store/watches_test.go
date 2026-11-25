@@ -23,7 +23,7 @@ func said(w WatchRow) string { return "W" + strconv.FormatInt(w.ID, 10) + " " + 
 // gets the watch it made and its answer, whatever the counts are by then.
 // A live one counts against its session's bound and pocketd's, in the
 // transaction that keeps it; one that ended as it was read counts against
-// neither (ADR-0072).
+// neither (ADR-0073).
 func TestAWatchIsKeptOncePerCall(t *testing.T) {
 	s, _ := open(t)
 	first, existed, err := s.AddWatch(ctx, watchRow("team:5:1:a", 5), 2, 3, said)
@@ -97,7 +97,7 @@ func TestAWatchIsKeptOncePerCall(t *testing.T) {
 // A watch's end files its one note to its session, in the transaction
 // that ends it, keyed by its owner; an end run again, a second pass's or
 // one after a restart, ends nothing and files nothing more, and a cancel
-// after it changes nothing (ADR-0072).
+// after it changes nothing (ADR-0073).
 func TestAWatchsEndFilesItsNoteOnce(t *testing.T) {
 	s, path := open(t)
 	w, _, err := s.AddWatch(ctx, watchRow("team:5:1:a", 5), 16, 64, said)
@@ -142,7 +142,7 @@ func TestAWatchsEndFilesItsNoteOnce(t *testing.T) {
 
 // A thread's close, whatever closes it, ends its specialist's live
 // watches with no note and drops a note an ended one filed that is not
-// sent; another session's watch goes on (ADR-0072).
+// sent; another session's watch goes on (ADR-0073).
 func TestAThreadsCloseEndsItsSpecialistsWatches(t *testing.T) {
 	s, _ := open(t)
 	for name, closeIt := range map[string]func(ThreadRow) error{
@@ -209,7 +209,7 @@ func TestAThreadsCloseEndsItsSpecialistsWatches(t *testing.T) {
 }
 
 // A plan's done closes its own thread in the transaction of the last
-// task's close: its lead's watches end with it (ADR-0072).
+// task's close: its lead's watches end with it (ADR-0073).
 func TestAPlansDoneEndsItsLeadsWatches(t *testing.T) {
 	s, _ := open(t)
 	planThread, facts := approvedPlan(t, s, "p1")

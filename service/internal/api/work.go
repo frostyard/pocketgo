@@ -19,7 +19,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/worktree"
 )
 
-// An agent's work session (ADR-0073): team_work starts a session of the
+// An agent's work session (ADR-0074): team_work starts a session of the
 // caller's profile in a fresh worktree of one of its repositories, named
 // and made in code from the call's key as an owner's session worktree is
 // (ADR-0027), gives it the task through the outbox, and sends each answer
@@ -817,7 +817,7 @@ func (s *Server) followDueWork(ctx context.Context) bool {
 // (team.MayWork: an agent's own session, of a profile that is no
 // supervisor's and not private, working as none of the roles) and lacks
 // it, but a standing one, which takes its tools at its idle refresh
-// (ADR-0073). Each profile is read once a pass, one it cannot read too,
+// (ADR-0074). Each profile is read once a pass, one it cannot read too,
 // whose other sessions wait for the next pass, as upgradeSupervisorTools
 // reads them (Codex review of #174, round 1), and a session's role only
 // for a profile whose sessions may work; a profile it cannot read now, or

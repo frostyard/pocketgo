@@ -740,7 +740,7 @@ func TestSenderOfNamesTheOwnerTheSupervisorAndTheService(t *testing.T) {
 		{ptr("team:5:3:c1:report"), &proto.Sender{Kind: proto.SenderService}},
 		{ptr("plan:abc:done"), &proto.Sender{Kind: proto.SenderService}},
 		{ptr("team:5:3:c1:ask:0:answer:abcd"), &proto.Sender{Kind: proto.SenderService}},
-		// The note that tells the supervisor of an answer (ADR-0071).
+		// The note that tells the supervisor of an answer (ADR-0072).
 		{ptr(team.AnsweredKey("abc", "team:5:3:c1:ask:0", "Yes.")), &proto.Sender{Kind: proto.SenderService}},
 	} {
 		got := senderOf(tc.key)
@@ -1492,7 +1492,7 @@ func TestASessionFromAProfileHasItsIdentityAndTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A session that is not at the agent's home (it has none) gets no
-	// guide to work elsewhere, and keeps team_work (ADR-0073).
+	// guide to work elsewhere, and keeps team_work (ADR-0074).
 	if agent.Instructions == nil || !strings.HasPrefix(*agent.Instructions, instructions(f.work)) ||
 		!strings.Contains(*agent.Instructions, "You are Vera, the team's agent.") || !strings.HasSuffix(*agent.Instructions, "She tidies the example repository.") {
 		t.Errorf("instructions %v", agent.Instructions)
@@ -1535,7 +1535,7 @@ func TestAProfileWithNoToolsGetsNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No coding tool: only the team tools of its role, not by its tools:
-	// team_work, an agent's own session's (ADR-0073), and team_memory,
+	// team_work, an agent's own session's (ADR-0074), and team_memory,
 	// every profile's session's (ADR-0015).
 	var names []string
 	for _, tool := range agent.Tools {

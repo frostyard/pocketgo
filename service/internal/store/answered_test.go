@@ -14,7 +14,7 @@ import (
 // and a digest of the answer. A replay, a second answer and an answer to
 // a withdrawn ask file nothing, and a withdrawal files no answer note; a
 // thread with no supervisor session, or whose supervisor session asked,
-// gets none; a closed thread's supervisor is told it is closed (ADR-0071).
+// gets none; a closed thread's supervisor is told it is closed (ADR-0072).
 func TestAnAnswerTellsTheSupervisorOnce(t *testing.T) {
 	s, _ := open(t)
 	notes := func() []NoteRow {

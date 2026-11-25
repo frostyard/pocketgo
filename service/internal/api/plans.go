@@ -1070,7 +1070,7 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 	if isWorkTask(row.Key) {
 		// A work session's task goes only to a watched session, so the end
 		// of each of its runs reaches pocketd and its answer its caller
-		// (ADR-0073); a watch that fails holds it until one works. Each new
+		// (ADR-0074); a watch that fails holds it until one works. Each new
 		// submission checks its worktree again, which the task names
 		// (workTaskCheck; Codex review of #174, round 1).
 		check = s.workTaskCheck(row.SessionID)
@@ -1088,7 +1088,7 @@ func (s *Server) sendOldestNote(ctx context.Context, session int64) (placed, mor
 	}
 	idle := false
 	if strings.HasPrefix(row.Key, store.WatchNotePrefix) {
-		// A watch's note starts its session's next run (ADR-0072): it goes
+		// A watch's note starts its session's next run (ADR-0073): it goes
 		// only to an idle session, never into PiG's queue, and only while
 		// the session's thread, if any, is open, read right before it is
 		// submitted. A close drops it in its transaction, and no queued

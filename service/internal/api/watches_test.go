@@ -66,7 +66,7 @@ func (g *fakeGitHub) pullReads() int {
 // specialist: a supervisor's, a session the owner talks in of a team
 // profile, and a thread's specialist watch; a shift's specialist, a plain
 // session and a private agent's are refused, before anything is read or
-// kept (ADR-0072).
+// kept (ADR-0073).
 func TestTeamWatchGoesByRole(t *testing.T) {
 	h := newTeamHarness(t)
 	watchGitHub(h)
@@ -116,7 +116,7 @@ func TestTeamWatchGoesByRole(t *testing.T) {
 // is refused and keeps nothing; one at its condition already, or past
 // reaching it, is answered at once with no watch to check and no note;
 // otherwise the watch is kept. The same call run again answers as it did
-// and reads nothing; list and cancel act on the session's own (ADR-0072).
+// and reads nothing; list and cancel act on the session's own (ADR-0073).
 func TestAWatchAddReadsThePullRequestOnce(t *testing.T) {
 	h := newTeamHarness(t)
 	g := watchGitHub(h)
@@ -190,7 +190,7 @@ func TestAWatchAddReadsThePullRequestOnce(t *testing.T) {
 
 // A pass ends a watch whose condition holds and files its one note; a
 // pass again, and a restarted pocketd's, files no other, and the delivery
-// pass places it once (ADR-0072).
+// pass places it once (ADR-0073).
 func TestAWatchsNoteIsFiledAndPlacedOnce(t *testing.T) {
 	h := newTeamHarness(t)
 	g := watchGitHub(h)
@@ -244,7 +244,7 @@ func TestAWatchsNoteIsFiledAndPlacedOnce(t *testing.T) {
 
 // A pass reads each watched pull request once, whichever watches name it,
 // and CI at its head once; a read that fails leaves every watch of it for
-// the next pass (ADR-0072).
+// the next pass (ADR-0073).
 func TestAPassReadsEachWatchedPullRequestOnce(t *testing.T) {
 	h := newTeamHarness(t)
 	g := watchGitHub(h)
@@ -300,7 +300,7 @@ func TestAPassReadsEachWatchedPullRequestOnce(t *testing.T) {
 
 // A watch ends when its pull request can no longer reach its condition,
 // and when its time is up, with what pocketd saw last or why it could not
-// read it; until then a failed read leaves it (ADR-0072).
+// read it; until then a failed read leaves it (ADR-0073).
 func TestAWatchEndsWhenItCanNoLongerHoldOrItsTimeIsUp(t *testing.T) {
 	h := newTeamHarness(t)
 	g := watchGitHub(h)
@@ -368,7 +368,7 @@ func TestAWatchEndsWhenItCanNoLongerHoldOrItsTimeIsUp(t *testing.T) {
 }
 
 // A pass a stop cut short ends no watch, also one past its deadline: a
-// read the stop cancelled is no answer (ADR-0072).
+// read the stop cancelled is no answer (ADR-0073).
 func TestAStoppedPassEndsNoWatch(t *testing.T) {
 	h := newTeamHarness(t)
 	watchGitHub(h)
@@ -394,7 +394,7 @@ func TestAStoppedPassEndsNoWatch(t *testing.T) {
 }
 
 // A watch's note starts a run: it goes only to an idle session, never
-// into its queue, and waits while the session is at work (ADR-0072).
+// into its queue, and waits while the session is at work (ADR-0073).
 func TestAWatchsNoteWaitsForAnIdleSession(t *testing.T) {
 	h := newTeamHarness(t)
 	g := watchGitHub(h)
@@ -428,7 +428,7 @@ func TestAWatchsNoteWaitsForAnIdleSession(t *testing.T) {
 
 // A thread's close ends its specialist's watches with no note, and drops
 // one a watch filed that has not gone: the closed thread's specialist
-// gets none, and a pass after files none (ADR-0072).
+// gets none, and a pass after files none (ADR-0073).
 func TestAThreadsCloseEndsItsWatchesWithNoNote(t *testing.T) {
 	h := newTeamHarness(t)
 	g := watchGitHub(h)
@@ -488,7 +488,7 @@ func TestAThreadsCloseEndsItsWatchesWithNoNote(t *testing.T) {
 }
 
 // With no pull rounds nothing would check a watch: StartPulls(0) ends each
-// live one with its note, and an add after it is refused (ADR-0072).
+// live one with its note, and an add after it is refused (ADR-0073).
 func TestNoPullRoundsKeepNoWatch(t *testing.T) {
 	h := newTeamHarness(t)
 	watchGitHub(h)
@@ -508,7 +508,7 @@ func TestNoPullRoundsKeepNoWatch(t *testing.T) {
 	}
 }
 
-// Each pull round checks the watches, after its reads (ADR-0072).
+// Each pull round checks the watches, after its reads (ADR-0073).
 func TestAPullRoundChecksTheWatches(t *testing.T) {
 	h := newTeamHarness(t)
 	g := watchGitHub(h)
@@ -534,7 +534,7 @@ func TestAPullRoundChecksTheWatches(t *testing.T) {
 
 // A building thread's brief says how to wait for CI with team_watch, and
 // its specialist's session watches; a shift's says how its rounds go, and
-// its session gets no team_watch (ADR-0072).
+// its session gets no team_watch (ADR-0073).
 func TestABriefSaysHowToWaitForCI(t *testing.T) {
 	h := newTeamHarness(t)
 	thread := homeThread(t, h, "d1")
@@ -558,7 +558,7 @@ func TestABriefSaysHowToWaitForCI(t *testing.T) {
 
 // At start, every session that watches now and was made before team_watch
 // gets it, but a standing one; a shift's specialist and a private agent's
-// session get none (ADR-0072).
+// session get none (ADR-0073).
 func TestOlderSessionsGetTeamWatchAtStart(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()

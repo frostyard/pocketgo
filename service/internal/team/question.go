@@ -83,7 +83,7 @@ func CheckQuestion(q Question) (Question, error) {
 // SessionRole is what a session works as, besides its profile: a
 // thread's specialist (a plan's lead included), a cross-review, a
 // thread's worker, a consult, a gather's proposal session or an agent's
-// work session (ADR-0073). Plan says a thread's specialist is its plan's
+// work session (ADR-0074). Plan says a thread's specialist is its plan's
 // lead, which plans and builds nothing (ADR-0020); it comes with Thread.
 // Shift says a thread's specialist works in a shift's rounds (ADR-0024);
 // it comes with Thread too.

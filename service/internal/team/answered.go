@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// The supervisor hears each answer (ADR-0071): the owner's new answer to
+// The supervisor hears each answer (ADR-0072): the owner's new answer to
 // an ask files one note to the asking thread's supervisor, in the
 // transaction that records the answer, and the outbox places it once.
 // It is the one message that tells the supervisor of an answer: an answer

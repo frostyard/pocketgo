@@ -11,7 +11,7 @@ import (
 	"github.com/frostyard/pocketgo/service/internal/profiles"
 )
 
-// An agent's own work session (ADR-0073): team_work starts a session of
+// An agent's own work session (ADR-0074): team_work starts a session of
 // the caller's profile in a fresh worktree of one of its repositories,
 // where that repository's own AGENTS.md and skills load (ADR-0043), and
 // each run of it sends its answer back to the calling session through the
@@ -225,7 +225,7 @@ func WorkGuideFor(p *profiles.Profile, role SessionRole, cwd, repository string)
 }
 
 // WorkGuide is the line of an agent's instructions, in a session at its
-// home, that says where it changes a repository (ADR-0073): from a work
+// home, that says where it changes a repository (ADR-0074): from a work
 // session, never from its home (WorkGuideFor).
 const WorkGuide = "Your home holds your plans and notes, not your repositories' work: change a repository from a work session, never from your home. " +
 	"team_work starts one in a fresh worktree of one of your repositories, where that repository's own AGENTS.md and skills load; give it the task in full, and each of its answers comes back to this session."

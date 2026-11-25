@@ -22,7 +22,7 @@ func (h *teamHarness) threadsCall(session int64, c team.ThreadsCall) (string, er
 // session, and the call is refused here too from an agent's session, a
 // thread's specialist, a plain session and a session pocketd does not
 // know, before anything is read. A call that breaks a rule is refused
-// (ADR-0071).
+// (ADR-0072).
 func TestTeamThreadsIsTheSupervisorsAlone(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -74,7 +74,7 @@ func TestTeamThreadsIsTheSupervisorsAlone(t *testing.T) {
 // who moves it next as the work board does, marking the ones the calling
 // session delegated, and the threads closed in the window; and reads one
 // thread whole with its sessions, folder, asks, pull requests and verdict
-// (ADR-0071).
+// (ADR-0072).
 func TestTeamThreadsListsAndReadsTheThreads(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()
@@ -206,7 +206,7 @@ func TestTeamThreadsListsAndReadsTheThreads(t *testing.T) {
 }
 
 // team_threads writes nothing: no row of the work database changes, no
-// event goes out, no message is sent and gh never runs (ADR-0071).
+// event goes out, no message is sent and gh never runs (ADR-0072).
 func TestTeamThreadsWritesNothing(t *testing.T) {
 	h := newTeamHarness(t)
 	ctx := context.Background()

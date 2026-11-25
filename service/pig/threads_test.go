@@ -13,7 +13,7 @@ import (
 
 // A supervisor's team_threads call reaches the team, keyed by its session,
 // its task and its call's id, with its action and thread, and the team's
-// text is its result (ADR-0071).
+// text is its result (ADR-0072).
 func TestTeamThreadsCallsTheTeam(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(fauxModels(toolTurn(toolThreads, map[string]any{"action": "read", "thread": 5}, "t1"), answer("ok")))
@@ -39,7 +39,7 @@ func TestTeamThreadsCallsTheTeam(t *testing.T) {
 
 // team_threads' answer reaches the supervisor whole at its bounds: one
 // long line of four-byte characters, as many short lines as it may have,
-// and both at once. PiG cuts no part of it (ADR-0071).
+// and both at once. PiG cuts no part of it (ADR-0072).
 func TestThreadsReachTheSupervisorWhole(t *testing.T) {
 	wide := strings.Repeat("\U0001F600", team.MaxThreadsBytes/4)
 	tall := strings.Repeat("x\n", team.MaxThreadsLines-1) + "x"
@@ -68,7 +68,7 @@ func TestThreadsReachTheSupervisorWhole(t *testing.T) {
 // in the place a new one has it, after team_inbox, and keeps every other
 // tool where it is: from SetSupervisorTools, once, and from the idle
 // refresh that gives a standing session its profile's tools (Reconfigure,
-// ADR-0026), as ADR-0046 gave team_inbox (ADR-0071).
+// ADR-0026), as ADR-0046 gave team_inbox (ADR-0072).
 func TestAStandingSupervisorStartedBeforeTeamThreadsGetsIt(t *testing.T) {
 	f := newFixture(t)
 	e := f.open(windowModels())

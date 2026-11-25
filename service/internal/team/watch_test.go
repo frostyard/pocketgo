@@ -14,7 +14,7 @@ func hours(h float64) *float64 { return &h }
 
 // An add names a pull request as owner/name#number, a known condition,
 // and hours above 0 and at most MaxWatchHours, or none for the default; a
-// limit given as 0 is refused (ADR-0072).
+// limit given as 0 is refused (ADR-0073).
 func TestCheckWatch(t *testing.T) {
 	plan, err := CheckWatch(WatchCall{Action: WatchAdd, Pull: "frostyard/example#12", Until: UntilChecks})
 	if err != nil || plan != (WatchPlan{Repository: "frostyard/example", Number: 12, Until: UntilChecks, Hours: DefaultWatchHours}) {
