@@ -275,6 +275,7 @@ func run(args []string) error {
 	instructionsFile := flags.String("instructions", defaultInstructions(), "the owner's global AGENTS.md, which every session's instructions hold; \"\" for none (serve)")
 	capFlag := flags.String("desk-cap", "", "the most threads not closed (serve; default $POCKETD_DESK_CAP, else 12)")
 	prEvery := flags.Duration("pr-every", 5*time.Minute, "how often open pull requests are read on GitHub again (serve; 0 for never)")
+	cacheKeeper := flags.Bool("cache-keeper", true, "keep a run's prompt cache warm while it waits on a tool call (serve; ADR-0074)")
 	command, rest, err := parseCommand(flags, args)
 	if err != nil {
 		return err
@@ -299,7 +300,7 @@ func run(args []string) error {
 		if *prEvery < 0 {
 			return fmt.Errorf("-pr-every %v is negative", *prEvery)
 		}
-		return serve(*data, *listen, *profileDir, *skillsDir, *instructionsFile, limit, *prEvery)
+		return serve(*data, *listen, *profileDir, *skillsDir, *instructionsFile, limit, *prEvery, *cacheKeeper)
 	case "profiles":
 		return listProfiles(ctx, os.Stdout, *data, *profileDir, *skillsDir)
 	case "login":
@@ -673,7 +674,9 @@ const lockFile = "pocketd.lock"
 // newSandbox makes the commands' sandbox; tests replace it.
 var newSandbox = pig.NewSandbox
 
-func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap int, prEvery time.Duration) error {
+// serve runs pocketd. cacheKeeper keeps a run's prompt cache warm while it
+// waits on a tool call (ADR-0074).
+func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap int, prEvery time.Duration, cacheKeeper bool) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -784,7 +787,7 @@ func serve(data, listen, profileDir, skillsDir, instructionsFile string, deskCap
 	engine, err := pig.Open(ctx, pig.Options{
 		DataDir: data, AuthPath: filepath.Join(data, authFile), Protected: []string{data}, Sandbox: sandbox, Own: own,
 		MCP: mcpServers, MCPProfiles: mcpLists, OnMCPTools: server.MCPToolsChanged, Log: log,
-		Instructions: instructionsFile, Skills: skillsDir,
+		Instructions: instructionsFile, Skills: skillsDir, CacheKeeper: cacheKeeper,
 		Approver: manager, NeedsApproval: approvals.NeedsApproval,
 		OnEntry: server.PublishEntry, OnLive: server.PublishLive,
 	})

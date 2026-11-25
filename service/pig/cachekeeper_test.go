@@ -1,0 +1,812 @@
+package pig
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"log/slog"
+	"maps"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/MichaelKinsy/PiG/ai"
+	"github.com/frostyard/pocketgo/proto"
+	"github.com/frostyard/pocketgo/service/internal/api"
+)
+
+// The prompt cache keeper (ADR-0074), with its clock and timers driven by
+// hand and PiG's faux provider behind a shim that builds a payload as a
+// real provider does: no network, no wall clock, no sleep.
+
+// sonnetRates and sonnetCost are Claude Sonnet 4.6's prices per million
+// tokens, with a 5-minute cache.
+var (
+	sonnetRates = cacheRates{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75}
+	sonnetCost  = &ai.ModelCost{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75}
+)
+
+func TestRefreshDelayIsNinetyPercentAndTenSecondsEarlyAtLeast(t *testing.T) {
+	for ttl, want := range map[time.Duration]time.Duration{
+		300 * time.Second:  270 * time.Second,
+		3600 * time.Second: 3240 * time.Second,
+		60 * time.Second:   50 * time.Second,
+		20 * time.Second:   10 * time.Second,
+	} {
+		if got, ok := refreshDelay(ttl); !ok || got != want {
+			t.Errorf("refreshDelay(%v) = %v %v, want %v", ttl, got, ok, want)
+		}
+	}
+	for _, ttl := range []time.Duration{10 * time.Second, 5 * time.Second, 0} {
+		if got, ok := refreshDelay(ttl); ok {
+			t.Errorf("refreshDelay(%v) = %v: a lifetime this short has no refresh", ttl, got)
+		}
+	}
+}
+
+func TestCacheLifetimeFollowsTheRetentionTheRequestUsed(t *testing.T) {
+	model := &ai.Model{PromptCache: ai.ModelPromptCache{"short": 300, "long": 3600}}
+	noEnv := func(string) string { return "" }
+	longEnv := func(name string) string {
+		if name == "PI_CACHE_RETENTION" {
+			return "long"
+		}
+		return ""
+	}
+	for _, tc := range []struct {
+		name    string
+		model   *ai.Model
+		options ai.StreamOptions
+		getenv  func(string) string
+		want    time.Duration
+	}{
+		{"unset is short", model, ai.StreamOptions{}, noEnv, 300 * time.Second},
+		{"short", model, ai.StreamOptions{CacheRetention: ai.CacheRetentionShort}, longEnv, 300 * time.Second},
+		{"long", model, ai.StreamOptions{CacheRetention: ai.CacheRetentionLong}, noEnv, 3600 * time.Second},
+		{"unset is long by the service's environment", model, ai.StreamOptions{}, longEnv, 3600 * time.Second},
+		{"unset is long by the request's environment", model, ai.StreamOptions{Env: ai.ProviderEnv{"PI_CACHE_RETENTION": "long"}}, noEnv, 3600 * time.Second},
+		{"no environment reader", model, ai.StreamOptions{}, nil, 300 * time.Second},
+		{"none", model, ai.StreamOptions{CacheRetention: ai.CacheRetentionNone}, noEnv, 0},
+		{"a model with no lifetime", &ai.Model{}, ai.StreamOptions{}, noEnv, 0},
+		{"a model with no long lifetime", &ai.Model{PromptCache: ai.ModelPromptCache{"short": 300}}, ai.StreamOptions{CacheRetention: ai.CacheRetentionLong}, noEnv, 0},
+	} {
+		got, ok := cacheLifetime(tc.model, tc.options, tc.getenv)
+		if got != tc.want || ok != (tc.want > 0) {
+			t.Errorf("%s: %v %v, want %v", tc.name, got, ok, tc.want)
+		}
+	}
+}
+
+func TestDecideWarmsOnlyWhenTheHazardTimesTheMissIsMoreThanTheWarm(t *testing.T) {
+	// A 5-minute write costs 12.5 reads: a 0.9 hazard pays, a 0.05 one
+	// does not.
+	if warm, c := decide(50_000, sonnetRates, toolHazard); !warm || c.Savings <= 0 {
+		t.Fatalf("a 50,000-token prompt after a tool call: %v %+v", warm, c)
+	}
+	if warm, _ := decide(50_000, sonnetRates, 0.05); warm {
+		t.Fatal("a 0.05 hazard warms")
+	}
+	// warmCost is a read of the prompt and one output token, missCost a
+	// write in place of a read.
+	if _, c := decide(1_000_000, sonnetRates, 1); c.Warm != 0.3+15.0/1e6 || c.Miss != 3.45 {
+		t.Fatalf("the costs of a million-token prompt: %+v", c)
+	}
+	// One output token costs more than a tiny prompt's rewrite.
+	if warm, _ := decide(1, sonnetRates, toolHazard); warm {
+		t.Fatal("a one-token prompt warms")
+	}
+	if warm, _ := decide(50_000, cacheRates{}, toolHazard); warm {
+		t.Fatal("a model priced at nothing warms")
+	}
+	// No write price: the miss is a write at the input price.
+	if _, c := decide(1_000_000, cacheRates{Input: 3, Output: 15, CacheRead: 0.3}, 1); c.Miss != 2.7 {
+		t.Fatalf("the miss with no write price: %+v", c)
+	}
+}
+
+func TestIsReplayableOnlyWhereAOneTokenCapKeepsTheCacheKey(t *testing.T) {
+	adaptive := true
+	anthropic := ai.ProviderMetadata{API: ai.APIAnthropicMessages}
+	for _, tc := range []struct {
+		name    string
+		model   *ai.Model
+		options ai.StreamOptions
+		want    bool
+	}{
+		{"no thinking", &ai.Model{ProviderMeta: anthropic}, ai.StreamOptions{}, true},
+		{"thinking on another API", &ai.Model{ProviderMeta: ai.ProviderMetadata{API: ai.APIOpenAICompletions}}, ai.StreamOptions{Thinking: ai.ThinkingLevelHigh}, true},
+		{"budget thinking on Anthropic Messages", &ai.Model{ProviderMeta: anthropic}, ai.StreamOptions{Thinking: ai.ThinkingLevelHigh}, false},
+		{"adaptive thinking on Anthropic Messages", &ai.Model{ProviderMeta: ai.ProviderMetadata{API: ai.APIAnthropicMessages, Compat: &ai.ModelCompat{ForceAdaptiveThinking: &adaptive}}},
+			ai.StreamOptions{Thinking: ai.ThinkingLevelHigh}, true},
+	} {
+		if got := isReplayable(tc.model, tc.options); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestPayloadHashLeavesOutOnlyTheOutputCaps(t *testing.T) {
+	hash := func(payload any) string {
+		t.Helper()
+		h, err := payloadHash(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	base := map[string]any{"model": "m", "system": "rules", "messages": []any{"work"}}
+	with := func(fields map[string]any) map[string]any {
+		out := maps.Clone(base)
+		maps.Copy(out, fields)
+		return out
+	}
+	want := hash(base)
+	for _, capped := range []map[string]any{
+		{"max_tokens": 1}, {"max_completion_tokens": 1}, {"max_output_tokens": 1}, {"maxTokens": 1},
+	} {
+		if got := hash(with(capped)); got != want {
+			t.Errorf("%v changes the hash", capped)
+		}
+	}
+	for parent, field := range capParents {
+		a := hash(with(map[string]any{parent: map[string]any{field: 32000, "other": "x"}}))
+		b := hash(with(map[string]any{parent: map[string]any{field: 1, "other": "x"}}))
+		c := hash(with(map[string]any{parent: map[string]any{field: 1, "other": "y"}}))
+		if a != b || b == c {
+			t.Errorf("%s.%s: only the cap may differ (%v %v)", parent, field, a == b, b == c)
+		}
+	}
+	// A struct's payload hashes as the same object does.
+	type request struct {
+		Model     string `json:"model"`
+		System    string `json:"system"`
+		Messages  []any  `json:"messages"`
+		MaxTokens int    `json:"max_tokens"`
+	}
+	if got := hash(request{Model: "m", System: "rules", Messages: []any{"work"}, MaxTokens: 8192}); got != want {
+		t.Error("a struct payload hashes otherwise")
+	}
+	if hash(with(map[string]any{"system": "other rules"})) == want || hash(with(map[string]any{"temperature": 0})) == want {
+		t.Error("a payload that differs beyond its cap hashes the same")
+	}
+	if hash([]any{"a"}) == hash([]any{"b"}) {
+		t.Error("payloads that are no object hash the same")
+	}
+	if _, err := payloadHash(map[string]any{"f": func() {}}); err == nil {
+		t.Error("a payload that cannot be encoded hashes")
+	}
+}
+
+// keeperFakeClock is a keeper clock whose timers a test fires by hand.
+type keeperFakeClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	timers []*keeperFakeTimer
+}
+
+type keeperFakeTimer struct {
+	clock *keeperFakeClock
+	at    time.Time
+	f     func()
+}
+
+func newKeeperFakeClock() *keeperFakeClock {
+	return &keeperFakeClock{now: time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)}
+}
+
+// useKeeperClock makes c the clock of every engine's keeper the test
+// opens.
+func useKeeperClock(t *testing.T) *keeperFakeClock {
+	t.Helper()
+	c, saved := newKeeperFakeClock(), newKeeperClock
+	newKeeperClock = func() keeperClock { return c }
+	t.Cleanup(func() { newKeeperClock = saved })
+	return c
+}
+
+func (c *keeperFakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *keeperFakeClock) AfterFunc(d time.Duration, f func()) keeperTimer {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &keeperFakeTimer{clock: c, at: c.now.Add(d), f: f}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
+func (t *keeperFakeTimer) Stop() bool {
+	c := t.clock
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	i := slices.Index(c.timers, t)
+	if i < 0 {
+		return false
+	}
+	c.timers = slices.Delete(c.timers, i, i+1)
+	return true
+}
+
+// pending are the times from now of the timers neither fired nor
+// stopped, soonest first.
+func (c *keeperFakeClock) pending() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []time.Duration
+	for _, timer := range c.timers {
+		out = append(out, timer.at.Sub(c.now))
+	}
+	slices.Sort(out)
+	return out
+}
+
+// set moves the clock to now, firing nothing.
+func (c *keeperFakeClock) set(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
+}
+
+// fire moves the clock to the soonest timer, unless it is past it, and
+// runs it as its goroutine would, to its end; false when none is pending.
+func (c *keeperFakeClock) fire() bool {
+	c.mu.Lock()
+	if len(c.timers) == 0 {
+		c.mu.Unlock()
+		return false
+	}
+	soonest := 0
+	for i, timer := range c.timers {
+		if timer.at.Before(c.timers[soonest].at) {
+			soonest = i
+		}
+	}
+	timer := c.timers[soonest]
+	c.timers = slices.Delete(c.timers, soonest, soonest+1)
+	if timer.at.After(c.now) {
+		c.now = timer.at
+	}
+	c.mu.Unlock()
+	timer.f()
+	return true
+}
+
+// shimCall is a request as the shim's provider saw it.
+type shimCall struct {
+	maxTokens  int
+	maxRetries *int
+	// ctxRetries is the provider retry budget its context carries.
+	ctxRetries int
+	// body is its payload as JSON, but for max_tokens.
+	body string
+	// sent is false when the payload hook refused it.
+	sent bool
+}
+
+// payloadShim stands in front of a faux provider as a real provider's
+// adapter does: it builds a payload of the request, hands it to
+// OnPayload, sends nothing when the hook fails, and else streams faux's
+// answer. system is a stateful part of every payload.
+type payloadShim struct {
+	mu     sync.Mutex
+	system string
+	calls  []shimCall
+}
+
+func (s *payloadShim) wrap(inner *ai.ModelsProvider) *ai.ModelsProvider {
+	p := *inner
+	next := inner.StreamSimple
+	p.StreamSimple = func(ctx context.Context, model *ai.Model, transcript ai.TranscriptContext, options ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
+		s.mu.Lock()
+		system := s.system
+		s.mu.Unlock()
+		payload := map[string]any{"model": model.ID, "system": system, "messages": transcript.Messages()}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		payload["max_tokens"] = options.MaxTokens
+		call := shimCall{maxTokens: options.MaxTokens, maxRetries: options.MaxRetries, ctxRetries: ai.ProviderMaxRetries(ctx), body: string(body)}
+		if options.OnPayload != nil {
+			if _, err := options.OnPayload(payload, model); err != nil {
+				s.record(call)
+				return nil, err
+			}
+		}
+		call.sent = true
+		s.record(call)
+		return next(ctx, model, transcript, options)
+	}
+	p.Stream = p.StreamSimple
+	return &p
+}
+
+func (s *payloadShim) record(call shimCall) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, call)
+}
+
+func (s *payloadShim) recorded() []shimCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.calls)
+}
+
+func (s *payloadShim) setSystem(system string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.system = system
+}
+
+// keptFaux is a catalog of one faux model priced as cost, with Claude's
+// cache lifetimes, behind a payload shim, answering steps.
+func keptFaux(cost *ai.ModelCost, steps ...ai.FauxResponseStep) (*ai.Models, *ai.FauxProviderHandle, *payloadShim) {
+	faux := ai.NewFauxProvider(ai.FauxConfig{Models: []ai.FauxModelDefinition{{ID: "faux-1", Cost: cost}}})
+	faux.GetModel("faux-1").PromptCache = ai.ModelPromptCache{"short": 300, "long": 3600}
+	faux.SetResponses(steps)
+	shim := &payloadShim{system: "the rules"}
+	models := ai.CreateModels()
+	models.SetProvider(shim.wrap(faux.Provider()))
+	return models, faux, shim
+}
+
+// lockedBuffer is a log's output, read while the keeper writes it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// keeperRig is a keeper installed on a kept faux catalog, with a clock
+// driven by hand.
+type keeperRig struct {
+	t      *testing.T
+	clock  *keeperFakeClock
+	keeper *cacheKeeper
+	models *ai.Models
+	faux   *ai.FauxProviderHandle
+	model  *ai.Model
+	shim   *payloadShim
+	log    *lockedBuffer
+	// hooked counts the calls of the real requests' own payload hook.
+	hooked atomic.Int32
+}
+
+func newKeeperRig(t *testing.T, cost *ai.ModelCost) *keeperRig {
+	t.Helper()
+	models, faux, shim := keptFaux(cost)
+	r := &keeperRig{t: t, clock: newKeeperFakeClock(), models: models, faux: faux, model: faux.GetModel("faux-1"), shim: shim, log: &lockedBuffer{}}
+	r.keeper = newCacheKeeper(slog.New(slog.NewTextHandler(r.log, nil)), r.clock)
+	r.keeper.getenv = func(string) string { return "" }
+	r.keeper.install(models)
+	t.Cleanup(func() { _ = r.keeper.close(context.Background()) })
+	return r
+}
+
+func (r *keeperRig) request() ai.Context {
+	return ai.Context{Messages: []ai.Message{
+		ai.SystemMessage{Content: ai.SystemText("You are a coding agent."), Timestamp: 1},
+		ai.UserMessage{Content: ai.UserText("work"), Timestamp: 1},
+	}}
+}
+
+// realOptions are a real request's options, as a generation task gives
+// them: its signal, which ends with it, and its own payload hook.
+func (r *keeperRig) realOptions(task context.Context, session string, retention ai.CacheRetention) ai.StreamOptions {
+	return ai.StreamOptions{SessionID: session, CacheRetention: retention, Signal: task,
+		OnPayload: func(any, *ai.Model) (any, error) { r.hooked.Add(1); return nil, nil }}
+}
+
+// send makes a real request of session under retention through the
+// catalog, answered by step, whose task ends with it; it returns once
+// the keeper took the answer.
+func (r *keeperRig) send(session string, retention ai.CacheRetention, step ai.FauxResponseStep) *ai.AssistantMessage {
+	r.t.Helper()
+	r.faux.AppendResponses([]ai.FauxResponseStep{step})
+	task, end := context.WithCancel(context.Background())
+	message := r.models.StreamSimple(task, r.model, r.request(), r.realOptions(task, session, retention)).Result()
+	end()
+	r.keeper.work.Wait()
+	if message == nil {
+		r.t.Fatal("no answer")
+	}
+	return message
+}
+
+// warmAnswer is what faux answers a warm: a one-token cap is no stop.
+func warmAnswer() ai.FauxResponseStep { return answer("w") }
+
+var failedAnswer = ai.FauxStaticStep(ai.FauxResponse{StopReason: "error", ErrorMessage: "the provider is down"})
+
+func readTool(id string) ai.FauxResponseStep {
+	return toolTurn("read", map[string]any{"path": "notes.md"}, id)
+}
+
+func TestAWarmGoesOutOnceAtItsRefreshPointWithTheSamePayloadAndAOneTokenCap(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	if got := r.send("s", "", readTool("c1")); got.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("the real answer: %+v", got)
+	}
+	if got := r.clock.pending(); !slices.Equal(got, []time.Duration{270 * time.Second}) {
+		t.Fatalf("pending timers %v, want one at the refresh point", got)
+	}
+	if calls := r.shim.recorded(); len(calls) != 1 {
+		t.Fatalf("%d requests before the refresh point", len(calls))
+	}
+	r.faux.AppendResponses([]ai.FauxResponseStep{warmAnswer()})
+	r.clock.fire()
+	calls := r.shim.recorded()
+	if len(calls) != 2 || !calls[1].sent {
+		t.Fatalf("requests after the refresh point: %+v", calls)
+	}
+	real, warm := calls[0], calls[1]
+	if warm.maxTokens != 1 || warm.maxRetries == nil || *warm.maxRetries != 0 || warm.ctxRetries != 0 {
+		t.Fatalf("the warm's cap and retries: %+v", warm)
+	}
+	if warm.body != real.body || real.maxTokens == 1 {
+		t.Fatalf("the warm's payload differs:\n%s\n%s", real.body, warm.body)
+	}
+	// The real request's own payload hook, its generation's, ran once:
+	// the warm runs none of it.
+	if got := r.hooked.Load(); got != 1 {
+		t.Fatalf("the real request's payload hook ran %d times", got)
+	}
+	if r.faux.CallCount() != 2 || r.keeper.warming() != 1 {
+		t.Fatalf("faux calls %d, warming %d", r.faux.CallCount(), r.keeper.warming())
+	}
+	if got := r.clock.pending(); !slices.Equal(got, []time.Duration{270 * time.Second}) {
+		t.Fatalf("pending timers %v, want the next refresh only", got)
+	}
+	log := r.log.String()
+	if !strings.Contains(log, "the cache keeper warmed a prompt cache") || !strings.Contains(log, "model=faux/faux-1") ||
+		!strings.Contains(log, "prompt_tokens=") || !strings.Contains(log, "cost=") || strings.Contains(log, "work") {
+		t.Fatalf("the warm's log line: %s", log)
+	}
+}
+
+func TestAFinishedAnswerStartsNoWarm(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", answer("done"))
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v after a finished answer", r.keeper.warming(), r.clock.pending())
+	}
+}
+
+func TestARequestWithNoSessionOrNoCacheStartsNoWarm(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("", "", readTool("c1"))
+	r.send("s", ai.CacheRetentionNone, readTool("c2"))
+	// The long tier's first refresh comes after the age cap.
+	r.send("l", ai.CacheRetentionLong, readTool("c3"))
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v", r.keeper.warming(), r.clock.pending())
+	}
+	r.model.PromptCache = nil
+	r.send("s", "", readTool("c4"))
+	if r.keeper.warming() != 0 {
+		t.Fatal("a model with no cache lifetime is warmed")
+	}
+}
+
+func TestAThinkingRequestOnAnthropicMessagesIsWarmedOnlyWhenAdaptive(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.model.ProviderMeta.API = ai.APIAnthropicMessages
+	think := func(session string) {
+		r.faux.AppendResponses([]ai.FauxResponseStep{readTool("c1")})
+		options := r.realOptions(context.Background(), session, "")
+		options.Thinking = ai.ThinkingLevelHigh
+		r.models.StreamSimple(context.Background(), r.model, r.request(), options).Result()
+		r.keeper.work.Wait()
+	}
+	think("budget")
+	if r.keeper.warming() != 0 {
+		t.Fatal("budget thinking is warmed")
+	}
+	adaptive := true
+	r.model.ProviderMeta.Compat = &ai.ModelCompat{ForceAdaptiveThinking: &adaptive}
+	think("adaptive")
+	if r.keeper.warming() != 1 {
+		t.Fatal("adaptive thinking is not warmed")
+	}
+}
+
+func TestTheSessionsNextRequestStopsItsWarm(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	r.clock.set(r.clock.Now().Add(time.Minute))
+	r.send("s", "", readTool("c2"))
+	if got := r.clock.pending(); !slices.Equal(got, []time.Duration{270 * time.Second}) {
+		t.Fatalf("pending timers %v, want the newest request's alone", got)
+	}
+	r.send("s", "", answer("done"))
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("a finished answer leaves warming %d, timers %v", r.keeper.warming(), r.clock.pending())
+	}
+}
+
+func TestARequestThatUsesNoCacheLeavesTheWarmAlone(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	// A compaction's request, as PiG sends it.
+	r.send("s", ai.CacheRetentionNone, answer("## Summary"))
+	if r.keeper.warming() != 1 || len(r.clock.pending()) != 1 {
+		t.Fatalf("warming %d, timers %v", r.keeper.warming(), r.clock.pending())
+	}
+}
+
+func TestTheRunsEndStopsItsWarmAndNoOther(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("a", "", readTool("c1"))
+	r.send("b", "", readTool("c2"))
+	r.keeper.runEnded("a")
+	if r.keeper.warming() != 1 || len(r.clock.pending()) != 1 {
+		t.Fatalf("warming %d, timers %v after a's end", r.keeper.warming(), r.clock.pending())
+	}
+	r.keeper.runEnded("b")
+	r.keeper.runEnded("")
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v after b's end", r.keeper.warming(), r.clock.pending())
+	}
+}
+
+func TestARunThatEndedWhileItsRequestRanStartsNoWarm(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	started, release := make(chan struct{}), make(chan struct{})
+	r.faux.AppendResponses([]ai.FauxResponseStep{ai.FauxFactoryStep(func(ai.TranscriptContext, ai.StreamOptions, *ai.FauxProviderState, *ai.Model) (ai.AssistantMessage, error) {
+		close(started)
+		<-release
+		return ai.FauxResponse{Content: []ai.FauxContentBlock{ai.FauxToolCall("read", map[string]any{"path": "notes.md"}, &ai.FauxToolCallOptions{ID: "c1"})}, StopReason: "toolUse"}.AssistantMessage(), nil
+	})})
+	done := make(chan *ai.AssistantMessage)
+	go func() {
+		done <- r.models.StreamSimple(context.Background(), r.model, r.request(), r.realOptions(context.Background(), "s", "")).Result()
+	}()
+	<-started
+	r.keeper.runEnded("s")
+	close(release)
+	if got := <-done; got == nil || got.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("the answer: %+v", got)
+	}
+	r.keeper.work.Wait()
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v", r.keeper.warming(), r.clock.pending())
+	}
+}
+
+func TestAWarmThatFailsStopsWarming(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	r.faux.AppendResponses([]ai.FauxResponseStep{failedAnswer})
+	r.clock.fire()
+	if r.faux.CallCount() != 2 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("faux calls %d, warming %d, timers %v", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
+	}
+}
+
+func TestAWarmWhosePayloadWouldDifferIsNeverSent(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	// What builds the payload changed since the real request.
+	r.shim.setSystem("changed rules")
+	r.faux.AppendResponses([]ai.FauxResponseStep{warmAnswer()})
+	r.clock.fire()
+	calls := r.shim.recorded()
+	if len(calls) != 2 || calls[1].sent {
+		t.Fatalf("requests %+v, want the warm refused", calls)
+	}
+	if r.faux.CallCount() != 1 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("faux calls %d, warming %d, timers %v", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
+	}
+	if strings.Contains(r.log.String(), "warmed a prompt cache") {
+		t.Fatal("an unsent warm is logged as a warm")
+	}
+}
+
+func TestTheAgeCapEndsWarmingThirtyMinutesAfterTheRealRequest(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	start := r.clock.Now()
+	for range 10 {
+		r.faux.AppendResponses([]ai.FauxResponseStep{warmAnswer()})
+	}
+	fires := 0
+	for r.clock.fire() {
+		if fires++; fires > 20 {
+			t.Fatal("warming does not stop")
+		}
+	}
+	// Warms at 270 s apart, from the real request: 6 inside 30 minutes,
+	// then the cap's own timer.
+	if warms := r.faux.CallCount() - 1; warms != 6 || fires != 7 {
+		t.Fatalf("%d warms in %d fires", warms, fires)
+	}
+	if got := r.clock.Now().Sub(start); got != maxWarmAge {
+		t.Fatalf("warming stopped %v after the real request", got)
+	}
+	if r.keeper.warming() != 0 || !strings.Contains(r.log.String(), "warms=6") {
+		t.Fatalf("warming %d, log %s", r.keeper.warming(), r.log.String())
+	}
+}
+
+func TestARefreshThatFiresLateSendsNothing(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	// The host slept through the refresh point and the entry's end.
+	r.clock.set(r.clock.Now().Add(6 * time.Minute))
+	r.faux.AppendResponses([]ai.FauxResponseStep{warmAnswer()})
+	r.clock.fire()
+	if r.faux.CallCount() != 1 || r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("faux calls %d, warming %d, timers %v", r.faux.CallCount(), r.keeper.warming(), r.clock.pending())
+	}
+}
+
+func TestAModelPricedAtNothingIsNeverWarmed(t *testing.T) {
+	r := newKeeperRig(t, nil)
+	r.send("s", "", readTool("c1"))
+	r.faux.AppendResponses([]ai.FauxResponseStep{warmAnswer()})
+	r.clock.fire()
+	if r.faux.CallCount() != 1 || r.keeper.warming() != 0 {
+		t.Fatalf("faux calls %d, warming %d", r.faux.CallCount(), r.keeper.warming())
+	}
+}
+
+func TestCloseStopsEveryWarmAndStartsNoneAfter(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("a", "", readTool("c1"))
+	r.send("b", "", readTool("c2"))
+	if r.keeper.warming() != 2 {
+		t.Fatalf("warming %d", r.keeper.warming())
+	}
+	if err := r.keeper.close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v after close", r.keeper.warming(), r.clock.pending())
+	}
+	// A real request still runs, and starts no warm.
+	if got := r.send("c", "", readTool("c3")); got.StopReason != ai.StopReasonToolUse {
+		t.Fatalf("a request after close: %+v", got)
+	}
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v after a request after close", r.keeper.warming(), r.clock.pending())
+	}
+}
+
+// keptRun is a session of an engine with its keeper on, over a kept faux
+// catalog, its keeper's clock driven by hand, whose run waits for the
+// owner's approval of a write: a run in a tool call.
+type keptRun struct {
+	f        *fixture
+	e        *Engine
+	clock    *keeperFakeClock
+	faux     *ai.FauxProviderHandle
+	shim     *payloadShim
+	id       int64
+	approval proto.Approval
+}
+
+// keptEngine starts a kept run, whose later requests steps answer.
+func keptEngine(t *testing.T, steps ...ai.FauxResponseStep) keptRun {
+	t.Helper()
+	r := keptRun{clock: useKeeperClock(t), f: newFixture(t)}
+	r.f.cacheKeeper = true
+	var models *ai.Models
+	models, r.faux, r.shim = keptFaux(sonnetCost, append([]ai.FauxResponseStep{toolTurn("write", map[string]any{"path": "hello.txt", "content": "hi\n"}, "w1")}, steps...)...)
+	r.e = r.f.open(models)
+	t.Cleanup(func() { _ = r.e.Close(context.Background()) })
+	ctx := context.Background()
+	var err error
+	if r.id, err = r.e.CreateSession(ctx, t.Name(), api.SessionSpec{Cwd: r.f.work, Model: fauxRef}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.e.Watch(ctx, r.id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.e.Send(ctx, r.id, "u:dev:r1", "write hello"); err != nil {
+		t.Fatal(err)
+	}
+	r.approval = r.f.nextApproval()
+	// The keeper took the answer that called the tool.
+	r.e.keeper.work.Wait()
+	if r.e.keeper.warming() != 1 || !slices.Equal(r.clock.pending(), []time.Duration{270 * time.Second}) {
+		t.Fatalf("a run in a tool call: warming %d, timers %v", r.e.keeper.warming(), r.clock.pending())
+	}
+	return r
+}
+
+func TestARunInAToolCallIsKeptWarmOutsideItsTranscript(t *testing.T) {
+	run := keptEngine(t, warmAnswer(), answer("Wrote hello.txt."))
+	f, e, clock, faux, shim, id := run.f, run.e, run.clock, run.faux, run.shim, run.id
+	ctx := context.Background()
+	before, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := e.Usage(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.fire()
+	calls := shim.recorded()
+	if len(calls) != 2 || !calls[1].sent || calls[1].maxTokens != 1 || calls[1].body != calls[0].body {
+		t.Fatalf("the harness's request and its warm: %+v", calls)
+	}
+	after, _, err := e.Transcript(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kinds(after) != kinds(before) || len(after) != len(before) {
+		t.Fatalf("the warm reached the transcript: %s, then %s", kinds(before), kinds(after))
+	}
+	if got, err := e.Usage(ctx, id); err != nil || got != usage {
+		t.Fatalf("the warm reached the usage ledger: %+v, then %+v (%v)", usage, got, err)
+	}
+	if _, _, err := f.approve.Decide(ctx, "k-"+run.approval.ID, run.approval.ID, true, "laptop", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, e, id)
+	// The run's next request stopped the warm, and its answer started none.
+	if e.keeper.warming() != 0 || len(clock.pending()) != 0 || faux.CallCount() != 3 {
+		t.Fatalf("warming %d, timers %v, faux calls %d", e.keeper.warming(), clock.pending(), faux.CallCount())
+	}
+	entries, _, err := e.Transcript(ctx, id)
+	if err != nil || kinds(entries) != "user,assistant,toolResult,assistant" {
+		t.Fatalf("transcript %s, %v", kinds(entries), err)
+	}
+}
+
+func TestAnAbortedRunsWarmStops(t *testing.T) {
+	run := keptEngine(t)
+	if err := run.e.Abort(context.Background(), run.id); err != nil {
+		t.Fatal(err)
+	}
+	// The watch tells the keeper before it hands on the idle state.
+	if !run.f.waitLive(func(lives []proto.Live) bool { return len(lives) > 0 && !lives[len(lives)-1].Busy }) {
+		t.Fatal("the run did not end")
+	}
+	if run.e.keeper.warming() != 0 || len(run.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v after the abort", run.e.keeper.warming(), run.clock.pending())
+	}
+}
+
+func TestTheEnginesCloseStopsItsKeeper(t *testing.T) {
+	run := keptEngine(t)
+	if err := run.e.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if run.e.keeper.warming() != 0 || len(run.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v after Close", run.e.keeper.warming(), run.clock.pending())
+	}
+}
+
+func TestTheKeeperIsOffUnlessTheEngineIsAskedForIt(t *testing.T) {
+	f := newFixture(t)
+	e := f.open(fauxModels())
+	defer func() { _ = e.Close(context.Background()) }()
+	if e.keeper != nil {
+		t.Fatal("an engine opened without CacheKeeper has a keeper")
+	}
+	// A nil keeper takes every call as a no-op.
+	e.keeper.runEnded("s")
+	if err := e.keeper.close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

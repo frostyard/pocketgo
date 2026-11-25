@@ -94,8 +94,13 @@ type Options struct {
 	// SetMCPTools. It must not block.
 	OnMCPTools func(profile string)
 	// Log takes what the engine reports as it serves: an MCP server's
-	// state (ADR-0063). Nil logs nothing.
+	// state (ADR-0063), and the cache keeper's warms (ADR-0074). Nil logs
+	// nothing.
 	Log *slog.Logger
+	// CacheKeeper keeps the prompt cache warm while a run waits on a tool
+	// call (ADR-0074): pocketd serve sets it from -cache-keeper, on by
+	// default. Off, no model request passes the keeper.
+	CacheKeeper bool
 }
 
 // Engine runs sessions on a durable harness. It is safe for concurrent use.
@@ -120,8 +125,11 @@ type Engine struct {
 	team        Team
 	// mcp holds the MCP servers the profiles name (ADR-0063); nil holds
 	// none, as when their store could not be read (mcpNote says why).
-	mcp       *mcpHub
-	mcpNote   string
+	mcp     *mcpHub
+	mcpNote string
+	// keeper keeps the prompt cache of a run that waits on a tool call
+	// warm (ADR-0074); nil when Options.CacheKeeper is off.
+	keeper    *cacheKeeper
 	mu        sync.Mutex
 	watches   map[int64]*watcher
 	closeOnce sync.Once
@@ -321,6 +329,12 @@ func open(ctx context.Context, opts Options, models *ai.Models) (*Engine, error)
 			e.mcp = newMCPHub(store, registry, opts.MCP, opts.MCPProfiles, opts.Log, opts.OnMCPTools)
 		}
 	}
+	// Every provider's requests pass the cache keeper, once the catalog is
+	// whole (ADR-0074).
+	if opts.CacheKeeper {
+		e.keeper = newCacheKeeper(opts.Log, newKeeperClock())
+		e.keeper.install(models)
+	}
 	store, err := sqlitenode.OpenNodeSqliteStorage(filepath.Join(opts.DataDir, DurableFile), sqlitenode.NodeSqliteStorageOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("durable store: %w", err)
@@ -445,6 +459,9 @@ func (e *Engine) beforeTool(ctx context.Context, call harness.ToolHookCall, api 
 // again after a Close that failed so too (Codex review of #63, round 9),
 // though the harness closes once.
 func (e *Engine) Close(ctx context.Context) error {
+	// No warm outlives the engine, and none starts as the harness stops
+	// (ADR-0074).
+	keeperErr := e.keeper.close(ctx)
 	var watchErr error
 	if e.stopShown != nil {
 		watchErr = e.stopShown(ctx)
@@ -463,7 +480,7 @@ func (e *Engine) Close(ctx context.Context) error {
 		// them (ADR-0063).
 		e.mcp.close(ctx)
 	})
-	return errors.Join(watchErr, err)
+	return errors.Join(keeperErr, watchErr, err)
 }
 
 // Models lists the models with a sign-in, by provider and id: a
@@ -1338,6 +1355,9 @@ type watcher struct {
 	cancel   func() // the retry waiting, or nil
 	stopped  bool
 	queue    queueCache // the queue as the last live state read it
+	// busy is whether the last live state read had a run: its end stops
+	// the session's warm (ADR-0074).
+	busy bool
 }
 
 // stop ends the watcher's retries, as the engine closes.
@@ -1390,6 +1410,7 @@ func (e *Engine) watch(ctx context.Context, id int64) (*proto.Live, error) {
 	}
 	live := e.liveOf(id, first, &w.queue)
 	w.lastLive, _ = json.Marshal(live)
+	w.busy = live.Busy
 	e.watches[id] = w
 	// A queued message whose sender could not be read is left out, and
 	// read again soon, whether or not anything commits (Codex review of
@@ -1451,6 +1472,12 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 		e.opts.OnEntry(entry)
 	}
 	live := e.liveOf(id, view, &w.queue)
+	// A run that ended or was aborted sends no request after its last
+	// tool call: its warm stops (ADR-0074).
+	if w.busy && !live.Busy {
+		e.keeper.runEnded(providerSession(view))
+	}
+	w.busy = live.Busy
 	if data, err := json.Marshal(live); err == nil && string(data) != string(w.lastLive) {
 		w.lastLive = data
 		e.opts.OnLive(live)
