@@ -56,19 +56,27 @@ func (c *client) conversation(cx *core.Scope, id int64) core.Node {
 		Content: c.askCard,
 	}
 	return workspaceui.Conversation{State: view, Transcript: []core.Node{
-		core.Text{Style: ui.TypeCaption, ContentFunc: func() string {
+		// A transcript that did not load says so, and one that loaded and
+		// then failed to load again says it may be out of date: each with
+		// a way to load it again.
+		core.Dynamic(func(*core.Scope) core.Node {
 			c.revision.Get()
-			if o := c.store.Data.Open(); o != nil && o.ID == id {
-				if o.Err != "" {
-					return o.Err
-				}
-				if !o.Loaded {
-					return "Loading conversation…"
-				}
+			o := c.store.Data.Open()
+			if o == nil || o.ID != id {
+				return core.Group{}
 			}
-			return ""
-		}},
-		transcript, asks},
+			again := func() { c.store.Open(id) }
+			switch {
+			case o.Err != "" && !o.Loaded:
+				return c.problemBanner(workspaceui.Danger, "Loading the session failed: "+o.Err, again)
+			case o.Err != "":
+				return c.problemBanner(workspaceui.Warning, "This transcript may be out of date: loading it again failed: "+o.Err, again)
+			case !o.Loaded:
+				return core.Text{Content: "Loading conversation…", Style: ui.TypeCaption}
+			}
+			return core.Group{}
+		}),
+		transcript, asks, c.runFailures(id)},
 		Footer: core.Func(func(cx *core.Scope) core.Node { return c.messageComposer(cx, id, view) }),
 		FooterMode: func() string {
 			if why := readOnly.Get(); why != "" {
@@ -151,6 +159,28 @@ func (c *client) result(err error) {
 	}
 	c.changed()
 }
+
+// runFailures say, at the transcript's end, that the session's run
+// failed, that compacting its context failed, or that starting over did.
+func (c *client) runFailures(id int64) core.Node {
+	return core.Dynamic(func(*core.Scope) core.Node {
+		c.revision.Get()
+		var out []core.Node
+		if o := c.store.Data.Open(); o != nil && o.ID == id {
+			if o.Live.Failure != "" {
+				out = append(out, c.problemBanner(workspaceui.Danger, "The run failed: "+o.Live.Failure, nil))
+			}
+			if o.Live.CompactionFailure != "" {
+				out = append(out, c.problemBanner(workspaceui.Warning, "Compacting the context failed: "+o.Live.CompactionFailure, nil))
+			}
+		}
+		if why := c.store.StartingOver(id).Err; why != "" {
+			out = append(out, c.problemBanner(workspaceui.Danger, "Starting over failed: "+why, nil))
+		}
+		return core.Group(out)
+	})
+}
+
 func (c *client) messageComposer(cx *core.Scope, id int64, view *chat.ConversationState) core.Node {
 	draft := c.drafts[id]
 	if draft == nil {

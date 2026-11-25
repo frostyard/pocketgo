@@ -8,6 +8,7 @@ import (
 	"github.com/frostyard/pocketgo/desktop/internal/state"
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/nsgo-dev/nsgo/core"
+	"github.com/nsgo-dev/nsgo/icons/lucide"
 	"github.com/nsgo-dev/nsgo/ui"
 )
 
@@ -19,7 +20,20 @@ func (c *client) listProblem(what, problem, missing string, retry func()) core.N
 	if missing != "" {
 		text += ". " + missing
 	}
-	return workspaceui.Banner{Tone: workspaceui.Danger, Text: text, Action: "Try Again", OnAction: func() { retry(); c.changed() }}
+	return c.problemBanner(workspaceui.Danger, text, retry)
+}
+
+// problemBanner says what went wrong, with Try Again when there is a way
+// to.
+func (c *client) problemBanner(tone workspaceui.Tone, text string, retry func()) core.Node {
+	b := workspaceui.Banner{Tone: tone, Icon: lucide.CircleAlert, Text: text}
+	if tone == workspaceui.Warning {
+		b.Icon = lucide.TriangleAlert
+	}
+	if retry != nil {
+		b.Action, b.OnAction = "Try Again", func() { retry(); c.changed() }
+	}
+	return b
 }
 
 func title(s string) core.Node { return core.Text{Content: s, Style: ui.TypeTitle} }

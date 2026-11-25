@@ -93,6 +93,18 @@ func (c *client) terminalPage(cx *core.Scope) core.Node {
 			cx.ProvideAccess(terminalAccess{})
 			id := ready.Get()
 			if id == "" {
+				// No shell to show: one is starting, the list failed or is
+				// loading, or there is none.
+				c.revision.Get()
+				d := &c.store.Data
+				switch status, problem := d.TerminalsStatus(); {
+				case d.TerminalAwaited(selected.Get()) || selected.Get() != "":
+					return workspaceui.Page(body("Starting the terminal…"))
+				case status == state.ListFailed:
+					return workspaceui.Page(c.listProblem("the terminals", problem, "", c.store.LoadTerminals))
+				case status == state.ListLoading:
+					return workspaceui.Page(body("Loading the terminals…"))
+				}
 				return workspaceui.Page(body("Start a terminal to open a shell on the service host."))
 			}
 			term := c.terminals[id]

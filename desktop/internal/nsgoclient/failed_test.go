@@ -83,3 +83,71 @@ func TestASchedulesFileThatDoesNotGoOutSaysSo(t *testing.T) {
 	app.Press("text:Work board")
 	app.WaitFor("text:None of your schedules file goes out: line 3: no such agent", 5*time.Second)
 }
+
+// A session's transcript that did not load says so with Try Again, and
+// one that loaded and then failed to load again says it may be out of
+// date (TestAStaleTranscriptSaysSo holds this for the MyGo client).
+func TestATranscriptThatFailedToLoadSaysSo(t *testing.T) {
+	s := pocketdtest.New()
+	s.AddSession(proto.Session{ID: 4, Title: "Editor", Cwd: "/work"})
+	app := signedInApp(t, s, 1230, 800)
+	s.FailOnce(http.MethodGet, "/v1/sessions/4", http.StatusBadGateway)
+	app.Press("sidebar-panel >> text:Editor")
+	app.WaitFor("text:Loading the session failed", 5*time.Second)
+	// The banner says it; a toast would say the same over its button.
+	if app.Exists("text:PocketGo error") {
+		t.Error("a load whose failure shows in place also raised a toast")
+	}
+	app.Press("role:button Try Again")
+	app.WaitForGone("text:Loading the session failed", 5*time.Second)
+	app.WaitFor("label:Message", 5*time.Second)
+
+	s.FailOnce(http.MethodGet, "/v1/sessions/4", http.StatusBadGateway)
+	app.Press("label:Refresh")
+	app.WaitFor("text:This transcript may be out of date: loading it again failed", 5*time.Second)
+	app.Press("role:button Try Again")
+	app.WaitForGone("text:This transcript may be out of date", 5*time.Second)
+}
+
+// A run that failed says so at the transcript's end.
+func TestARunThatFailedSaysSo(t *testing.T) {
+	s := pocketdtest.New()
+	s.AddSession(proto.Session{ID: 4, Title: "Editor", Cwd: "/work"})
+	app := signedInApp(t, s, 1230, 800)
+	app.Press("sidebar-panel >> text:Editor")
+	app.WaitFor("label:Message", 5*time.Second)
+	s.Emit(proto.Event{Type: proto.EventLive, Live: &proto.Live{SessionID: 4, Failure: "the provider is overloaded", CompactionFailure: "no room left"}})
+	app.WaitFor("text:The run failed: the provider is overloaded", 5*time.Second)
+	app.WaitFor("text:Compacting the context failed: no room left", 5*time.Second)
+}
+
+// A search that failed says so, and never that nothing was found; a
+// search that found nothing says that.
+func TestASearchThatFailedSaysSo(t *testing.T) {
+	s := pocketdtest.New()
+	app := signedInApp(t, s, 1230, 800)
+	app.Press("sidebar-panel >> text:Search")
+	app.WaitFor("text:Search every session", 5*time.Second)
+	s.FailOnce(http.MethodGet, proto.PathSearch, http.StatusInternalServerError)
+	app.Type("label:Search all sessions", "capacitor")
+	app.Press("text:Search sessions")
+	app.WaitFor("text:Searching failed", 5*time.Second)
+	if app.Exists("text:Nothing found") {
+		t.Error("a search that failed says nothing was found")
+	}
+	app.Press("role:button Try Again")
+	app.WaitFor("text:Nothing found", 5*time.Second)
+	app.WaitFor("text:No session says “capacitor”.", 5*time.Second)
+}
+
+// A Terminal place whose shells failed to load says so.
+func TestTerminalsThatFailedToLoadSaySo(t *testing.T) {
+	s := pocketdtest.New()
+	app := signedInApp(t, s, 1230, 800)
+	// The place loads its shells again as it opens.
+	s.FailOnce(http.MethodGet, proto.PathTerminals, http.StatusBadGateway)
+	app.Press("sidebar-panel >> text:Terminal")
+	app.WaitFor("text:Loading the terminals failed", 5*time.Second)
+	app.Press("role:button Try Again")
+	app.WaitFor("text:Start a terminal to open a shell on the service host.", 5*time.Second)
+}
