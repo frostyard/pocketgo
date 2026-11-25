@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MichaelKinsy/PiG/ai"
+	"github.com/MichaelKinsy/PiG/durable/harness"
 	"github.com/frostyard/pocketgo/proto"
 	"github.com/frostyard/pocketgo/service/internal/api"
 )
@@ -83,27 +85,65 @@ func TestCacheLifetimeFollowsTheRetentionTheRequestUsed(t *testing.T) {
 func TestDecideWarmsOnlyWhenTheHazardTimesTheMissIsMoreThanTheWarm(t *testing.T) {
 	// A 5-minute write costs 12.5 reads: a 0.9 hazard pays, a 0.05 one
 	// does not.
-	if warm, c := decide(50_000, sonnetRates, toolHazard); !warm || c.Savings <= 0 {
-		t.Fatalf("a 50,000-token prompt after a tool call: %v %+v", warm, c)
+	if warm, c := decide(50_000, 0, sonnetRates, toolHazard); !warm || c.Savings <= 0 {
+		t.Fatalf("a 50,000-token cached prompt after a tool call: %v %+v", warm, c)
 	}
-	if warm, _ := decide(50_000, sonnetRates, 0.05); warm {
+	if warm, _ := decide(50_000, 0, sonnetRates, 0.05); warm {
 		t.Fatal("a 0.05 hazard warms")
 	}
-	// warmCost is a read of the prompt and one output token, missCost a
-	// write in place of a read.
-	if _, c := decide(1_000_000, sonnetRates, 1); c.Warm != 0.3+15.0/1e6 || c.Miss != 3.45 {
-		t.Fatalf("the costs of a million-token prompt: %+v", c)
+	// warmCost is a read of the cached tokens and one output token,
+	// missCost a write of them in place of a read.
+	if _, c := decide(1_000_000, 0, sonnetRates, 1); c.Warm != 0.3+15.0/1e6 || c.Miss != 3.45 {
+		t.Fatalf("the costs of a million cached tokens: %+v", c)
 	}
 	// One output token costs more than a tiny prompt's rewrite.
-	if warm, _ := decide(1, sonnetRates, toolHazard); warm {
+	if warm, _ := decide(1, 0, sonnetRates, toolHazard); warm {
 		t.Fatal("a one-token prompt warms")
 	}
-	if warm, _ := decide(50_000, cacheRates{}, toolHazard); warm {
+	if warm, _ := decide(50_000, 0, cacheRates{}, toolHazard); warm {
 		t.Fatal("a model priced at nothing warms")
 	}
 	// No write price: the miss is a write at the input price.
-	if _, c := decide(1_000_000, cacheRates{Input: 3, Output: 15, CacheRead: 0.3}, 1); c.Miss != 2.7 {
+	if _, c := decide(1_000_000, 0, cacheRates{Input: 3, Output: 15, CacheRead: 0.3}, 1); c.Miss != 2.7 {
 		t.Fatalf("the miss with no write price: %+v", c)
+	}
+}
+
+// Codex review of #172, round 1: only what the provider cached is an
+// entry a warm keeps, and what it read as plain input costs the input
+// price again in every warm.
+func TestDecideCountsOnlyTheTokensTheProviderCached(t *testing.T) {
+	// A prompt below the cacheable minimum: no entry, however long.
+	if warm, c := decide(0, 50_000, sonnetRates, toolHazard); warm || c.Miss != 0 {
+		t.Fatalf("an uncached prompt: %v %+v", warm, c)
+	}
+	// The uncached tokens are input in the warm's cost, and save nothing.
+	if _, c := decide(1_000_000, 1_000_000, sonnetRates, 1); math.Abs(c.Warm-3.300015) > 1e-9 || c.Miss != 3.45 {
+		t.Fatalf("the costs of a million cached and a million plain tokens: %+v", c)
+	}
+	// Enough plain input outweighs what the cached part saves.
+	if warm, _ := decide(10_000, 100_000, sonnetRates, toolHazard); warm {
+		t.Fatal("a warm that rereads ten times its cached part as input warms")
+	}
+}
+
+func TestLateRefreshAllowsHalfTheMarginPastTheRefreshPoint(t *testing.T) {
+	due := time.Date(2026, 11, 24, 12, 4, 30, 0, time.UTC)
+	ttl := 300 * time.Second // the refresh point is 30 s before the end
+	for at, want := range map[time.Duration]bool{0: false, 15 * time.Second: false, 15*time.Second + 1: true, 6 * time.Minute: true} {
+		if got := lateRefresh(due.Add(at), due, ttl); got != want {
+			t.Errorf("%v past the refresh point: late %v, want %v", at, got, want)
+		}
+	}
+}
+
+// Codex review of #172, round 1: Linux's monotonic clock stops while the
+// host is suspended, and a cache entry's lifetime does not, so the
+// keeper's times carry no monotonic reading.
+func TestTheKeepersClockCountsTimeTheHostSlept(t *testing.T) {
+	now := wallClock{}.Now()
+	if strings.Contains(now.String(), "m=") || now != now.Round(0) {
+		t.Fatalf("the keeper's clock reads %s, with a monotonic reading", now)
 	}
 }
 
@@ -302,11 +342,14 @@ type shimCall struct {
 // payloadShim stands in front of a faux provider as a real provider's
 // adapter does: it builds a payload of the request, hands it to
 // OnPayload, sends nothing when the hook fails, and else streams faux's
-// answer. system is a stateful part of every payload.
+// answer. system is a stateful part of every payload, and uncached makes
+// faux cache nothing, as a provider does a prompt below its cacheable
+// minimum.
 type payloadShim struct {
-	mu     sync.Mutex
-	system string
-	calls  []shimCall
+	mu       sync.Mutex
+	system   string
+	uncached bool
+	calls    []shimCall
 }
 
 func (s *payloadShim) wrap(inner *ai.ModelsProvider) *ai.ModelsProvider {
@@ -314,7 +357,7 @@ func (s *payloadShim) wrap(inner *ai.ModelsProvider) *ai.ModelsProvider {
 	next := inner.StreamSimple
 	p.StreamSimple = func(ctx context.Context, model *ai.Model, transcript ai.TranscriptContext, options ai.StreamOptions) (*ai.AssistantMessageEventStream, error) {
 		s.mu.Lock()
-		system := s.system
+		system, uncached := s.system, s.uncached
 		s.mu.Unlock()
 		payload := map[string]any{"model": model.ID, "system": system, "messages": transcript.Messages()}
 		body, err := json.Marshal(payload)
@@ -331,6 +374,11 @@ func (s *payloadShim) wrap(inner *ai.ModelsProvider) *ai.ModelsProvider {
 		}
 		call.sent = true
 		s.record(call)
+		if uncached {
+			// faux reports no cache read or write for a request that asks
+			// for no cache.
+			options.CacheRetention = ai.CacheRetentionNone
+		}
 		return next(ctx, model, transcript, options)
 	}
 	p.Stream = p.StreamSimple
@@ -355,10 +403,17 @@ func (s *payloadShim) setSystem(system string) {
 	s.system = system
 }
 
-// keptFaux is a catalog of one faux model priced as cost, with Claude's
-// cache lifetimes, behind a payload shim, answering steps.
+func (s *payloadShim) setUncached(uncached bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.uncached = uncached
+}
+
+// keptFaux is a catalog of faux models priced as cost behind a payload
+// shim, answering steps: faux-1 with Claude's cache lifetimes, and
+// faux-2 with none, as a model the catalog names no lifetime for.
 func keptFaux(cost *ai.ModelCost, steps ...ai.FauxResponseStep) (*ai.Models, *ai.FauxProviderHandle, *payloadShim) {
-	faux := ai.NewFauxProvider(ai.FauxConfig{Models: []ai.FauxModelDefinition{{ID: "faux-1", Cost: cost}}})
+	faux := ai.NewFauxProvider(ai.FauxConfig{Models: []ai.FauxModelDefinition{{ID: "faux-1", Cost: cost}, {ID: "faux-2", Cost: cost}}})
 	faux.GetModel("faux-1").PromptCache = ai.ModelPromptCache{"short": 300, "long": 3600}
 	faux.SetResponses(steps)
 	shim := &payloadShim{system: "the rules"}
@@ -430,9 +485,15 @@ func (r *keeperRig) realOptions(task context.Context, session string, retention 
 // the keeper took the answer.
 func (r *keeperRig) send(session string, retention ai.CacheRetention, step ai.FauxResponseStep) *ai.AssistantMessage {
 	r.t.Helper()
+	return r.sendOn(r.model, session, retention, step)
+}
+
+// sendOn is send on model.
+func (r *keeperRig) sendOn(model *ai.Model, session string, retention ai.CacheRetention, step ai.FauxResponseStep) *ai.AssistantMessage {
+	r.t.Helper()
 	r.faux.AppendResponses([]ai.FauxResponseStep{step})
 	task, end := context.WithCancel(context.Background())
-	message := r.models.StreamSimple(task, r.model, r.request(), r.realOptions(task, session, retention)).Result()
+	message := r.models.StreamSimple(task, model, r.request(), r.realOptions(task, session, retention)).Result()
 	end()
 	r.keeper.work.Wait()
 	if message == nil {
@@ -487,7 +548,7 @@ func TestAWarmGoesOutOnceAtItsRefreshPointWithTheSamePayloadAndAOneTokenCap(t *t
 	}
 	log := r.log.String()
 	if !strings.Contains(log, "the cache keeper warmed a prompt cache") || !strings.Contains(log, "model=faux/faux-1") ||
-		!strings.Contains(log, "prompt_tokens=") || !strings.Contains(log, "cost=") || strings.Contains(log, "work") {
+		!strings.Contains(log, "cached_tokens=") || !strings.Contains(log, "cost=") || strings.Contains(log, "work") {
 		t.Fatalf("the warm's log line: %s", log)
 	}
 }
@@ -552,6 +613,97 @@ func TestTheSessionsNextRequestStopsItsWarm(t *testing.T) {
 	}
 }
 
+// Codex review of #172, round 1: the owner may change a run's model
+// between its requests; a request on a model with no cache lifetime
+// starts no warm, and retires the one the run's last request left.
+func TestARequestOnAModelWithNoCacheLifetimeRetiresTheWarm(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	other := r.faux.GetModel("faux-2")
+	if other.PromptCache != nil {
+		t.Fatal("faux-2 names a cache lifetime")
+	}
+	r.sendOn(other, "s", "", readTool("c2"))
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v after the model changed", r.keeper.warming(), r.clock.pending())
+	}
+	if calls := r.shim.recorded(); len(calls) != 2 {
+		t.Fatalf("%d requests: the old model's warm went out", len(calls))
+	}
+}
+
+// Codex review of #172, round 1: a prompt the provider did not cache, as
+// one below its cacheable minimum, has no entry to keep warm.
+func TestAPromptTheProviderDidNotCacheIsNeverWarmed(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.shim.setUncached(true)
+	got := r.send("s", "", readTool("c1"))
+	if got.Usage.CacheRead != 0 || got.Usage.CacheWrite != 0 || got.Usage.Input == 0 {
+		t.Fatalf("the uncached answer's usage: %+v", got.Usage)
+	}
+	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
+		t.Fatalf("warming %d, timers %v for an uncached prompt", r.keeper.warming(), r.clock.pending())
+	}
+}
+
+// Codex review of #172, round 1: a cache entry is there from when the
+// request's answer begins, so its refresh is due from the request, not
+// from the end of a slow answer, and an answer that ends past the
+// refresh point starts no warm.
+func TestARefreshIsDueFromTheRequestNotTheEndOfItsAnswer(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	slow := func(session string, took time.Duration) {
+		started, release := make(chan struct{}), make(chan struct{})
+		r.faux.AppendResponses([]ai.FauxResponseStep{blocking(started, release, readCall)})
+		done := make(chan struct{})
+		go func() {
+			r.models.StreamSimple(context.Background(), r.model, r.request(), r.realOptions(context.Background(), session, "")).Result()
+			close(done)
+		}()
+		<-started
+		r.clock.set(r.clock.Now().Add(took))
+		close(release)
+		<-done
+		r.keeper.work.Wait()
+	}
+	slow("a", time.Minute)
+	if got := r.clock.pending(); !slices.Equal(got, []time.Duration{210 * time.Second}) {
+		t.Fatalf("pending timers %v after a one-minute answer, want the refresh 270 s after the request", got)
+	}
+	slow("b", 290*time.Second)
+	if r.keeper.warming() != 1 {
+		t.Fatalf("warming %d: an answer that ended past its refresh point started a warm", r.keeper.warming())
+	}
+}
+
+// Codex review of #172, round 1: close cancels a warm in flight, and
+// waits for its terminal result, whose usage the log counts.
+func TestCloseWaitsForAWarmInFlightAndCountsIt(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	started, release := make(chan struct{}), make(chan struct{})
+	r.faux.AppendResponses([]ai.FauxResponseStep{blocking(started, release, ai.FauxResponse{Content: []ai.FauxContentBlock{ai.FauxText("w")}})})
+	fired := make(chan struct{})
+	go func() {
+		r.clock.fire()
+		close(fired)
+	}()
+	<-started
+	closed := make(chan error, 1)
+	go func() { closed <- r.keeper.close(context.Background()) }()
+	// close has cancelled the warm before the provider ends it.
+	<-r.keeper.life.Done()
+	close(release)
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	<-fired
+	log := r.log.String()
+	if !strings.Contains(log, "the cache keeper warmed a prompt cache") || !strings.Contains(log, "warms=1") {
+		t.Fatalf("the warm cut short by close is not counted: %s", log)
+	}
+}
+
 func TestARequestThatUsesNoCacheLeavesTheWarmAlone(t *testing.T) {
 	r := newKeeperRig(t, sonnetCost)
 	r.send("s", "", readTool("c1"))
@@ -562,35 +714,68 @@ func TestARequestThatUsesNoCacheLeavesTheWarmAlone(t *testing.T) {
 	}
 }
 
+// ended tells the keeper that key's run ended, seen now.
+func (r *keeperRig) ended(key string) { r.keeper.runEnded(key, r.keeper.generation(key)) }
+
+// blocking is a faux step that says when faux reached it, and answers
+// with response once released.
+func blocking(started chan<- struct{}, release <-chan struct{}, response ai.FauxResponse) ai.FauxResponseStep {
+	return ai.FauxFactoryStep(func(ai.TranscriptContext, ai.StreamOptions, *ai.FauxProviderState, *ai.Model) (ai.AssistantMessage, error) {
+		close(started)
+		<-release
+		return response.AssistantMessage(), nil
+	})
+}
+
+var readCall = ai.FauxResponse{Content: []ai.FauxContentBlock{ai.FauxToolCall("read", map[string]any{"path": "notes.md"}, &ai.FauxToolCallOptions{ID: "c1"})}, StopReason: "toolUse"}
+
 func TestTheRunsEndStopsItsWarmAndNoOther(t *testing.T) {
 	r := newKeeperRig(t, sonnetCost)
 	r.send("a", "", readTool("c1"))
 	r.send("b", "", readTool("c2"))
-	r.keeper.runEnded("a")
+	r.ended("a")
 	if r.keeper.warming() != 1 || len(r.clock.pending()) != 1 {
 		t.Fatalf("warming %d, timers %v after a's end", r.keeper.warming(), r.clock.pending())
 	}
-	r.keeper.runEnded("b")
-	r.keeper.runEnded("")
+	r.ended("b")
+	r.ended("")
 	if r.keeper.warming() != 0 || len(r.clock.pending()) != 0 {
 		t.Fatalf("warming %d, timers %v after b's end", r.keeper.warming(), r.clock.pending())
+	}
+}
+
+// Codex review of #172, round 1: a provider session lasts across runs, so
+// a run's end seen late must not stop the next run's warm.
+func TestALateRunEndLeavesALaterRequestsWarm(t *testing.T) {
+	r := newKeeperRig(t, sonnetCost)
+	r.send("s", "", readTool("c1"))
+	// The watch read the end of that run before the next run's request.
+	seen := r.keeper.generation("s")
+	r.send("s", "", readTool("c2"))
+	r.keeper.runEnded("s", seen)
+	if r.keeper.warming() != 1 || !slices.Equal(r.clock.pending(), []time.Duration{270 * time.Second}) {
+		t.Fatalf("warming %d, timers %v after a late run end", r.keeper.warming(), r.clock.pending())
+	}
+	// A request that asks for no cache retires nothing, and counts for
+	// nothing.
+	seen = r.keeper.generation("s")
+	r.send("s", ai.CacheRetentionNone, answer("## Summary"))
+	r.keeper.runEnded("s", seen)
+	if r.keeper.warming() != 0 {
+		t.Fatal("a run's end after a compaction's request leaves its warm")
 	}
 }
 
 func TestARunThatEndedWhileItsRequestRanStartsNoWarm(t *testing.T) {
 	r := newKeeperRig(t, sonnetCost)
 	started, release := make(chan struct{}), make(chan struct{})
-	r.faux.AppendResponses([]ai.FauxResponseStep{ai.FauxFactoryStep(func(ai.TranscriptContext, ai.StreamOptions, *ai.FauxProviderState, *ai.Model) (ai.AssistantMessage, error) {
-		close(started)
-		<-release
-		return ai.FauxResponse{Content: []ai.FauxContentBlock{ai.FauxToolCall("read", map[string]any{"path": "notes.md"}, &ai.FauxToolCallOptions{ID: "c1"})}, StopReason: "toolUse"}.AssistantMessage(), nil
-	})})
+	r.faux.AppendResponses([]ai.FauxResponseStep{blocking(started, release, readCall)})
 	done := make(chan *ai.AssistantMessage)
 	go func() {
 		done <- r.models.StreamSimple(context.Background(), r.model, r.request(), r.realOptions(context.Background(), "s", "")).Result()
 	}()
 	<-started
-	r.keeper.runEnded("s")
+	r.ended("s")
 	close(release)
 	if got := <-done; got == nil || got.StopReason != ai.StopReasonToolUse {
 		t.Fatalf("the answer: %+v", got)
@@ -716,6 +901,8 @@ type keptRun struct {
 // keptEngine starts a kept run, whose later requests steps answer.
 func keptEngine(t *testing.T, steps ...ai.FauxResponseStep) keptRun {
 	t.Helper()
+	// The short tier, whatever the environment the tests run in says.
+	t.Setenv("PI_CACHE_RETENTION", "")
 	r := keptRun{clock: useKeeperClock(t), f: newFixture(t)}
 	r.f.cacheKeeper = true
 	var models *ai.Models
@@ -785,15 +972,60 @@ func TestARunInAToolCallIsKeptWarmOutsideItsTranscript(t *testing.T) {
 
 func TestAnAbortedRunsWarmStops(t *testing.T) {
 	run := keptEngine(t)
+	// The watch reported the run busy: an idle state after that is its
+	// end, not the one Watch reported first.
+	busyAt := -1
+	if !run.f.waitLive(func(lives []proto.Live) bool {
+		busyAt = slices.IndexFunc(lives, func(l proto.Live) bool { return l.Busy })
+		return busyAt >= 0
+	}) {
+		t.Fatal("the watch never reported the run busy")
+	}
 	if err := run.e.Abort(context.Background(), run.id); err != nil {
 		t.Fatal(err)
 	}
 	// The watch tells the keeper before it hands on the idle state.
-	if !run.f.waitLive(func(lives []proto.Live) bool { return len(lives) > 0 && !lives[len(lives)-1].Busy }) {
+	if !run.f.waitLive(func(lives []proto.Live) bool {
+		return slices.ContainsFunc(lives[busyAt+1:], func(l proto.Live) bool { return !l.Busy })
+	}) {
 		t.Fatal("the run did not end")
 	}
 	if run.e.keeper.warming() != 0 || len(run.clock.pending()) != 0 {
 		t.Fatalf("warming %d, timers %v after the abort", run.e.keeper.warming(), run.clock.pending())
+	}
+}
+
+// Codex review of #172, round 1: the watch may show a run's end after the
+// session's next run began, under the same provider session. The engine
+// stops the warm only when the session has no run now.
+func TestAStaleIdleViewLeavesTheNextRunsWarm(t *testing.T) {
+	run := keptEngine(t)
+	ctx := context.Background()
+	conversation, err := run.e.conversation(ctx, run.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch, err := conversation.Watch(ctx, viewWindow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := watch.Value()
+	_, _ = watch.Stop()
+	if providerSession(view) == "" {
+		t.Fatal("the view names no provider session")
+	}
+	// The end of an earlier run, seen while this one waits in its tool.
+	run.e.noteRunEnded(ctx, run.id, view)
+	if run.e.keeper.warming() != 1 || len(run.clock.pending()) != 1 {
+		t.Fatalf("warming %d, timers %v after a stale idle view", run.e.keeper.warming(), run.clock.pending())
+	}
+	if err := run.e.Abort(ctx, run.id); err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, run.e, run.id)
+	run.e.noteRunEnded(ctx, run.id, view)
+	if run.e.keeper.warming() != 0 {
+		t.Fatal("the end of a run seen with the session idle leaves its warm")
 	}
 }
 
@@ -815,7 +1047,8 @@ func TestTheKeeperIsOffUnlessTheEngineIsAskedForIt(t *testing.T) {
 		t.Fatal("an engine opened without CacheKeeper has a keeper")
 	}
 	// A nil keeper takes every call as a no-op.
-	e.keeper.runEnded("s")
+	e.keeper.runEnded("s", 0)
+	e.noteRunEnded(context.Background(), 1, harness.ConversationView{})
 	if err := e.keeper.close(context.Background()); err != nil {
 		t.Fatal(err)
 	}

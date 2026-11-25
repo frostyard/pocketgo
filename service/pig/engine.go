@@ -1473,9 +1473,10 @@ func (e *Engine) advanceLocked(ctx context.Context, id int64, w *watcher, view h
 	}
 	live := e.liveOf(id, view, &w.queue)
 	// A run that ended or was aborted sends no request after its last
-	// tool call: its warm stops (ADR-0074).
+	// tool call: its warm stops, unless a later run began since
+	// (ADR-0074).
 	if w.busy && !live.Busy {
-		e.keeper.runEnded(providerSession(view))
+		e.noteRunEnded(ctx, id, view)
 	}
 	w.busy = live.Busy
 	if data, err := json.Marshal(live); err == nil && string(data) != string(w.lastLive) {

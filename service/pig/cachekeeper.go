@@ -22,7 +22,8 @@ import (
 // last model request again with a one-token output cap just before its
 // prompt cache entry expires, when that costs less than the rewrite it
 // saves. It never warms an idle session. The rules are the pure functions
-// cacheLifetime, refreshDelay, decide, isReplayable and payloadHash.
+// cacheLifetime, refreshDelay, lateRefresh, decide, isReplayable and
+// payloadHash.
 
 const (
 	// maxWarmAge: warming never goes on past this long after the real
@@ -108,20 +109,33 @@ type warmCosts struct {
 	Warm, Miss, Savings float64
 }
 
-// decide says whether a refresh of a prompt of promptTokens is worth its
-// cost at rates: warm when hazard × missCost > warmCost. warmCost is a
-// cache read of the whole prompt plus one output token; missCost a cache
-// write of it in place of a read, at the input price when the model names
-// no write price. A model priced at nothing is never warmed.
-func decide(promptTokens int, rates cacheRates, hazard float64) (bool, warmCosts) {
+// decide says whether a refresh of a prompt is worth its cost at rates,
+// the prompt as the real request's usage reported it: cached tokens the
+// provider read from its cache or wrote to it (the entry a warm keeps),
+// and uncached ones it read as plain input. Warm when hazard × missCost >
+// warmCost: warmCost is a cache read of the cached tokens, the uncached
+// ones at the input price, and one output token; missCost a cache write
+// of the cached tokens in place of a read, at the input price when the
+// model names no write price. A prompt with no cached token has no entry
+// to keep, and a model priced at nothing is never warmed.
+func decide(cached, uncached int, rates cacheRates, hazard float64) (bool, warmCosts) {
 	write := rates.CacheWrite
 	if write == 0 {
 		write = rates.Input
 	}
-	tokens := float64(promptTokens)
-	c := warmCosts{Warm: (tokens*rates.CacheRead + rates.Output) / 1e6, Miss: tokens * (write - rates.CacheRead) / 1e6}
+	hit, plain := float64(cached), float64(uncached)
+	c := warmCosts{Warm: (hit*rates.CacheRead + plain*rates.Input + rates.Output) / 1e6, Miss: hit * (write - rates.CacheRead) / 1e6}
 	c.Savings = hazard*c.Miss - c.Warm
-	return c.Savings > 0, c
+	return cached > 0 && c.Savings > 0, c
+}
+
+// lateRefresh says whether a refresh due at due, of an entry that lives
+// for ttl, comes too late at now: more than half the margin between the
+// refresh point and the entry's end past it, as after the host slept,
+// when the entry may be gone and a warm would pay its rewrite.
+func lateRefresh(now, due time.Time, ttl time.Duration) bool {
+	delay, _ := refreshDelay(ttl)
+	return now.After(due.Add((ttl - delay) / 2))
 }
 
 // capParents are the payload objects that hold an output cap one level
@@ -189,10 +203,13 @@ type keeperClock interface {
 // keeperTimer is a timer AfterFunc started.
 type keeperTimer interface{ Stop() bool }
 
-// wallClock is the host's clock.
+// wallClock is the host's clock. Its times carry no monotonic reading,
+// so comparing two counts the time the host spent suspended, which
+// Linux's monotonic clock leaves out while a provider's cache entry
+// expires all the same: a refresh after a sleep reads as late.
 type wallClock struct{}
 
-func (wallClock) Now() time.Time { return time.Now() }
+func (wallClock) Now() time.Time { return time.Now().Round(0) }
 
 func (wallClock) AfterFunc(d time.Duration, f func()) keeperTimer { return time.AfterFunc(d, f) }
 
@@ -210,8 +227,9 @@ type cacheKeeper struct {
 	clock  keeperClock
 	getenv func(string) string
 
-	// life ends at close: every warm's context, and every wait on a real
-	// request's result, is under it.
+	// life ends at close: every warm's request context, and every wait on
+	// a real request's result, is under it. A warm's own result is waited
+	// for whatever life says, so its usage is counted.
 	life context.Context
 	end  context.CancelFunc
 
@@ -221,6 +239,9 @@ type cacheKeeper struct {
 	// whose result the keeper waits for, by provider session id.
 	entries  map[string]*warmEntry
 	requests map[string]*realRequest
+	// gens count each session's real requests that retire its warm: a
+	// run's end stops only what came before a later request (runEnded).
+	gens map[string]uint64
 	// work counts the waits on real requests' results and the warms in
 	// flight, which close waits for.
 	work sync.WaitGroup
@@ -240,6 +261,10 @@ type realRequest struct {
 	key  string
 	call warmCall
 	ttl  time.Duration
+	// dispatched is when it went to the provider: its cache entry is
+	// there from when the answer begins, not when it ends, so its
+	// lifetime counts from here.
+	dispatched time.Time
 	// hash is its final payload's (payloadHash), "" until the provider
 	// built it or when it could not be hashed.
 	hash atomic.Pointer[string]
@@ -247,21 +272,28 @@ type realRequest struct {
 
 // warmEntry is a cache entry the keeper keeps warm.
 type warmEntry struct {
-	call   warmCall
-	hash   string
-	ttl    time.Duration
-	prompt int
-	// started is when the real request ended: the age cap counts from
-	// here, never from a warm.
+	call warmCall
+	hash string
+	ttl  time.Duration
+	// cached and uncached are the real request's prompt tokens the
+	// provider cached, and those it read as plain input (decide).
+	cached, uncached int
+	// started is when the real request's answer came: the age cap counts
+	// from here, never from a warm.
 	started time.Time
-	// due is when the next refresh should go out.
-	due      time.Time
-	timer    keeperTimer
-	deadline keeperTimer
-	// cancel ends the warm in flight.
-	cancel context.CancelFunc
-	warms  int
-	spent  float64
+	// written is when the request that last wrote or read the entry,
+	// real or warm, went to the provider, and due when the next refresh
+	// should go out: written plus refreshDelay.
+	written, due time.Time
+	timer        keeperTimer
+	deadline     keeperTimer
+	// cancel ends the warm in flight, and stopped says why the entry
+	// stopped while one was in flight: its summary waits for that warm's
+	// usage.
+	cancel  context.CancelFunc
+	stopped string
+	warms   int
+	spent   float64
 }
 
 func newCacheKeeper(log *slog.Logger, clock keeperClock) *cacheKeeper {
@@ -270,7 +302,7 @@ func newCacheKeeper(log *slog.Logger, clock keeperClock) *cacheKeeper {
 	}
 	life, end := context.WithCancel(context.Background())
 	return &cacheKeeper{log: log, clock: clock, getenv: os.Getenv, life: life, end: end,
-		entries: map[string]*warmEntry{}, requests: map[string]*realRequest{}}
+		entries: map[string]*warmEntry{}, requests: map[string]*realRequest{}, gens: map[string]uint64{}}
 }
 
 // install wraps the stream functions of every provider of models in
@@ -336,25 +368,28 @@ func (k *cacheKeeper) wrap(next ai.ModelsStreamFunction) ai.ModelsStreamFunction
 	}
 }
 
-// begin takes a real request: one that uses the cache stops its session's
-// warm, and one the keeper may warm after is returned to follow, nil for
-// one it leaves alone. A request with no session or no cache leaves the
-// session's warm as it is.
+// begin takes a real request: it retires its session's warm, and one the
+// keeper may warm after is returned to follow, nil for one it leaves
+// alone. Only a request with no session, or one that asks for no cache
+// (retention none, as a compaction's), leaves the session's warm as it
+// is: a request on a model with no cache lifetime, as after the owner
+// changed a run's model, retires it though it starts none.
 func (k *cacheKeeper) begin(call warmCall) *realRequest {
 	key := call.options.SessionID
-	ttl, cached := cacheLifetime(call.model, call.options, k.getenv)
-	if key == "" || !cached {
+	if key == "" || call.options.CacheRetention == ai.CacheRetentionNone {
 		return nil
 	}
+	ttl, cached := cacheLifetime(call.model, call.options, k.getenv)
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.gens[key]++
 	k.dropLocked(key, "the session's next request")
 	delete(k.requests, key)
 	delay, ok := refreshDelay(ttl)
-	if k.closed || !ok || delay >= maxWarmAge || !isReplayable(call.model, call.options) {
+	if !cached || k.closed || !ok || delay >= maxWarmAge || !isReplayable(call.model, call.options) {
 		return nil
 	}
-	req := &realRequest{key: key, call: call, ttl: ttl}
+	req := &realRequest{key: key, call: call, ttl: ttl, dispatched: k.clock.Now()}
 	k.requests[key] = req
 	k.work.Add(1)
 	return req
@@ -386,22 +421,30 @@ func (k *cacheKeeper) await(req *realRequest, stream *ai.AssistantMessageEventSt
 		return
 	}
 	hash := req.hash.Load()
-	prompt := message.Usage.Input + message.Usage.CacheRead + message.Usage.CacheWrite
+	u := message.Usage
+	// Only what the provider cached is an entry to keep: a prompt below
+	// its cacheable minimum has none.
+	cached := u.CacheRead + u.CacheWrite
 	delay, ok := refreshDelay(req.ttl)
-	if hash == nil || *hash == "" || prompt <= 0 || !ok {
+	now := k.clock.Now()
+	// The entry's lifetime counts from the request: an answer that took
+	// long may come when its refresh is late already.
+	if hash == nil || *hash == "" || cached <= 0 || !ok || lateRefresh(now, req.dispatched.Add(delay), req.ttl) {
 		return
 	}
-	e := &warmEntry{call: req.call, hash: *hash, ttl: req.ttl, prompt: prompt, started: k.clock.Now()}
+	e := &warmEntry{call: req.call, hash: *hash, ttl: req.ttl, cached: cached, uncached: u.Input, started: now, written: req.dispatched}
 	k.entries[req.key] = e
-	k.scheduleLocked(req.key, e, delay)
+	k.scheduleLocked(req.key, e)
 }
 
-// scheduleLocked sets e's next refresh delay from now, and its timer for
-// then, or for the age cap when that comes first.
-func (k *cacheKeeper) scheduleLocked(key string, e *warmEntry, delay time.Duration) {
+// scheduleLocked sets e's next refresh at refreshDelay after the request
+// that last wrote or read its entry went out, and its timer for then, or
+// for the age cap when that comes first.
+func (k *cacheKeeper) scheduleLocked(key string, e *warmEntry) {
+	delay, _ := refreshDelay(e.ttl)
+	e.due = e.written.Add(delay)
 	now := k.clock.Now()
-	e.due = now.Add(delay)
-	wait := min(delay, max(0, e.started.Add(maxWarmAge).Sub(now)))
+	wait := max(0, min(e.due.Sub(now), e.started.Add(maxWarmAge).Sub(now)))
 	e.timer = k.clock.AfterFunc(wait, func() { k.fire(key, e) })
 }
 
@@ -413,17 +456,15 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 		return
 	}
 	e.timer = nil
+	// The clock counts the time the host slept (wallClock): a timer that
+	// fired late would warm an entry that may be gone, whose rewrite costs
+	// what the next request's would.
 	now := k.clock.Now()
-	delay, _ := refreshDelay(e.ttl)
-	// A timer that fired late, as after the host slept, would warm an
-	// entry that may be gone: its rewrite costs what the next request's
-	// would.
-	slack := (e.ttl - delay) / 2
 	stop := ""
-	switch worth, _ := decide(e.prompt, ratesOf(e.call.model), toolHazard); {
+	switch worth, _ := decide(e.cached, e.uncached, ratesOf(e.call.model), toolHazard); {
 	case now.Sub(e.started) >= maxWarmAge:
 		stop = "the age cap"
-	case now.After(e.due.Add(slack)):
+	case lateRefresh(now, e.due, e.ttl):
 		stop = "a late refresh"
 	case !worth:
 		stop = "a warm not worth its cost"
@@ -440,6 +481,7 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 	k.mu.Unlock()
 	defer k.work.Done()
 
+	dispatched := k.clock.Now()
 	message, sent := k.warm(ctx, e)
 
 	k.mu.Lock()
@@ -457,10 +499,13 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 		e.spent += message.Usage.Cost.Total
 		u := message.Usage
 		k.log.Info("the cache keeper warmed a prompt cache", "model", e.call.model.ProviderID()+"/"+e.call.model.ID,
-			"prompt_tokens", e.prompt, "input", u.Input, "cache_read", u.CacheRead, "cache_write", u.CacheWrite, "output", u.Output,
+			"cached_tokens", e.cached, "input", u.Input, "cache_read", u.CacheRead, "cache_write", u.CacheWrite, "output", u.Output,
 			"cost", u.Cost.Total, "stop", string(message.StopReason))
 	}
 	if k.entries[key] != e {
+		// It stopped while this warm was in flight: its summary counts
+		// this warm too.
+		k.logStop(e, e.stopped)
 		return
 	}
 	switch {
@@ -469,7 +514,8 @@ func (k *cacheKeeper) fire(key string, e *warmEntry) {
 	case message == nil || message.StopReason == ai.StopReasonError || message.StopReason == ai.StopReasonAborted:
 		k.dropLocked(key, "a warm that failed")
 	default:
-		k.scheduleLocked(key, e, delay)
+		e.written = dispatched
+		k.scheduleLocked(key, e)
 	}
 }
 
@@ -489,9 +535,10 @@ func (k *cacheKeeper) warm(ctx context.Context, e *warmEntry) (message *ai.Assis
 	if err != nil || stream == nil || differs.Load() {
 		return nil, false
 	}
-	// The keeper's life, not the warm's context: a warm a new request or
-	// a stop aborted still ends with its usage.
-	message, err = stream.ResultContext(k.life)
+	// Its terminal result, whatever cut it short: a new request, the run's
+	// end and close cancel the request's context, which ends the stream,
+	// and its usage still counts. close's own deadline bounds the wait.
+	message, err = stream.ResultContext(context.Background())
 	switch {
 	case differs.Load():
 		return nil, false
@@ -533,14 +580,47 @@ func providerSession(view harness.ConversationView) string {
 	return id
 }
 
+// noteRunEnded tells the keeper that session id's run ended, as view, the
+// watch's, shows it. The watch may show it late, after the session's next
+// run began under the same provider session: the keeper's generation is
+// read first, then the session's state now, and the warm stops only when
+// the session has no run now and no request began between the two.
+func (e *Engine) noteRunEnded(ctx context.Context, id int64, view harness.ConversationView) {
+	if e.keeper == nil {
+		return
+	}
+	key := providerSession(view)
+	gen := e.keeper.generation(key)
+	if busy, err := e.Busy(ctx, id); err != nil || busy {
+		return
+	}
+	e.keeper.runEnded(key, gen)
+}
+
+// generation is how many real requests of provider session key have
+// retired its warm so far: runEnded takes it as read before the session
+// was found idle.
+func (k *cacheKeeper) generation(key string) uint64 {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.gens[key]
+}
+
 // runEnded stops the warm of provider session key, whose run ended or
-// was aborted: no request follows its last tool call.
-func (k *cacheKeeper) runEnded(key string) {
+// was aborted, no request following its last tool call; gen is the
+// session's generation as read before the end was seen. A provider
+// session lasts across runs, so when a later request began since, the
+// warm and the request are a later run's, and stay: that request
+// retired whatever the ended run left.
+func (k *cacheKeeper) runEnded(key string, gen uint64) {
 	if k == nil || key == "" {
 		return
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.gens[key] != gen {
+		return
+	}
 	delete(k.requests, key)
 	k.dropLocked(key, "its run's end")
 }
@@ -554,7 +634,8 @@ func (k *cacheKeeper) drop(key string, e *warmEntry, why string) {
 	}
 }
 
-// dropLocked stops key's warm, the one in flight included.
+// dropLocked stops key's warm, the one in flight included, whose end
+// then logs the summary with its own usage (fire).
 func (k *cacheKeeper) dropLocked(key, why string) {
 	e, ok := k.entries[key]
 	if !ok {
@@ -568,8 +649,15 @@ func (k *cacheKeeper) dropLocked(key, why string) {
 		e.deadline.Stop()
 	}
 	if e.cancel != nil {
+		e.stopped = why
 		e.cancel()
+		return
 	}
+	k.logStop(e, why)
+}
+
+// logStop logs what an entry's warms came to, when it had any.
+func (k *cacheKeeper) logStop(e *warmEntry, why string) {
 	if e.warms > 0 {
 		k.log.Info("the cache keeper stopped warming a prompt cache", "model", e.call.model.ProviderID()+"/"+e.call.model.ID,
 			"warms", e.warms, "cost", e.spent, "why", why)
@@ -583,8 +671,9 @@ func (k *cacheKeeper) warming() int {
 	return len(k.entries)
 }
 
-// close stops every warm, and no warm starts after it. It waits, within
-// ctx, for the warms in flight and the waits on real requests to end.
+// close stops every warm, and no warm starts after it. It cancels the
+// warms in flight and waits, within ctx, for each one's terminal result,
+// so its usage is counted, and for the waits on real requests to end.
 // Calling it again waits again.
 func (k *cacheKeeper) close(ctx context.Context) error {
 	if k == nil {

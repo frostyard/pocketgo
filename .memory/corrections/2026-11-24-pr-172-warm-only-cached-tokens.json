@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The cache keeper's decide prices the saving on the tokens the provider cached alone (cache read plus cache write), counts uncached input at the input price in the warm's cost, and warms no prompt the provider cached nothing of.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 1 of head c47c474: [P2] Only price savings on tokens the provider actually cached",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}

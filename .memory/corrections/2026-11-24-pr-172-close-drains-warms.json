@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "The cache keeper's close cancels a warm in flight but waits, within its deadline, for the warm's terminal result (ResultContext on no context close ends), so its usage is counted and the stop summary logged after it settles.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 1 of head c47c474: [P2] Drain in-flight warm streams before reporting shutdown complete",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}

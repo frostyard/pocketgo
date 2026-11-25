@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-24",
+  "scope": "service",
+  "correction": "A real request of a session on a model with no cache lifetime, as after the owner changed a run's model, retires the session's warm though it starts none; only a request that asks for no cache (retention none, a compaction's) leaves it alone.",
+  "evidence": "frostyard/pocketgo#172, Codex review, round 1 of head c47c474: [P2] Retire the previous warm when a run switches models",
+  "promoted_to": "service/pig/cachekeeper_test.go"
+}
