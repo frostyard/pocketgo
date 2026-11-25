@@ -49,7 +49,6 @@ type client struct {
 	browserHistory bool
 	fileRoute      *core.Signal[destination]
 	fileRefresh    *core.Signal[int]
-	shiftEnd       string
 	noticeCard     *core.Signal[string]
 	drafts         map[int64]*core.Signal[string]
 	log            []string
@@ -57,6 +56,10 @@ type client struct {
 	// those that wait behind it.
 	asking *core.Signal[*question]
 	asks   asks
+	// launchHours and launchClock are the end chooser of the board's
+	// proposals: in state.LaunchChoiceHours hours, or until a clock time.
+	launchHours bool
+	launchClock string
 }
 
 func Root(cx *core.Scope) core.Node { return buildClient(cx, transport(), true) }
@@ -102,13 +105,14 @@ func startClient(cx *core.Scope, transport http.RoundTripper, production bool, a
 	c.noticeCard = core.NewSignal(cx, "")
 	c.groups = core.NewSignalFunc(cx, map[string]bool{}, maps.Equal)
 	c.reasons = map[string]string{}
+	c.launchClock = proto.DefaultLaunchUntil
 	var zoom float32
 	c.loadJSON("zoom", &zoom)
 	c.zoom = core.NewSignal(cx, state.Zoom(zoom))
 	c.termID = core.NewSignal(cx, "")
 	c.terminals = map[string]*terminal.Terminal{}
 	cx.Cleanup(c.closeTerminals)
-	c.store = state.New(state.Options{Transport: transport, Post: func(fn func()) {
+	c.store = state.New(state.Options{Transport: transport, Now: func() time.Time { return timeNow() }, Post: func(fn func()) {
 		cx.Post(func() { cx.Batch(func() { fn(); c.changed() }) })
 	}, Notify: c.notify, KeptNotices: func(server string) []string { var keys []string; c.loadJSON("notified/"+server, &keys); return keys }, KeepNotices: func(server string, keys []string) { c.saveJSON("notified/"+server, keys) }, Log: func(level state.Level, text string) {
 		c.log = append(c.log, text)
@@ -173,7 +177,7 @@ func (c *client) reset() {
 	c.termID.Set("")
 	c.seek.Set(0)
 	c.resetHistory()
-	c.shiftEnd = ""
+	c.launchHours, c.launchClock = false, proto.DefaultLaunchUntil
 	c.asks.clear()
 	c.asking.Set(nil)
 	c.noticeCard.Set("")

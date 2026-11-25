@@ -39,6 +39,21 @@ func (c *client) problemBanner(tone workspaceui.Tone, text string, retry func())
 func title(s string) core.Node { return core.Text{Content: s, Style: ui.TypeTitle} }
 func body(s string) core.Node  { return core.Text{Content: s, Selectable: core.SelectableOn} }
 
+// caption is a small quiet line about what stands over it.
+func (c *client) caption(s string) core.Node {
+	return core.Text{Content: s, Style: ui.TypeCaption, StyleFunc: ui.Colored(ui.ColorsOf(c.cx).Muted), Selectable: core.SelectableOn}
+}
+
+// captionFunc is a caption that follows what say reads.
+func (c *client) captionFunc(say func() string) core.Node {
+	return core.Text{ContentFunc: say, Style: ui.TypeCaption, StyleFunc: ui.Colored(ui.ColorsOf(c.cx).Muted), Selectable: core.SelectableOn}
+}
+
+// note is a quiet sentence: what a section says with nothing in it.
+func (c *client) note(s string) core.Node {
+	return core.Text{Content: s, StyleFunc: ui.Colored(ui.ColorsOf(c.cx).Muted), Selectable: core.SelectableOn}
+}
+
 // A target can arrive before its card loads, or while it is already mounted.
 func (c *client) cardAnchor(id string, child core.Node) core.Node {
 	return core.Func(func(cx *core.Scope) core.Node {
@@ -58,7 +73,7 @@ func (c *client) cardAnchor(id string, child core.Node) core.Node {
 				cx.Post(reveal)
 			}
 		})
-		return core.View{Ref: ref, Children: []core.Node{child}, OnLayout: func(core.Bounds) {
+		return core.View{Ref: ref, TestID: id, Children: []core.Node{child}, OnLayout: func(core.Bounds) {
 			if c.noticeCard.GetUntracked() == id {
 				cx.Post(reveal)
 			}
@@ -170,18 +185,77 @@ func (c *client) lessonsInForce() core.Node {
 		}}
 	}}
 }
+
+// planHead says where a plan is: its number, its state, its revision, and
+// what its gate waits for. It stands on the plan's card and on its own
+// thread's.
+func (c *client) planHead(p proto.Plan) core.Node {
+	row := []core.Node{ui.Icon(lucide.ListTree, 16, ui.ColorsOf(c.cx).Muted), core.Text{Content: fmt.Sprintf("Plan P%d", p.ID), Style: ui.TypeLabel}, planBadge(p.State)}
+	if p.Rev != "" {
+		row = append(row, c.caption("rev "+state.ShortRev(p.Rev)))
+	}
+	out := []core.Node{workspaceui.Row(row...)}
+	if len(p.Waiting) > 0 {
+		out = append(out, c.caption("Waiting: "+strings.Join(p.Waiting, ", ")))
+	}
+	return workspaceui.Stack(out...)
+}
+
+// planBadge shows a plan's state in its tone.
+func planBadge(st proto.PlanState) core.Node {
+	switch st {
+	case proto.PlanReview:
+		return ui.Badge{Text: "waits for you", Variant: ui.BadgeAccent}
+	case proto.PlanDone:
+		return ui.Badge{Text: "done", Variant: ui.BadgeSuccess}
+	case proto.PlanDropped:
+		return ui.Badge{Text: "dropped"}
+	}
+	return ui.Badge{Text: string(st), Variant: ui.BadgeAccent}
+}
+
+// taskBadge shows a plan task's state in its tone.
+func taskBadge(st proto.TaskState) core.Node {
+	switch st {
+	case proto.TaskDone:
+		return ui.Badge{Text: "done", Variant: ui.BadgeSuccess}
+	case proto.TaskWaiting:
+		return ui.Badge{Text: "waiting"}
+	}
+	return ui.Badge{Text: string(st), Variant: ui.BadgeAccent}
+}
+
+// plan shows a plan's text and its tasks: who does each, where, after
+// which, its thread once it is delivered and its state, then the checks
+// its work must pass.
 func (c *client) plan(p proto.Plan) core.Node {
+	d := &c.store.Data
 	out := []core.Node{title(p.Title), ui.TextView{Markdown: p.Text, Selectable: true}}
 	if p.Graph != nil {
 		for _, t := range p.Graph.Tasks {
-			assignment := t.Agent
+			head := []core.Node{core.Text{Content: t.ID + " · " + t.Title, Style: ui.TypeTitle.Merge(core.Style{FlexGrow: 1, FlexShrink: 1})}}
+			if t.Thread != 0 {
+				head = append(head, c.caption(fmt.Sprintf("T%d", t.Thread)))
+			}
+			// A draft's tasks have no state yet: they wait for the
+			// approval.
+			if p.Graph.Approved {
+				head = append(head, taskBadge(t.State))
+			}
+			// The profile the approval binds, by its id too when its name
+			// differs: two profiles may share a name.
+			who := d.AgentName(t.Agent)
+			if who != t.Agent {
+				who += " (" + t.Agent + ")"
+			}
+			where := who + " in its home"
 			if t.Repository != "" {
-				assignment += " · " + t.Repository
+				where = who + " in " + t.Repository
 			}
 			if len(t.Deps) != 0 {
-				assignment += " · after " + state.JoinAnd(t.Deps)
+				where += " · after " + state.JoinAnd(t.Deps)
 			}
-			out = append(out, title(t.ID+" · "+t.Title), body(strings.Join(nonempty(assignment, string(t.State)), " · ")))
+			out = append(out, workspaceui.Row(head...), body(where))
 			for _, check := range t.Acceptance {
 				out = append(out, body("• "+check))
 			}

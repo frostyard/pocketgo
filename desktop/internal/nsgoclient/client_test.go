@@ -12,7 +12,13 @@ import (
 	"github.com/nsgo-dev/nsgo/nsgotest"
 )
 
-func TestMain(m *testing.M) { nsgotest.Main(m) }
+// The suite's clock is the fake pocketd's: no test reads the wall clock for
+// a launch's end or for a time the board says.
+func TestMain(m *testing.M) {
+	timeNow = func() time.Time { return pocketdtest.Now }
+	nsgotest.Main(m)
+}
+
 func TestConversation(t *testing.T) {
 	service := pocketdtest.New()
 	service.AddSession(proto.Session{ID: 3, Title: "Release checklist", Cwd: "/workspace", Profile: "maintainer", Model: proto.ModelRef{Provider: "fixture", ID: "reviewer"}, State: proto.SessionIdle},

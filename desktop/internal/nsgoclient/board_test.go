@@ -97,14 +97,15 @@ func TestWorkBoardPlanningSections(t *testing.T) {
 	app.Find("text:weekly-review")
 	app.Press("label:Plans")
 	app.Press("label:Schedules")
-	app.Type("label:Shift end", "17:30")
+	app.Clear("label:Until time")
+	app.Type("label:Until time", "17:30")
 	app.Press("text:Pick")
 	app.WaitFor("text:Unpick", 3*time.Second)
 	app.Press("label:Night shift")
-	app.WaitUntil(3*time.Second, func() bool { return !app.Exists("label:Shift end") })
+	app.WaitUntil(3*time.Second, func() bool { return !app.Exists("label:Until time") })
 	app.Press("label:Night shift")
-	if got := app.Find("label:Shift end").Text; got != "17:30" {
-		t.Fatalf("shift end after reopening = %q", got)
+	if got := app.Find("label:Until time").Text; got != "17:30" {
+		t.Fatalf("the launch's end after reopening = %q", got)
 	}
 	app.Find("text:Unpick")
 	if app.Exists("text:Release plan") || app.Exists("text:weekly-review") {
