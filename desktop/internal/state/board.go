@@ -640,6 +640,31 @@ func (d *Data) Board() []BoardGroup {
 	return groups
 }
 
+// PlansOffTheBoard are the plans that wait for the owner, for an approval
+// (ToApprove) or for an answer their gate names (OpenAsksOf), and that no
+// card of the board's open groups shows, oldest first. The board shows a
+// plan on its own thread's card: these are the plans whose thread the
+// client does not hold, once the threads' fetch answered (the list loaded
+// without it, or failed), and those whose thread it holds closed, in the
+// folded group. A plan done or dropped waits for nobody.
+func (d *Data) PlansOffTheBoard() []proto.Plan {
+	if st, _ := d.ThreadsStatus(); st == ListLoading {
+		return nil
+	}
+	var out []proto.Plan
+	for i := len(d.plans.items) - 1; i >= 0; i-- {
+		p := d.plans.items[i]
+		if p.State == proto.PlanDone || p.State == proto.PlanDropped || (!ToApprove(p) && len(OpenAsksOf(p)) == 0) {
+			continue
+		}
+		if t, ok := d.Thread(p.Thread); ok && t.State != proto.ThreadClosed {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // OnTheDesk counts the threads on the desk, as pocketd's cap counts
 // them: every one not closed, but a plan's own thread (PlanThread).
 func (d *Data) OnTheDesk() int {
@@ -734,6 +759,83 @@ func (d *Data) BoardNote() string {
 // more than four lines. A shorter one always shows whole.
 func ReportFolds(report string) bool {
 	return utf8.RuneCountInString(report) > 280 || strings.Count(report, "\n") >= 4
+}
+
+// A folded report's head: its first reportLines lines, and of them at most
+// reportChars characters, the measures ReportFolds folds by.
+const (
+	reportLines = 4
+	reportChars = 280
+)
+
+// ReportHead is what the board shows of a report that folds (ReportFolds)
+// until the owner unfolds it, for a client that draws the report as
+// Markdown and so cannot cap its drawn lines: the report's first four
+// lines, and of them at most 280 characters, cut after a word where there
+// is one. A cut inside a fenced code block ends with the fence closed, so
+// the head is a document of its own and what a client draws after it is no
+// code. more is false, and the head the whole report, for a report that
+// does not fold and for one whose rest is blank.
+func ReportHead(report string) (head string, more bool) {
+	if !ReportFolds(report) {
+		return report, false
+	}
+	whole := strings.Trim(report, "\r\n")
+	head = whole
+	for i, n := 0, 0; i < len(head); i++ {
+		if head[i] == '\n' {
+			if n++; n == reportLines {
+				head = head[:i]
+				break
+			}
+		}
+	}
+	if utf8.RuneCountInString(head) > reportChars {
+		head = string([]rune(head)[:reportChars])
+		if i := strings.LastIndexAny(head, " \t\n"); i > 0 {
+			head = head[:i]
+		}
+	}
+	head = strings.TrimRight(head, " \t\r\n")
+	if strings.TrimSpace(whole[len(head):]) == "" {
+		return report, false
+	}
+	if fence := openFence(head); fence != "" {
+		head += "\n" + fence
+	}
+	return head, true
+}
+
+// openFence is the line that closes the fenced code block text ends in, as
+// CommonMark reads fences: "" when text ends outside one. A block opens at
+// a line of 3 or more backticks or tildes, indented by at most 3 spaces,
+// and closes at a line of at least as many of the same, with nothing after
+// them. The closing line takes the opening one's indent, which keeps it in
+// a list item the block is in.
+func openFence(text string) string {
+	open, indent := "", ""
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimRight(line, " \t\r")
+		rest := strings.TrimLeft(line, " ")
+		if len(line)-len(rest) > 3 || rest == "" || (rest[0] != '`' && rest[0] != '~') {
+			continue
+		}
+		run := len(rest) - len(strings.TrimLeft(rest, rest[:1]))
+		switch {
+		case run < 3:
+		case open == "":
+			// A backtick fence's info string holds no backtick.
+			if rest[0] != '`' || !strings.Contains(rest[run:], "`") {
+				open, indent = rest[:run], line[:len(line)-len(rest)]
+			}
+		case rest[0] == open[0] && run >= len(open) && run == len(rest):
+			open = ""
+		}
+	}
+	if open == "" {
+		return ""
+	}
+	return indent + open
 }
 
 // JoinAnd joins parts as a list: "a", "a and b", "a, b and c".

@@ -77,7 +77,8 @@ func TestBoardRevealsAsk(t *testing.T) {
 		t.Fatalf("target already visible at %v", y)
 	}
 	app.Press("text:Work board")
-	app.Press("text:View ask A10")
+	// Its thread has this one ask: Open the Inbox goes to its card.
+	app.Press(card(11) + " >> text:Open the Inbox")
 	app.WaitFor("text:A10 asks you", 3*time.Second)
 	app.WaitUntil(3*time.Second, func() bool {
 		y := app.Find("text:A10 asks you").Bounds().Origin.Y

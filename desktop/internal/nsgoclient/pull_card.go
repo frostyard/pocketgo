@@ -83,7 +83,7 @@ func (c *client) pull(p proto.PullRequest) core.Node {
 	identity := core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: 8, FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(145)}, Children: []core.Node{
 		ui.Icon(lucide.GitPullRequest, 18, colors.Accent), core.Text{Content: state.PullRef(p), Selectable: core.SelectableOn, Style: ui.TypeLabel.Merge(core.Style{FlexShrink: 1}), StyleFunc: ui.Colored(colors.Muted)},
 	}}
-	// The pills stand in the row itself: in a narrow card, a lane's, they
+	// The pills stand in the row itself: in a narrow card, a phone's, they
 	// wrap under the pull request's name.
 	header := workspaceui.Row(append([]core.Node{identity}, pullBadges(p)...)...)
 	out := []core.Node{header}
@@ -99,7 +99,7 @@ func (c *client) pull(p proto.PullRequest) core.Node {
 		if p.Head != "" {
 			label = p.Head + " → " + p.Base
 		}
-		// The branches give way in a narrow card, a lane's: they wrap
+		// The branches give way in a narrow card, a phone's: they wrap
 		// inside it.
 		meta = append(meta, core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceS, FlexShrink: 1, MinWidth: core.Pt(0)}, Children: []core.Node{
 			ui.Icon(lucide.GitBranch, 14, colors.Muted),

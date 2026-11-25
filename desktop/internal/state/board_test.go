@@ -299,6 +299,100 @@ func TestAReportFoldsOnlyWhenItIsLong(t *testing.T) {
 	}
 }
 
+// A folded report's head is its first four lines, and of them at most 280
+// characters, cut after a word; a report that does not fold, or whose rest
+// is blank, shows whole.
+func TestAFoldedReportsHeadIsItsFirstFourLines(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("word ", 80))
+	for _, c := range []struct {
+		name, report, head string
+		more               bool
+	}{
+		{"a short report", "Done at e0bfba6.", "Done at e0bfba6.", false},
+		{"five lines", "one\ntwo\nthree\nfour\nfive", "one\ntwo\nthree\nfour", true},
+		{"a blank line counts", "one\n\nthree\nfour\nfive", "one\n\nthree\nfour", true},
+		{"its rest is blank", "one\ntwo\nthree\nfour\n\n", "one\ntwo\nthree\nfour\n\n", false},
+		{"blank lines before it", "\n\none\ntwo\nthree\nfour\nfive", "one\ntwo\nthree\nfour", true},
+		{"one long line", long, strings.TrimSpace(strings.Repeat("word ", 56)), true},
+		{"a long line with no space", strings.Repeat("é", 300), strings.Repeat("é", 280), true},
+		{"a long first line of five", long + "\ntwo\nthree\nfour\nfive", strings.TrimSpace(strings.Repeat("word ", 56)), true},
+	} {
+		head, more := ReportHead(c.report)
+		if head != c.head || more != c.more {
+			t.Errorf("%s: head %q, more %v; want %q, %v", c.name, head, more, c.head, c.more)
+		}
+		if more && !strings.HasPrefix(strings.Trim(c.report, "\n"), head) {
+			t.Errorf("%s: the head %q is not the report's start", c.name, head)
+		}
+	}
+}
+
+// A head cut inside a fenced code block closes the fence, with the fence
+// that opened it, so nothing drawn after the head is code; one cut after
+// the block's end, or in a block of text, adds nothing.
+func TestAFoldedReportsHeadClosesTheFenceItCuts(t *testing.T) {
+	for _, c := range []struct{ name, report, head string }{
+		{"a backtick fence", "Ran it:\n```sh\nmake verify\nmake race\nmake ci\n```\nAll passed.", "Ran it:\n```sh\nmake verify\nmake race\n```"},
+		{"a longer tilde fence", "~~~~\none\n~~~\nthree\nfour\n~~~~", "~~~~\none\n~~~\nthree\n~~~~"},
+		{"an indented fence", "- Ran:\n   ```\n   one\n   two\n   three\n   ```", "- Ran:\n   ```\n   one\n   two\n   ```"},
+		{"a fence closed before the cut", "```\none\n```\nfour\nfive", "```\none\n```\nfour"},
+		{"a fence opened again", "```\n```\n```go\nfour\nfive", "```\n```\n```go\nfour\n```"},
+		{"no fence", "one\ntwo\nthree\nfour\nfive", "one\ntwo\nthree\nfour"},
+		{"backticks in a line of code", "one\n```a``` b\nthree\nfour\nfive", "one\n```a``` b\nthree\nfour"},
+		{"a code block by its indent", "one\n\n    ```\nfour\nfive", "one\n\n    ```\nfour"},
+	} {
+		head, more := ReportHead(c.report)
+		if head != c.head || !more {
+			t.Errorf("%s: head %q, more %v; want %q", c.name, head, more, c.head)
+		}
+	}
+}
+
+// A plan that waits for the owner and has no open thread's card to show
+// on is off the board: its thread is not among the threads, once their
+// fetch answered, or is closed. One whose thread is open, one that waits
+// for nobody and one done or dropped are not.
+func TestAPlanThatWaitsWithNoOpenThreadIsOffTheBoard(t *testing.T) {
+	var d Data
+	rev := strings.Repeat("a", 64)
+	asks := func(id int64) proto.Plan {
+		p := reviewPlan(id, rev, 1)
+		p.State, p.Graph.Approved, p.Waiting = proto.PlanBuilding, true, []string{"A3 open", "K2 runs"}
+		return p
+	}
+	building := reviewPlan(5, rev, 1)
+	building.State, building.Graph.Approved = proto.PlanBuilding, true
+	dropped := asks(6)
+	dropped.State = proto.PlanDropped
+	done := asks(7)
+	done.State = proto.PlanDone
+	// P1 and P2 have an open thread, P3's is closed, and the others have
+	// none.
+	d.SetPlans(d.BeginPlans(), []proto.Plan{reviewPlan(1, rev, 1), asks(2), reviewPlan(3, rev, 1), reviewPlan(4, rev, 1), building, dropped, done, asks(8)})
+	if got := d.PlansOffTheBoard(); got != nil {
+		t.Fatalf("before the threads answered: %+v", got)
+	}
+	ids := func() []int64 {
+		var out []int64
+		for _, p := range d.PlansOffTheBoard() {
+			out = append(out, p.ID)
+		}
+		return out
+	}
+	f := d.BeginThreads()
+	d.SetThreads(f, []proto.Thread{{ID: 11, State: proto.ThreadOpen, Plan: 1}, {ID: 12, State: proto.ThreadBlocked, Plan: 2}, {ID: 13, State: proto.ThreadClosed, Plan: 3}})
+	if got := ids(); !slices.Equal(got, []int64{3, 4, 8}) {
+		t.Errorf("with the threads loaded: %v, want P3, P4 and P8, oldest first", got)
+	}
+	// A threads fetch that failed with none held: every plan that waits.
+	var failed Data
+	failed.SetPlans(failed.BeginPlans(), []proto.Plan{reviewPlan(1, rev, 1), building})
+	failed.SetThreadsError(failed.BeginThreads(), "timeout")
+	if got := failed.PlansOffTheBoard(); len(got) != 1 || got[0].ID != 1 {
+		t.Errorf("with the threads failed: %+v", got)
+	}
+}
+
 // A profile fetch that failed is fetched again when the stream comes back,
 // as the lists are: the board and the Inbox name agents by them.
 func TestAReconnectRetriesTheProfiles(t *testing.T) {

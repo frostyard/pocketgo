@@ -15,38 +15,19 @@ import (
 	"github.com/nsgo-dev/nsgo/ui"
 )
 
+// board is the work board: the threads grouped by who moves them next
+// (state.Data.Board), as the MyGo client groups them, each group a section
+// with its count and the closed one folded, then the schedules and the
+// night shift.
 func (c *client) board(cx *core.Scope) core.Node {
 	d := &c.store.Data
-	byState := core.NewMemoFunc(cx, func() map[proto.ThreadState][]proto.Thread {
-		c.revision.Get()
-		lanes := make(map[proto.ThreadState][]proto.Thread)
-		for _, t := range d.Threads() {
-			key := t.State
-			switch key {
-			case proto.ThreadStarting, proto.ThreadOpen, proto.ThreadBlocked, proto.ThreadDone, proto.ThreadClosed:
-			default:
-				key = ""
-			}
-			lanes[key] = append(lanes[key], t)
-		}
-		return lanes
-	}, nil)
+	groups := core.NewMemoFunc(cx, func() []state.BoardGroup { c.revision.Get(); return d.Board() }, nil)
 	section := func(name string, expanded bool, count func() int, visible func() bool, content func(*core.Scope) core.Node) core.Node {
 		if visible == nil {
 			visible = func() bool { return count() > 0 }
 		}
 		return core.Show{When: visible, Then: func(*core.Scope) core.Node {
-			open := expanded
-			if name == "Closed" {
-				source := c.nav.visits[c.nav.index].dest.card
-				for _, thread := range byState.GetUntracked()[proto.ThreadClosed] {
-					if fmt.Sprintf("thread-%d", thread.ID) == source {
-						open = true
-						break
-					}
-				}
-			}
-			return workspaceui.Section{Title: name, Count: count, InitiallyOpen: open, Content: content}
+			return workspaceui.Section{Title: name, Count: count, InitiallyOpen: expanded, Content: content}
 		}}
 	}
 	nodes := []core.Node{core.Text{ContentFunc: func() string { c.revision.Get(); return d.BoardNote() }, Style: ui.TypeLabel, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}}
@@ -60,8 +41,8 @@ func (c *client) board(cx *core.Scope) core.Node {
 			what, missing string
 		}{
 			{d.ThreadsStatus, "the threads", "Threads may be missing or out of date."},
-			{d.AsksStatus, "the asks", "A thread may wait for your answer and not say so."},
-			{d.PullsStatus, "the pull requests", "A thread may wait for your review and not say so."},
+			{d.AsksStatus, "the asks", "A thread may wait for your answer and show in another group."},
+			{d.PullsStatus, "the pull requests", "A thread may wait for your review and show in another group."},
 		} {
 			if status, problem := list.status(); status == state.ListFailed {
 				out = append(out, c.listProblem(list.what, problem, list.missing, c.store.Refresh))
@@ -73,25 +54,35 @@ func (c *client) board(cx *core.Scope) core.Node {
 				out = append(out, body("Loading the threads…"))
 			case state.ListLoaded:
 				out = append(out, core.View{Style: core.Style{Height: core.Pt(180)}, Children: []core.Node{workspaceui.EmptyState{Icon: lucide.Columns3, Title: "No threads yet",
-					Hint: "When a supervisor delegates work to a specialist, its thread shows here."}}})
+					Hint: "When a supervisor delegates work to a specialist, its thread shows here, grouped by who moves it next."}}})
 			}
 		}
 		return core.Group(out)
 	}))
-	openBoard := core.Show{When: func() bool { return len(byState.Get()[proto.ThreadClosed]) < len(d.Threads()) },
-		Then: func(cx *core.Scope) core.Node { return c.threadLanes(cx, byState.Get) }}
-	closed := func() []proto.Thread { return byState.Get()[proto.ThreadClosed] }
-	nodes = append(nodes, openBoard, section("Closed", false, func() int { return len(closed()) }, nil, func(cx *core.Scope) core.Node { return c.threadCards(cx, closed) }))
-	nodes = append(nodes, section("Plans", true, func() int { c.revision.Get(); return len(d.Plans()) }, nil, func(*core.Scope) core.Node {
-		return core.Dynamic(func(*core.Scope) core.Node {
-			c.revision.Get()
-			var cards []core.Node
-			for _, p := range d.Plans() {
-				cards = append(cards, core.View{TestID: fmt.Sprintf("plan-%d", p.ID), Children: []core.Node{workspaceui.Card{Children: []core.Node{c.planHead(p), c.plan(p)}}}})
+	// A plan that waits for the owner and has no open thread to show on
+	// (state.PlansOffTheBoard) keeps a card of its own, before the groups.
+	nodes = append(nodes, c.plansOffTheBoard(cx))
+	// A group shows while it holds a thread, as the MyGo client's. The
+	// closed one starts folded, unless the owner comes back to a card of
+	// it.
+	for i, m := range state.Movers {
+		items := func() []proto.Thread { return groups.Get()[i].Threads }
+		name, id := moverTitle(m)
+		nodes = append(nodes, core.Show{When: func() bool { return len(items()) > 0 }, Then: func(*core.Scope) core.Node {
+			open := m != state.MoverNobody
+			if !open {
+				source := c.nav.visits[c.nav.index].dest.card
+				for _, thread := range groups.GetUntracked()[i].Threads {
+					if fmt.Sprintf("thread-%d", thread.ID) == source {
+						open = true
+						break
+					}
+				}
 			}
-			return workspaceui.Stack(cards...)
-		})
-	}))
+			return core.View{TestID: "board-group-" + id, Children: []core.Node{workspaceui.Section{Title: name, Count: func() int { return len(items()) }, InitiallyOpen: open,
+				Content: func(cx *core.Scope) core.Node { return c.threadCards(cx, items) }}}}
+		}})
+	}
 	// The schedules and the proposals always show: with none, each says
 	// so, and what adds one.
 	always := func() bool { return true }
@@ -133,40 +124,28 @@ func (c *client) board(cx *core.Scope) core.Node {
 		}
 		return core.Group(out)
 	})
-	return core.Scroll{Style: ui.FillRest, Children: []core.Node{core.View{TestID: "board",
-		Style: core.Style{Width: core.Pct(100), MaxWidth: core.Pt(1560), AlignSelf: core.AlignCenter, Padding: core.All(workspaceui.SpaceL), Gap: 14}, Children: []core.Node{ordered},
-	}}}
+	// A card is as wide as the page: the board keeps the kit's measure for
+	// a page, as the Inbox does.
+	return workspaceui.Page(core.View{TestID: "board", Style: core.Style{Gap: workspaceui.SpaceM}, Children: []core.Node{ordered}})
 }
 
-func (c *client) threadLanes(cx *core.Scope, byState func() map[proto.ThreadState][]proto.Thread) core.Node {
-	colors := ui.ColorsOf(cx)
-	var columns []core.Node
-	for _, lane := range []struct {
-		key   proto.ThreadState
-		title string
-		color func() core.Color
-	}{
-		{proto.ThreadStarting, "Starting", colors.Muted},
-		{proto.ThreadOpen, "In progress", colors.Accent},
-		{proto.ThreadBlocked, "Blocked", colors.Warn},
-		{proto.ThreadDone, "Done", colors.Up},
-		{"", "Other", colors.Muted},
-	} {
-		items := func() []proto.Thread { return byState()[lane.key] }
-		column := core.View{TestID: "board-lane-" + string(lane.key), Style: core.Style{MinWidth: core.Pt(0), Padding: core.All(workspaceui.SpaceS), CornerRadius: ui.RadiusInset, BorderWidth: 1, Borders: core.Edges{Top: 3}},
-			StyleFunc: func() core.Style {
-				return core.Style{Background: colors.Inset(), BorderColor: colors.Border(), BorderColors: core.EdgeColors{Top: lane.color()}}
-			},
-			Children: []core.Node{workspaceui.Section{Title: lane.title, Count: func() int { return len(items()) }, InitiallyOpen: true, Content: func(cx *core.Scope) core.Node { return c.threadCards(cx, items) }}},
-		}
-		if lane.key == "" {
-			columns = append(columns, core.Show{When: func() bool { return len(items()) > 0 }, Then: func(*core.Scope) core.Node { return column }})
-		} else {
-			columns = append(columns, column)
-		}
+// moverTitle names a group of the board, as the MyGo client names it, and
+// gives the id its view takes.
+func moverTitle(m state.Mover) (title, id string) {
+	switch m {
+	case state.MoverOwner:
+		return "Waits for you", "owner"
+	case state.MoverSpecialist:
+		return "With the specialists", "specialists"
+	case state.MoverSupervisor:
+		return "With the supervisors", "supervisors"
 	}
-	return core.View{Style: core.Style{Display: core.DisplayGrid, GridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", Gap: 10}, Children: columns}
+	return "Closed", "closed"
 }
+
+// cardFolds is what the owner opened on a thread's card: the whole of its
+// report, its details and its plan. They outlast a change of the thread.
+type cardFolds struct{ report, details, plan *core.Signal[bool] }
 
 // Bound the native view count even when the closed archive has years of work.
 func (c *client) threadCards(cx *core.Scope, items func() []proto.Thread) core.Node {
@@ -192,16 +171,16 @@ func (c *client) threadCards(cx *core.Scope, items func() []proto.Thread) core.N
 	},
 		func(t proto.Thread) int64 { return t.ID },
 		func(cx *core.Scope, item func() proto.Thread, _ func() int) core.Node {
-			report := core.NewSignal(cx, false)
 			src := c.nav.visits[c.nav.index].dest
-			details := core.NewSignal(cx, src.details && src.card == fmt.Sprintf("thread-%d", core.Untracked(cx, item).ID))
+			folds := cardFolds{report: core.NewSignal(cx, false), plan: core.NewSignal(cx, false),
+				details: core.NewSignal(cx, src.details && src.card == fmt.Sprintf("thread-%d", core.Untracked(cx, item).ID))}
 			// Other sessions can be busy while the owner reads a report.
 			thread := core.NewMemoFunc(cx, item, func(a, b proto.Thread) bool { return reflect.DeepEqual(a, b) })
 			return core.Dynamic(func(cx *core.Scope) core.Node {
-				return c.cardAnchor(fmt.Sprintf("thread-%d", thread.Get().ID), c.threadCard(cx, thread.Get(), report, details))
+				return c.cardAnchor(fmt.Sprintf("thread-%d", thread.Get().ID), c.threadCard(cx, thread.Get(), folds))
 			})
 		})
-	// The pages are NSGo's pagination, beside which of the lane's threads
+	// The pages are NSGo's pagination, beside which of the group's threads
 	// the page shows.
 	pager := core.Show{When: func() bool { return len(items()) > pageSize }, Then: func(*core.Scope) core.Node {
 		return workspaceui.Row(
@@ -217,18 +196,57 @@ func (c *client) threadCards(cx *core.Scope, items func() []proto.Thread) core.N
 	return workspaceui.Stack(rows, pager)
 }
 
-// threadCard shows a thread: who works on it and where, why it is where it
-// is, and, in its details, the specialist's last report, its pull requests
-// and the ways to its sessions; the owner may close it.
-func (c *client) threadCard(cx *core.Scope, t proto.Thread, report, details *core.Signal[bool]) core.Node {
+// boardCard is the kit's card (workspaceui.Card), which takes no border
+// color, with the accent on its border while marked says so: a thread
+// that waits for the owner.
+func boardCard(cx *core.Scope, marked func() bool, children []core.Node) core.Node {
+	colors := ui.ColorsOf(cx)
+	return core.View{Style: core.Style{Padding: core.All(workspaceui.SpaceL), Gap: workspaceui.SpaceS, CornerRadius: ui.RadiusCard, BorderWidth: 1},
+		StyleFunc: func() core.Style {
+			border := ui.Mix(colors.Border(), colors.Text(), 0.12)
+			if marked() {
+				border = colors.Accent()
+			}
+			return core.Style{Background: colors.Raised(), BorderColor: border}
+		}, Children: children}
+}
+
+// threadBadge shows a thread's state in its tone, in the MyGo client's
+// words.
+func threadBadge(st proto.ThreadState) core.Node {
+	switch st {
+	case proto.ThreadBlocked:
+		return ui.Badge{Text: "blocked", Variant: ui.BadgeWarn}
+	case proto.ThreadDone:
+		return ui.Badge{Text: "done", Variant: ui.BadgeSuccess}
+	case proto.ThreadClosed:
+		return ui.Badge{Text: "closed"}
+	}
+	return ui.Badge{Text: string(st), Variant: ui.BadgeAccent}
+}
+
+// threadCard shows a thread, as the MyGo client's card does: who works on
+// it and where, why it is in its group, its plan, the specialist's last
+// report, its pull requests and the ways to its sessions; the owner may
+// close it. A long brief in full and its shift's rounds stay in its
+// details.
+func (c *client) threadCard(cx *core.Scope, t proto.Thread, folds cardFolds) core.Node {
 	d := &c.store.Data
 	key, name := fmt.Sprintf("thread-%d", t.ID), fmt.Sprintf("T%d", t.ID)
+	mover := core.NewMemo(cx, func() state.Mover { c.revision.Get(); return d.NextMover(t) })
+	// Its title, with its state at the row's end.
+	heading := []core.Node{core.Text{Content: t.Title, Style: ui.TypeTitle.Merge(core.Style{FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(0)})}, threadBadge(t.State)}
+	// A message to its closed specialist took it back to open (ADR-0061).
+	if state.Reopened(t) {
+		heading = append(heading, ui.Badge{Text: "reopened", Variant: ui.BadgeWarn})
+	}
 	// The agent by its name, where it works, and what the thread's
 	// sessions used: the profiles and the sessions load beside the threads.
-	head := []core.Node{title(t.Title), c.captionFunc(func() string {
-		c.revision.Get()
-		return strings.Join(nonempty(name, d.AgentName(t.Agent), threadWhere(t), state.UsageShort(d.ThreadUsage(t))), " · ")
-	})}
+	head := []core.Node{core.View{Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceS}, Children: heading},
+		c.captionFunc(func() string {
+			c.revision.Get()
+			return strings.Join(nonempty(name, d.AgentName(t.Agent), threadWhere(t), state.UsageShort(d.ThreadUsage(t))), " · ")
+		})}
 	if t.Session != 0 {
 		changes := core.NewMemo(cx, func() string {
 			c.revision.Get()
@@ -258,54 +276,21 @@ func (c *client) threadCard(cx *core.Scope, t proto.Thread, report, details *cor
 			return text
 		}))
 	}
-	mover := core.NewMemo(cx, func() state.Mover { c.revision.Get(); return d.NextMover(t) })
-	if t.State != proto.ThreadClosed {
-		badges := []core.Node{ui.Badge{TextFunc: func() string {
-			switch mover.Get() {
-			case state.MoverOwner:
-				return "Your move"
-			case state.MoverSupervisor:
-				return "Supervisor review"
-			default:
-				return "Specialist working"
-			}
-		}, VariantFunc: func() ui.BadgeVariant {
-			if mover.Get() == state.MoverOwner {
-				return ui.BadgeWarn
-			}
-			return ui.BadgeNeutral
-		}}}
-		// A message to its closed specialist took it back to open
-		// (ADR-0061).
-		if state.Reopened(t) {
-			badges = append(badges, ui.Badge{Text: "reopened", Variant: ui.BadgeWarn})
-		}
-		head = append(head, workspaceui.Row(badges...))
-	}
 	head = append(head, core.Text{ContentFunc: func() string { c.revision.Get(); return c.threadWhy(t, mover.Get()) },
 		Selectable: core.SelectableOn, StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)})
-	if state.PlanThread(t) {
-		plan := core.NewMemoFunc(cx, func() *proto.Plan {
-			c.revision.Get()
-			if p, ok := d.Plan(t.Plan); ok {
-				return &p
-			}
-			return nil
-		}, func(a, b *proto.Plan) bool { return reflect.DeepEqual(a, b) })
-		head = append(head, core.Dynamic(func(*core.Scope) core.Node {
-			if p := plan.Get(); p != nil {
-				return c.planHead(*p)
-			}
-			return c.caption(fmt.Sprintf("Plan P%d", t.Plan))
-		}))
+	// The thread it carries on, and the one that carries it on.
+	if links := state.ThreadLinks(t); links != "" {
+		head = append(head, c.caption(links))
 	}
-	if t.State == proto.ThreadClosed {
-		head = append(head, c.threadDetails(cx, t, report)...)
-		return workspaceui.Card{Children: append(head, c.threadChanging(t))}
+	if shift := t.Shift; shift != nil {
+		head = append(head, workspaceui.Row(shiftBadge(*shift), core.Text{Content: state.ShiftLine(*shift), Selectable: core.SelectableOn,
+			Style: ui.TypeCaption.Merge(core.Style{FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(0)}), StyleFunc: ui.Colored(ui.ColorsOf(cx).Muted)}))
 	}
 	asks := core.NewMemoFunc(cx, func() []proto.Ask { c.revision.Get(); return d.AsksOf(t.ID) }, func(a, b []proto.Ask) bool {
 		return slices.EqualFunc(a, b, func(x, y proto.Ask) bool { return x.ID == y.ID })
 	})
+	// Open the Inbox goes to the thread's first ask. With more than one,
+	// each has its own way there.
 	head = append(head, core.Dynamic(func(*core.Scope) core.Node {
 		var links []core.Node
 		for _, a := range asks.Get() {
@@ -314,17 +299,57 @@ func (c *client) threadCard(cx *core.Scope, t proto.Thread, report, details *cor
 				c.goTo(destination{page: "Inbox", card: state.AskCard(a.ID)})
 			}})
 		}
-		if len(links) == 0 {
+		if len(links) < 2 {
 			return nil
 		}
 		return workspaceui.Row(links...)
 	}))
-	if t.Task != "" {
-		head = append(head, core.Show{When: func() bool { return !details.Get() }, Then: func(*core.Scope) core.Node { return core.Text{Content: t.Task, MaxLines: 3} }})
+	// Its brief. A short one shows whole. One that folds as a report does
+	// (state.ReportFolds) shows 3 lines, and all of it in the details,
+	// which also hold what its shift stops at and what each round found.
+	long := state.ReportFolds(t.Task)
+	switch {
+	case long:
+		head = append(head, core.Show{When: func() bool { return !folds.details.Get() }, Then: func(*core.Scope) core.Node { return core.Text{Content: t.Task, MaxLines: 3} }})
+	case t.Task != "":
+		head = append(head, body(t.Task))
 	}
-	head = append(head, ui.Collapsible{Text: fmt.Sprintf("Details for T%d", t.ID), Trigger: []core.Node{core.Text{Content: "Details", Style: ui.TypeLabel}}, Variant: ui.CollapsibleArrowRight,
-		Open: details.Get, OnOpenChange: details.Set, Content: core.Show{When: details.Get, Then: func(cx *core.Scope) core.Node { return workspaceui.Stack(c.threadDetails(cx, t, report)...) }}})
-	return workspaceui.Card{Children: append(head, c.threadChanging(t))}
+	if details := threadDetails(t, long); len(details) > 0 {
+		head = append(head, ui.Collapsible{Text: fmt.Sprintf("Details for T%d", t.ID), Trigger: []core.Node{core.Text{Content: "Details", Style: ui.TypeLabel}}, Variant: ui.CollapsibleArrowRight,
+			Open: folds.details.Get, OnOpenChange: folds.details.Set, Content: core.Show{When: folds.details.Get, Then: func(*core.Scope) core.Node { return workspaceui.Stack(details...) }}})
+	}
+	if state.PlanThread(t) {
+		head = append(head, c.planOnThread(cx, t, folds.plan))
+	}
+	if t.Report != "" {
+		head = append(head, c.threadReport(cx, t, folds.report))
+	}
+	head = append(head, core.Dynamic(func(*core.Scope) core.Node {
+		c.revision.Get()
+		var pulls []core.Node
+		for _, p := range d.PullsOf(t.ID) {
+			pulls = append(pulls, c.pull(p))
+		}
+		return core.Group(pulls)
+	}))
+	head = append(head, c.threadActions(cx, t, mover.Get, folds), c.threadChanging(t))
+	return boardCard(cx, func() bool { return mover.Get() == state.MoverOwner }, head)
+}
+
+// shiftBadge marks a thread's shift line (ADR-0024) in the tone of the
+// shift's state: running, paused for the owner, ended, and ended done.
+func shiftBadge(sh proto.Shift) core.Node {
+	variant := ui.BadgeAccent
+	switch sh.State {
+	case proto.ShiftPaused:
+		variant = ui.BadgeWarn
+	case proto.ShiftEnded:
+		variant = ui.BadgeNeutral
+		if sh.Reason == "done" {
+			variant = ui.BadgeSuccess
+		}
+	}
+	return ui.Badge{Text: "shift", Variant: variant}
 }
 
 // threadWhere says where a thread's agent works: its repository and
@@ -351,36 +376,101 @@ func shortPath(p string) string {
 	return parent + "/" + base
 }
 
-func (c *client) threadDetails(cx *core.Scope, t proto.Thread, report *core.Signal[bool]) []core.Node {
-	d := &c.store.Data
-	name := fmt.Sprintf("T%d", t.ID)
+// threadDetails is what a thread's card keeps folded: its brief in full,
+// when the card cuts it (brief), and of its shift what it stops at and
+// what each round found.
+func threadDetails(t proto.Thread, brief bool) []core.Node {
 	var out []core.Node
-	if links := state.ThreadLinks(t); links != "" {
-		out = append(out, body(links))
-	}
-	if t.Task != "" {
+	if brief {
 		out = append(out, body(t.Task))
 	}
-	if t.Report != "" {
-		out = append(out, ui.Collapsible{Text: "Report", Variant: ui.CollapsibleArrowLeft, Open: report.Get, OnOpenChange: report.Set,
-			Content: core.Show{When: report.Get, Then: func(*core.Scope) core.Node { return c.markdown(func() string { return t.Report }, nil) }}})
-	}
 	if shift := t.Shift; shift != nil {
-		for _, line := range nonempty(state.ShiftLine(*shift), shift.Stop) {
-			out = append(out, body(line))
+		if shift.Stop != "" {
+			out = append(out, body(shift.Stop))
 		}
 		for _, round := range shift.Rounds {
 			out = append(out, body(fmt.Sprintf("Round %d · %s · %s", round.N, round.Verdict, round.Reason)))
 		}
 	}
-	out = append(out, core.Dynamic(func(*core.Scope) core.Node {
-		c.revision.Get()
-		var pulls []core.Node
-		for _, p := range d.PullsOf(t.ID) {
-			pulls = append(pulls, c.pull(p))
+	return out
+}
+
+// threadReport shows the specialist's last report on its thread's card, as
+// rendered Markdown. One that folds shows its head (state.ReportHead)
+// until the owner unfolds it, as the MyGo client's does; a short one shows
+// whole, with no button.
+func (c *client) threadReport(cx *core.Scope, t proto.Thread, open *core.Signal[bool]) core.Node {
+	head, more := state.ReportHead(t.Report)
+	out := []core.Node{core.Dynamic(func(*core.Scope) core.Node {
+		if more && !open.Get() {
+			return c.markdownHead(func() string { return head })
 		}
-		return core.Group(pulls)
-	}))
+		return c.markdown(func() string { return t.Report }, nil)
+	})}
+	if more {
+		label := func() string {
+			if open.Get() {
+				return "Show Less"
+			}
+			return "Show the Whole Report"
+		}
+		out = append(out, workspaceui.Row(ui.Button{TextFunc: label, LabelFunc: label, Variant: ui.ButtonSecondary, Size: ui.SizeSmall, OnPress: func() { open.Set(!open.Get()) }}))
+	}
+	return core.View{TestID: fmt.Sprintf("report-%d", t.ID), Style: core.Style{Padding: core.All(workspaceui.SpaceS), Gap: workspaceui.SpaceS, CornerRadius: ui.RadiusControl},
+		StyleFunc: ui.Filled(ui.ColorsOf(cx).Inset), Children: out}
+}
+
+// threadActions are a thread's buttons, as the MyGo client's card has
+// them: the Inbox, filled, while the owner moves the thread and the Inbox
+// holds what waits (an ask of it, or its plan's approval), then its
+// specialist's and its supervisor's sessions, and at the row's end its
+// shift's changes and its close.
+func (c *client) threadActions(cx *core.Scope, t proto.Thread, mover func() state.Mover, folds cardFolds) core.Node {
+	d := &c.store.Data
+	key, name := fmt.Sprintf("thread-%d", t.ID), fmt.Sprintf("T%d", t.ID)
+	// The card of the Inbox the owner goes to: the thread's first ask, or
+	// its plan that waits for an approval.
+	waits := core.NewMemo(cx, func() string {
+		c.revision.Get()
+		if mover() != state.MoverOwner {
+			return ""
+		}
+		if asks := d.AsksOf(t.ID); len(asks) > 0 {
+			return state.AskCard(asks[0].ID)
+		}
+		if p, ok := d.Plan(t.Plan); ok && state.PlanThread(t) && state.ToApprove(p) {
+			return state.PlanCard(p.ID)
+		}
+		return ""
+	})
+	// The way back from a session opens the details the owner had open.
+	open := func(session int64) {
+		c.rememberCard(key)
+		c.nav.visits[c.nav.index].dest.details = folds.details.GetUntracked()
+		c.openSession(session)
+	}
+	actions := []core.Node{core.Show{When: func() bool { return waits.Get() != "" }, Then: func(*core.Scope) core.Node {
+		return ui.Button{Text: "Open the Inbox", OnPress: func() {
+			c.rememberCard(key)
+			c.goTo(destination{page: "Inbox", card: waits.Get()})
+		}}
+	}}}
+	if t.Session != 0 {
+		label := func() string { c.revision.Get(); return "Open " + d.AgentName(t.Agent) + "'s Session" }
+		b := c.button("", func() { open(t.Session) })
+		b.TextFunc, b.LabelFunc = label, label
+		actions = append(actions, b)
+	}
+	if t.Supervisor != 0 {
+		actions = append(actions, ui.Tooltip{TextFunc: func() string {
+			c.revision.Get()
+			if s, ok := d.Session(t.Supervisor); ok {
+				return s.Title
+			}
+			return fmt.Sprintf("Session %d", t.Supervisor)
+		}, Trigger: c.button("Open the Supervisor", func() { open(t.Supervisor) })})
+	}
+	actions = append(actions, core.View{Style: core.Style{FlexGrow: 1}})
 	shifting := func() bool { c.revision.Get(); return c.store.ShiftChanging(t.ID).Busy }
 	closing := func() bool { c.revision.Get(); return c.store.Closing(t.ID).Busy }
 	action := func(label string, busy func() bool, fn func()) core.Node {
@@ -388,26 +478,11 @@ func (c *client) threadDetails(cx *core.Scope, t proto.Thread, report *core.Sign
 		b.Disabled = busy
 		return b
 	}
-	actions := []core.Node{}
-	if t.Session != 0 {
-		actions = append(actions, c.button("Specialist", func() {
-			c.rememberCard(fmt.Sprintf("thread-%d", t.ID))
-			c.nav.visits[c.nav.index].dest.details = true
-			c.openSession(t.Session)
-		}))
-	}
-	if t.Supervisor != 0 {
-		actions = append(actions, c.button("Supervisor", func() {
-			c.rememberCard(fmt.Sprintf("thread-%d", t.ID))
-			c.nav.visits[c.nav.index].dest.details = true
-			c.openSession(t.Supervisor)
-		}))
-	}
 	if state.CanResumeShift(t) {
-		actions = append(actions, action("Resume shift", shifting, func() { c.store.ResumeShift(t.ID) }))
+		actions = append(actions, action("Resume Shift", shifting, func() { c.store.ResumeShift(t.ID) }))
 	}
 	if state.CanStopShift(t) {
-		actions = append(actions, action("Stop shift", shifting, func() {
+		actions = append(actions, action("Stop Shift", shifting, func() {
 			c.destroy("Stop "+name+"'s shift?",
 				"The shift ends: pocketd sends no more rounds, and the supervisor hears that you stopped it. "+
 					"A turn the agent is in goes on to its end; abort its session to cut it short. "+
@@ -416,18 +491,14 @@ func (c *client) threadDetails(cx *core.Scope, t proto.Thread, report *core.Sign
 		}))
 	}
 	if t.State != proto.ThreadClosed {
-		actions = append(actions, action("Close thread", closing, func() { c.confirmClose(t) }))
+		actions = append(actions, action("Close Thread", closing, func() { c.confirmClose(t) }))
 	}
-
-	if len(actions) > 0 {
-		out = append(out, workspaceui.Row(actions...))
-	}
-	return out
+	return workspaceui.Row(actions...)
 }
 
 // threadChanging says where the owner's change of a thread's shift and its
-// close stand: on their way, or why pocketd refused. It stands on the
-// card's face: a stop or a close moves the card to another lane, folded.
+// close stand: on their way, or why pocketd refused. A stop or a close
+// moves the card to another group, which may be folded.
 func (c *client) threadChanging(t proto.Thread) core.Node {
 	name := fmt.Sprintf("T%d", t.ID)
 	return core.Dynamic(func(*core.Scope) core.Node {
