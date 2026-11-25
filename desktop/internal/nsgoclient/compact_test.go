@@ -20,13 +20,14 @@ var (
 	tablet = nsgotest.Environment(core.Environment{OS: core.OSIOS, Idiom: core.IdiomTablet, PixelRatio: 2})
 )
 
-// headlessOnly skips a test of a phone or a tablet on a target: a real
-// window is its platform's, whatever environment the test names (seen on
-// the Linux target: the window kept the desktop's layout).
+// headlessOnly skips a test of a phone or a tablet on a target that is
+// neither: a real window is its platform's, whatever environment the test
+// names (seen on the Linux target: the window kept the desktop's layout).
+// On an iOS target the tests run, in the device's own window.
 func headlessOnly(t *testing.T) {
 	t.Helper()
-	if nsgotest.Target() != "" {
-		t.Skip("a phone's and a tablet's layout show headless only")
+	if target := nsgotest.Target(); target != "" && !strings.HasPrefix(target, "ios") {
+		t.Skip("a phone's and a tablet's layout show headless and on an iOS target")
 	}
 }
 
