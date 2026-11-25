@@ -67,6 +67,10 @@ type client struct {
 	// its openings: each has a form of its own.
 	newOpen *core.Signal[bool]
 	newForm *core.Signal[int]
+	// titleEdit is the edit of the shown session's title, in place of
+	// the title, and titleDraft what its field shows.
+	titleEdit  state.TitleEdit
+	titleDraft *core.Signal[string]
 }
 
 func Root(cx *core.Scope) core.Node { return buildClient(cx, transport(), true) }
@@ -98,6 +102,7 @@ func startClient(cx *core.Scope, transport http.RoundTripper, production bool, a
 	c.seek = core.NewSignal(cx, int64(0))
 	c.asking = core.NewSignal(cx, (*question)(nil))
 	c.newOpen, c.newForm = core.NewSignal(cx, false), core.NewSignal(cx, 0)
+	c.titleDraft = core.NewSignal(cx, "")
 	if fontErr != nil {
 		c.logLine(state.LevelWarn, "Register the Inter font: "+fontErr.Error())
 	}
@@ -186,6 +191,7 @@ func (c *client) reset() {
 	c.asks.clear()
 	c.asking.Set(nil)
 	c.newOpen.Set(false)
+	c.titleEdit.Cancel()
 	c.noticeCard.Set("")
 	clear(c.reasons)
 	c.groups.Set(map[string]bool{})
@@ -362,6 +368,8 @@ func (c *client) sections() []ui.SidebarSection {
 			if depth > 0 || status != nil {
 				item.Content = workspaceui.ChildLabel{Text: label, Icon: item.Icon, Depth: depth, Last: last, Trailing: status}
 			}
+			// The row's menu pins and renames.
+			item.Menu = c.sessionMenu(k)
 			section.Items = append(section.Items, item)
 			children := tree.Children(k)
 			for i, kid := range children {

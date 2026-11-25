@@ -47,12 +47,21 @@ func (c *client) contentHeader(cx *core.Scope) core.Node {
 		return state.UsageLine(s.Usage)
 	}
 	return core.View{TestID: "session-header", Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceS, FlexShrink: 1, MinWidth: core.Pt(0)}, Children: []core.Node{
-		core.Text{MaxLines: 1, Style: ui.TypeTitle.Merge(core.Style{FlexShrink: 1, MinWidth: core.Pt(0)}), ContentFunc: func() string {
-			if s, ok := open(); ok {
-				return sessionName(s)
-			}
-			return c.page.Get()
+		// A session's title is a field while the owner renames it here,
+		// and a double click on it starts that.
+		core.Show{When: func() bool { return c.page.Get() == "Session" && c.renamingTitle(c.session.Get()) }, Then: c.titleField, Else: func(*core.Scope) core.Node {
+			return core.Text{MaxLines: 1, Style: ui.TypeTitle.Merge(core.Style{FlexShrink: 1, MinWidth: core.Pt(0)}), ContentFunc: func() string {
+				if s, ok := open(); ok {
+					return sessionName(s)
+				}
+				return c.page.Get()
+			}, OnPress: func(e core.PressEvent) {
+				if s, ok := open(); ok && e.Clicks == 2 {
+					c.startRename(s.ID)
+				}
+			}}
 		}},
+		c.renameButton(open),
 		core.Show{When: func() bool { return usage() != "" }, Then: func(cx *core.Scope) core.Node {
 			line := muted(cx, usage)
 			line.MaxLines, line.Style = 1, line.Style.Merge(core.Style{FlexShrink: 0})

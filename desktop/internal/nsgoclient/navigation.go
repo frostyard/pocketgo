@@ -104,6 +104,11 @@ func (c *client) restoreVisit(i int) {
 }
 
 func (c *client) showDestination(d destination) {
+	// An edit of a title ends as the window leaves its session, as its
+	// field leaving would end it.
+	if c.titleEdit.Session != 0 && (d.page != "Session" || d.session != c.titleEdit.Session) {
+		c.finishRename()
+	}
 	c.cx.Batch(func() {
 		c.noticeCard.Set(d.card)
 		c.seek.Set(d.entry)

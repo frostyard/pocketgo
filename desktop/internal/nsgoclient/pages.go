@@ -26,7 +26,7 @@ func (c *client) sessionDetails(cx *core.Scope) core.Node {
 			return "Unpin session"
 		}
 		return "Pin session"
-	}, OnPress: func() { c.prefs.Pinned = c.prefs.Pinned.Toggle(id); c.savePrefs(); c.changed() }}
+	}, OnPress: func() { c.togglePin(id) }}
 	// Rename is offered where pocketd says the session may be renamed
 	// (ADR-0058), and waits while a rename of it is on its way
 	// (state.Store.MayRename). A rename that failed says so here and at

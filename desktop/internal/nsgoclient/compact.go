@@ -134,7 +134,22 @@ func (c *client) compactView(cx *core.Scope, tab state.Tab, showSettings func())
 		case pageSessions:
 			end = append(end, ui.IconButton{Label: "New session", Icon: lucide.SquarePen, Variant: ui.IconButtonPrimary, OnPress: c.showNewSession})
 		}
-		children := append(start, core.Text{Content: heading, MaxLines: 1, Style: ui.TypeTitle.Merge(core.Style{FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(0)})})
+		var middle core.Node = core.Text{Content: heading, MaxLines: 1, Style: ui.TypeTitle.Merge(core.Style{FlexGrow: 1, FlexShrink: 1, MinWidth: core.Pt(0)})}
+		if page == "Session" {
+			// The session's title is a field while the owner renames
+			// it, with Cancel for a keyboard that has no Escape, and a
+			// pencil starts that.
+			id := c.session.Get()
+			switch {
+			case c.titleEdit.Editing(id):
+				middle = core.Func(c.titleField)
+				end = append(end, c.button("Cancel", c.cancelRename))
+			case c.store.Data.Renamable(id):
+				end = append(end, ui.IconButton{Label: "Rename this session", Icon: lucide.Pencil,
+					Disabled: func() bool { c.revision.Get(); return !c.store.MayRename(id) }, OnPress: func() { c.startRename(id) }})
+			}
+		}
+		children := append(start, middle)
 		return core.View{TestID: "compact-bar", Style: core.Style{Direction: core.Row, AlignItems: core.AlignCenter, Gap: workspaceui.SpaceS, FlexShrink: 0,
 			Padding: core.Symmetric(workspaceui.SpaceS, workspaceui.SpaceM)}, Children: append(children, end...)}
 	})
